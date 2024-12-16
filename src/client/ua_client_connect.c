@@ -2174,15 +2174,18 @@ initConnect(UA_Client *client) {
         return;
 
     /* Extract hostname and port from the URL */
+    UA_String currentUrl = (client->endpoint.endpointUrl.length > 0) ?
+                           client->endpoint.endpointUrl :
+                           client->config.endpointUrl;
     UA_String hostname = UA_STRING_NULL;
     UA_String path = UA_STRING_NULL;
     UA_UInt16 port = 4840;
 
     client->connectStatus =
-        UA_parseEndpointUrl(&client->config.endpointUrl, &hostname, &port, &path);
+        UA_parseEndpointUrl(&currentUrl, &hostname, &port, &path);
     if(client->connectStatus != UA_STATUSCODE_GOOD) {
         UA_LOG_WARNING(client->config.logging, UA_LOGCATEGORY_NETWORK,
-                       "Endpoint URL is invalid: %S", client->config.endpointUrl);
+                       "Endpoint URL is invalid: %S", currentUrl);
         return;
     }
 
@@ -2226,7 +2229,7 @@ initConnect(UA_Client *client) {
     if(client->connectStatus != UA_STATUSCODE_GOOD) {
         UA_LOG_WARNING(client->config.logging, UA_LOGCATEGORY_CLIENT,
                        "Could not open a TCP connection to %S",
-                       client->config.endpointUrl);
+                       currentUrl);
         client->connectStatus = UA_STATUSCODE_BADCONNECTIONCLOSED;
     }
 }
