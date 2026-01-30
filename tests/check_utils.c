@@ -831,6 +831,65 @@ START_TEST(byteStringMemZero) {
     UA_ByteString_memZero(&emptyBs); /* Should not crash */
 } END_TEST
 
+START_TEST(byteStringCopy) {
+    UA_ByteString src = UA_BYTESTRING("test data");
+    UA_ByteString dst;
+    UA_ByteString_init(&dst);
+
+    UA_StatusCode retval = UA_ByteString_copy(&src, &dst);
+    ck_assert_int_eq(retval, UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(src.length, dst.length);
+    ck_assert(memcmp(src.data, dst.data, src.length) == 0);
+    ck_assert_ptr_ne(src.data, dst.data);
+
+    UA_ByteString_clear(&dst);
+
+    /* Test with empty ByteString */
+    UA_ByteString empty = UA_BYTESTRING_NULL;
+    UA_ByteString emptyCopy;
+    retval = UA_ByteString_copy(&empty, &emptyCopy);
+    ck_assert_int_eq(retval, UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(emptyCopy.length, 0);
+} END_TEST
+
+START_TEST(byteStringEqual) {
+    UA_ByteString bs1 = UA_BYTESTRING("hello");
+    UA_ByteString bs2 = UA_BYTESTRING("hello");
+    UA_ByteString bs3 = UA_BYTESTRING("world");
+    UA_ByteString bs4 = UA_BYTESTRING("helloworld");
+
+    ck_assert(UA_ByteString_equal(&bs1, &bs2) == true);
+    ck_assert(UA_ByteString_equal(&bs1, &bs3) == false);
+    ck_assert(UA_ByteString_equal(&bs1, &bs4) == false);
+
+    /* Test with empty ByteStrings */
+    UA_ByteString empty1 = UA_BYTESTRING_NULL;
+    UA_ByteString empty2 = UA_BYTESTRING_NULL;
+    ck_assert(UA_ByteString_equal(&empty1, &empty2) == true);
+    ck_assert(UA_ByteString_equal(&bs1, &empty1) == false);
+} END_TEST
+
+START_TEST(stringCopy) {
+    UA_String src = UA_STRING("copy test");
+    UA_String dst;
+    UA_String_init(&dst);
+
+    UA_StatusCode retval = UA_String_copy(&src, &dst);
+    ck_assert_int_eq(retval, UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(src.length, dst.length);
+    ck_assert(memcmp(src.data, dst.data, src.length) == 0);
+    ck_assert_ptr_ne(src.data, dst.data);
+
+    UA_String_clear(&dst);
+
+    /* Test with empty String */
+    UA_String empty = UA_STRING_NULL;
+    UA_String emptyCopy;
+    retval = UA_String_copy(&empty, &emptyCopy);
+    ck_assert_int_eq(retval, UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(emptyCopy.length, 0);
+} END_TEST
+
 static Suite* testSuite_Utils(void) {
     Suite *s = suite_create("Utils");
     TCase *tc_endpointUrl_split = tcase_create("EndpointUrl_split");
@@ -885,6 +944,9 @@ static Suite* testSuite_Utils(void) {
     TCase *tc7 = tcase_create("test security utilities");
     tcase_add_test(tc7, constantTimeEqual);
     tcase_add_test(tc7, byteStringMemZero);
+    tcase_add_test(tc7, byteStringCopy);
+    tcase_add_test(tc7, byteStringEqual);
+    tcase_add_test(tc7, stringCopy);
     suite_add_tcase(s, tc7);
 
     return s;

@@ -81,6 +81,25 @@ START_TEST(CheckKVMCopy) {
 }
 END_TEST
 
+START_TEST(CheckKVMIsEmpty) {
+        UA_KeyValueMap *kvm = UA_KeyValueMap_new();
+        ck_assert(UA_KeyValueMap_isEmpty(kvm));
+
+        UA_UInt16 value = 1;
+        UA_KeyValueMap_setScalar(kvm, UA_QUALIFIEDNAME(0, "key01"), &value,
+                                 &UA_TYPES[UA_TYPES_UINT16]);
+        ck_assert(!UA_KeyValueMap_isEmpty(kvm));
+
+        UA_KeyValueMap_remove(kvm, UA_QUALIFIEDNAME(0, "key01"));
+        ck_assert(UA_KeyValueMap_isEmpty(kvm));
+
+        ck_assert(UA_KeyValueMap_isEmpty(NULL));
+        ck_assert(UA_KeyValueMap_isEmpty(&UA_KEYVALUEMAP_NULL));
+
+        UA_KeyValueMap_delete(kvm);
+}
+END_TEST
+
 START_TEST(CheckKVMRemove) {
         UA_KeyValueMap *kvm = keyValueMap_setup(10, 0, 0);
         
@@ -180,6 +199,7 @@ int main(void) {
     tcase_add_test(tc, CheckNullArgs);
     tcase_add_test(tc, CheckKVMContains);
     tcase_add_test(tc, CheckKVMCopy);
+    tcase_add_test(tc, CheckKVMIsEmpty);
     tcase_add_test(tc, CheckKVMRemove);
     tcase_add_test(tc, CheckKVMCountMergedIntersecting);
     tcase_add_test(tc, CheckKVMCountMergedComplementary);

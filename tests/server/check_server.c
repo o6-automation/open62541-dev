@@ -129,6 +129,33 @@ START_TEST(checkGetLifecycleState) {
     ck_assert_int_eq(state, UA_LIFECYCLESTATE_STOPPED);
 } END_TEST
 
+static int callbackCounter = 0;
+static void testRepeatedCallback(UA_Server *s, void *data) {
+    callbackCounter++;
+}
+
+START_TEST(checkCallbackManagement) {
+    UA_UInt64 callbackId = 0;
+
+    UA_StatusCode ret = UA_Server_run_startup(server);
+    ck_assert_int_eq(ret, UA_STATUSCODE_GOOD);
+
+    ret = UA_Server_addRepeatedCallback(server, testRepeatedCallback, NULL,
+                                        1000.0, &callbackId);
+    ck_assert_int_eq(ret, UA_STATUSCODE_GOOD);
+    ck_assert(callbackId != 0);
+
+    ret = UA_Server_changeRepeatedCallbackInterval(server, callbackId, 2000.0);
+    ck_assert_int_eq(ret, UA_STATUSCODE_GOOD);
+
+    UA_Server_removeCallback(server, callbackId);
+
+    UA_Server_removeCallback(server, 99999);
+
+    ret = UA_Server_run_shutdown(server);
+    ck_assert_int_eq(ret, UA_STATUSCODE_GOOD);
+} END_TEST
+
 int main(void) {
     Suite *s = suite_create("server");
 
@@ -140,6 +167,7 @@ int main(void) {
     tcase_add_test(tc_call, checkServer_run);
     tcase_add_test(tc_call, checkGetStatistics);
     tcase_add_test(tc_call, checkGetLifecycleState);
+    tcase_add_test(tc_call, checkCallbackManagement);
     suite_add_tcase(s, tc_call);
 
     SRunner *sr = srunner_create(s);

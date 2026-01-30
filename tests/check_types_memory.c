@@ -53,6 +53,116 @@ START_TEST(arrayCopyShallMakeADeepCopy) {
 }
 END_TEST
 
+START_TEST(arrayAppendCopyShallWorkOnExample) {
+    UA_UInt32 *arr = NULL;
+    size_t arrSize = 0;
+
+    UA_UInt32 val1 = 10;
+    UA_StatusCode retval = UA_Array_appendCopy((void**)&arr, &arrSize, &val1,
+                                               &UA_TYPES[UA_TYPES_UINT32]);
+    ck_assert_int_eq(retval, UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(arrSize, 1);
+    ck_assert_uint_eq(arr[0], 10);
+
+    UA_UInt32 val2 = 20;
+    retval = UA_Array_appendCopy((void**)&arr, &arrSize, &val2,
+                                 &UA_TYPES[UA_TYPES_UINT32]);
+    ck_assert_int_eq(retval, UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(arrSize, 2);
+    ck_assert_uint_eq(arr[0], 10);
+    ck_assert_uint_eq(arr[1], 20);
+
+    UA_UInt32 val3 = 30;
+    retval = UA_Array_appendCopy((void**)&arr, &arrSize, &val3,
+                                 &UA_TYPES[UA_TYPES_UINT32]);
+    ck_assert_int_eq(retval, UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(arrSize, 3);
+    ck_assert_uint_eq(arr[2], 30);
+
+    UA_Array_delete(arr, arrSize, &UA_TYPES[UA_TYPES_UINT32]);
+}
+END_TEST
+
+START_TEST(arrayResizeShallWorkOnExample) {
+    UA_UInt32 *arr = NULL;
+    size_t arrSize = 0;
+
+    UA_StatusCode retval = UA_Array_resize((void**)&arr, &arrSize, 5,
+                                           &UA_TYPES[UA_TYPES_UINT32]);
+    ck_assert_int_eq(retval, UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(arrSize, 5);
+    for(size_t i = 0; i < 5; i++)
+        arr[i] = (UA_UInt32)i;
+
+    retval = UA_Array_resize((void**)&arr, &arrSize, 10,
+                             &UA_TYPES[UA_TYPES_UINT32]);
+    ck_assert_int_eq(retval, UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(arrSize, 10);
+    for(size_t i = 0; i < 5; i++)
+        ck_assert_uint_eq(arr[i], i);
+
+    retval = UA_Array_resize((void**)&arr, &arrSize, 3,
+                             &UA_TYPES[UA_TYPES_UINT32]);
+    ck_assert_int_eq(retval, UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(arrSize, 3);
+    for(size_t i = 0; i < 3; i++)
+        ck_assert_uint_eq(arr[i], i);
+
+    retval = UA_Array_resize((void**)&arr, &arrSize, 0,
+                             &UA_TYPES[UA_TYPES_UINT32]);
+    ck_assert_int_eq(retval, UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(arrSize, 0);
+
+    UA_Array_delete(arr, arrSize, &UA_TYPES[UA_TYPES_UINT32]);
+}
+END_TEST
+
+START_TEST(arrayAppendShallWorkOnExample) {
+    UA_UInt32 *arr = NULL;
+    size_t arrSize = 0;
+
+    UA_UInt32 val1 = 100;
+    UA_StatusCode retval = UA_Array_append((void**)&arr, &arrSize, &val1,
+                                           &UA_TYPES[UA_TYPES_UINT32]);
+    ck_assert_int_eq(retval, UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(arrSize, 1);
+    ck_assert_uint_eq(arr[0], 100);
+
+    UA_UInt32 val2 = 200;
+    retval = UA_Array_append((void**)&arr, &arrSize, &val2,
+                             &UA_TYPES[UA_TYPES_UINT32]);
+    ck_assert_int_eq(retval, UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(arrSize, 2);
+    ck_assert_uint_eq(arr[1], 200);
+
+    UA_Array_delete(arr, arrSize, &UA_TYPES[UA_TYPES_UINT32]);
+}
+END_TEST
+
+START_TEST(equalShallWorkOnScalarTypes) {
+    UA_UInt32 a = 42;
+    UA_UInt32 b = 42;
+    UA_UInt32 c = 43;
+
+    ck_assert(UA_equal(&a, &b, &UA_TYPES[UA_TYPES_UINT32]) == true);
+    ck_assert(UA_equal(&a, &c, &UA_TYPES[UA_TYPES_UINT32]) == false);
+
+    UA_String s1 = UA_STRING("test");
+    UA_String s2 = UA_STRING("test");
+    UA_String s3 = UA_STRING("other");
+
+    ck_assert(UA_equal(&s1, &s2, &UA_TYPES[UA_TYPES_STRING]) == true);
+    ck_assert(UA_equal(&s1, &s3, &UA_TYPES[UA_TYPES_STRING]) == false);
+
+    UA_NodeId n1 = UA_NODEID_NUMERIC(1, 100);
+    UA_NodeId n2 = UA_NODEID_NUMERIC(1, 100);
+    UA_NodeId n3 = UA_NODEID_NUMERIC(2, 100);
+
+    ck_assert(UA_equal(&n1, &n2, &UA_TYPES[UA_TYPES_NODEID]) == true);
+    ck_assert(UA_equal(&n1, &n3, &UA_TYPES[UA_TYPES_NODEID]) == false);
+}
+END_TEST
+
 START_TEST(encodeShallYieldDecode) {
     // given
     UA_ByteString msg1, msg2;
@@ -233,6 +343,10 @@ int main(void) {
     TCase *tc = tcase_create("Empty Objects");
     tcase_add_loop_test(tc, newAndEmptyObjectShallBeDeleted, UA_TYPES_BOOLEAN, UA_TYPES_COUNT - 1);
     tcase_add_test(tc, arrayCopyShallMakeADeepCopy);
+    tcase_add_test(tc, arrayAppendCopyShallWorkOnExample);
+    tcase_add_test(tc, arrayResizeShallWorkOnExample);
+    tcase_add_test(tc, arrayAppendShallWorkOnExample);
+    tcase_add_test(tc, equalShallWorkOnScalarTypes);
     tcase_add_loop_test(tc, encodeShallYieldDecode, UA_TYPES_BOOLEAN, UA_TYPES_COUNT - 1);
     suite_add_tcase(s, tc);
     tc = tcase_create("Truncated Buffers");
