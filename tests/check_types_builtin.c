@@ -1877,6 +1877,66 @@ START_TEST(UA_DateTime_toUnixTime_test) {
     ck_assert_int_eq(unixTime, 1609459200);
 } END_TEST
 
+START_TEST(UA_DataType_isNumeric_test) {
+    /* Test numeric types */
+    ck_assert(UA_DataType_isNumeric(&UA_TYPES[UA_TYPES_BYTE]) == true);
+    ck_assert(UA_DataType_isNumeric(&UA_TYPES[UA_TYPES_SBYTE]) == true);
+    ck_assert(UA_DataType_isNumeric(&UA_TYPES[UA_TYPES_INT16]) == true);
+    ck_assert(UA_DataType_isNumeric(&UA_TYPES[UA_TYPES_UINT16]) == true);
+    ck_assert(UA_DataType_isNumeric(&UA_TYPES[UA_TYPES_INT32]) == true);
+    ck_assert(UA_DataType_isNumeric(&UA_TYPES[UA_TYPES_UINT32]) == true);
+    ck_assert(UA_DataType_isNumeric(&UA_TYPES[UA_TYPES_INT64]) == true);
+    ck_assert(UA_DataType_isNumeric(&UA_TYPES[UA_TYPES_UINT64]) == true);
+    ck_assert(UA_DataType_isNumeric(&UA_TYPES[UA_TYPES_FLOAT]) == true);
+    ck_assert(UA_DataType_isNumeric(&UA_TYPES[UA_TYPES_DOUBLE]) == true);
+
+    /* Test non-numeric types */
+    ck_assert(UA_DataType_isNumeric(&UA_TYPES[UA_TYPES_BOOLEAN]) == false);
+    ck_assert(UA_DataType_isNumeric(&UA_TYPES[UA_TYPES_STRING]) == false);
+    ck_assert(UA_DataType_isNumeric(&UA_TYPES[UA_TYPES_DATETIME]) == false);
+    ck_assert(UA_DataType_isNumeric(&UA_TYPES[UA_TYPES_GUID]) == false);
+    ck_assert(UA_DataType_isNumeric(&UA_TYPES[UA_TYPES_NODEID]) == false);
+    ck_assert(UA_DataType_isNumeric(&UA_TYPES[UA_TYPES_STATUSCODE]) == false);
+} END_TEST
+
+#ifdef UA_ENABLE_TYPEDESCRIPTION
+START_TEST(UA_DataType_getStructMember_test) {
+    /* Test getting struct members from ReadValueId */
+    const UA_DataType *type = &UA_TYPES[UA_TYPES_READVALUEID];
+    size_t offset = 0;
+    const UA_DataType *memberType = NULL;
+    UA_Boolean isArray = false;
+
+    /* Test finding NodeId member (capital N) */
+    UA_Boolean found = UA_DataType_getStructMember(type, "NodeId", &offset, &memberType, &isArray);
+    ck_assert(found == true);
+    ck_assert(memberType == &UA_TYPES[UA_TYPES_NODEID]);
+    ck_assert(isArray == false);
+
+    /* Test finding AttributeId member (capital A) */
+    found = UA_DataType_getStructMember(type, "AttributeId", &offset, &memberType, &isArray);
+    ck_assert(found == true);
+    ck_assert(memberType == &UA_TYPES[UA_TYPES_UINT32]);
+    ck_assert(isArray == false);
+
+    /* Test finding IndexRange member (capital I) */
+    found = UA_DataType_getStructMember(type, "IndexRange", &offset, &memberType, &isArray);
+    ck_assert(found == true);
+    ck_assert(memberType == &UA_TYPES[UA_TYPES_STRING]);
+    ck_assert(isArray == false);
+
+    /* Test finding non-existent member */
+    found = UA_DataType_getStructMember(type, "nonExistent", &offset, &memberType, &isArray);
+    ck_assert(found == false);
+
+    /* Test with a type that has array members - BrowseResult */
+    type = &UA_TYPES[UA_TYPES_BROWSERESULT];
+    found = UA_DataType_getStructMember(type, "References", &offset, &memberType, &isArray);
+    ck_assert(found == true);
+    ck_assert(isArray == true);
+} END_TEST
+#endif
+
 static Suite *testSuite_builtin(void) {
     Suite *s = suite_create("Built-in Data Types 62541-6 Table 1");
 
@@ -1973,6 +2033,10 @@ static Suite *testSuite_builtin(void) {
     tcase_add_test(tc_utils, UA_findDataTypeByName_test);
     tcase_add_test(tc_utils, UA_Variant_isArray_test);
     tcase_add_test(tc_utils, UA_DateTime_toUnixTime_test);
+    tcase_add_test(tc_utils, UA_DataType_isNumeric_test);
+#ifdef UA_ENABLE_TYPEDESCRIPTION
+    tcase_add_test(tc_utils, UA_DataType_getStructMember_test);
+#endif
     suite_add_tcase(s, tc_utils);
 
     return s;

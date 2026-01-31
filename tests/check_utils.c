@@ -890,6 +890,106 @@ START_TEST(stringCopy) {
     ck_assert_uint_eq(emptyCopy.length, 0);
 } END_TEST
 
+START_TEST(trustListDataTypeOperations) {
+    /* Test UA_TrustListDataType_add, remove, contains, and getSize */
+    UA_TrustListDataType src;
+    UA_TrustListDataType_init(&src);
+    UA_TrustListDataType dst;
+    UA_TrustListDataType_init(&dst);
+
+    /* Create test certificates */
+    UA_ByteString cert1 = UA_BYTESTRING("TestCert1");
+    UA_ByteString cert2 = UA_BYTESTRING("TestCert2");
+
+    /* Set up source trust list with certificates */
+    src.specifiedLists = UA_TRUSTLISTMASKS_TRUSTEDCERTIFICATES;
+    src.trustedCertificatesSize = 1;
+    src.trustedCertificates = (UA_ByteString*)UA_malloc(sizeof(UA_ByteString));
+    UA_ByteString_copy(&cert1, &src.trustedCertificates[0]);
+
+    /* Test add - adds src to dst */
+    UA_StatusCode retval = UA_TrustListDataType_add(&src, &dst);
+    ck_assert_int_eq(retval, UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(dst.trustedCertificatesSize, 1);
+
+    /* Test contains */
+    UA_Boolean contains = UA_TrustListDataType_contains(&dst, &cert1, UA_TRUSTLISTMASKS_TRUSTEDCERTIFICATES);
+    ck_assert(contains == true);
+    contains = UA_TrustListDataType_contains(&dst, &cert2, UA_TRUSTLISTMASKS_TRUSTEDCERTIFICATES);
+    ck_assert(contains == false);
+
+    /* Test getSize */
+    UA_UInt32 size = UA_TrustListDataType_getSize(&dst);
+    ck_assert(size > 0);
+
+    /* Add another certificate */
+    UA_TrustListDataType src2;
+    UA_TrustListDataType_init(&src2);
+    src2.specifiedLists = UA_TRUSTLISTMASKS_TRUSTEDCERTIFICATES;
+    src2.trustedCertificatesSize = 1;
+    src2.trustedCertificates = (UA_ByteString*)UA_malloc(sizeof(UA_ByteString));
+    UA_ByteString_copy(&cert2, &src2.trustedCertificates[0]);
+
+    retval = UA_TrustListDataType_add(&src2, &dst);
+    ck_assert_int_eq(retval, UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(dst.trustedCertificatesSize, 2);
+
+    /* Test remove */
+    retval = UA_TrustListDataType_remove(&src, &dst);
+    ck_assert_int_eq(retval, UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(dst.trustedCertificatesSize, 1);
+
+    /* Verify cert1 removed, cert2 remains */
+    contains = UA_TrustListDataType_contains(&dst, &cert1, UA_TRUSTLISTMASKS_TRUSTEDCERTIFICATES);
+    ck_assert(contains == false);
+    contains = UA_TrustListDataType_contains(&dst, &cert2, UA_TRUSTLISTMASKS_TRUSTEDCERTIFICATES);
+    ck_assert(contains == true);
+
+    UA_TrustListDataType_clear(&src);
+    UA_TrustListDataType_clear(&src2);
+    UA_TrustListDataType_clear(&dst);
+} END_TEST
+
+START_TEST(simpleAttributeOperandPrint) {
+    UA_SimpleAttributeOperand sao;
+    UA_SimpleAttributeOperand_init(&sao);
+
+    /* Set up a SimpleAttributeOperand */
+    sao.typeDefinitionId = UA_NODEID_NUMERIC(0, UA_NS0ID_BASEEVENTTYPE);
+    sao.browsePathSize = 2;
+    sao.browsePath = (UA_QualifiedName*)UA_calloc(2, sizeof(UA_QualifiedName));
+    sao.browsePath[0] = UA_QUALIFIEDNAME(0, "Message");
+    sao.browsePath[1] = UA_QUALIFIEDNAME(0, "Text");
+    sao.attributeId = UA_ATTRIBUTEID_VALUE;
+
+    UA_String out = UA_STRING_NULL;
+    UA_StatusCode retval = UA_SimpleAttributeOperand_print(&sao, &out);
+    ck_assert_int_eq(retval, UA_STATUSCODE_GOOD);
+    ck_assert(out.length > 0);
+    ck_assert(out.data != NULL);
+
+    UA_String_clear(&out);
+    UA_free(sao.browsePath);
+} END_TEST
+
+START_TEST(attributeOperandPrint) {
+    UA_AttributeOperand ao;
+    UA_AttributeOperand_init(&ao);
+
+    /* Set up an AttributeOperand */
+    ao.nodeId = UA_NODEID_NUMERIC(0, UA_NS0ID_SERVER);
+    ao.attributeId = UA_ATTRIBUTEID_VALUE;
+    ao.alias = UA_STRING("TestAlias");
+
+    UA_String out = UA_STRING_NULL;
+    UA_StatusCode retval = UA_AttributeOperand_print(&ao, &out);
+    ck_assert_int_eq(retval, UA_STATUSCODE_GOOD);
+    ck_assert(out.length > 0);
+    ck_assert(out.data != NULL);
+
+    UA_String_clear(&out);
+} END_TEST
+
 static Suite* testSuite_Utils(void) {
     Suite *s = suite_create("Utils");
     TCase *tc_endpointUrl_split = tcase_create("EndpointUrl_split");
@@ -948,6 +1048,12 @@ static Suite* testSuite_Utils(void) {
     tcase_add_test(tc7, byteStringEqual);
     tcase_add_test(tc7, stringCopy);
     suite_add_tcase(s, tc7);
+
+    TCase *tc8 = tcase_create("test trustlist and operand utilities");
+    tcase_add_test(tc8, trustListDataTypeOperations);
+    tcase_add_test(tc8, simpleAttributeOperandPrint);
+    tcase_add_test(tc8, attributeOperandPrint);
+    suite_add_tcase(s, tc8);
 
     return s;
 }
