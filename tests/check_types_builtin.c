@@ -1753,6 +1753,32 @@ START_TEST(UA_StatusCode_utils) {
 
 } END_TEST
 
+/* Test that enum member values in the type description match the actual enum values.
+ * For enums, memberType is cast to an integer representing the enum value.
+ * NamingRuleType has values: Mandatory=1, Optional=2, Constraint=3
+ * If the generator incorrectly uses enumerate index, it would be 0, 1, 2 instead. */
+START_TEST(UA_Enum_memberValuesMatchEnumDefinition) {
+    const UA_DataType *namingRuleType = &UA_TYPES[UA_TYPES_NAMINGRULETYPE];
+
+    /* NamingRuleType should have 3 members (enum values) */
+    ck_assert_uint_eq(namingRuleType->membersSize, 3);
+    ck_assert(namingRuleType->typeKind == UA_DATATYPEKIND_ENUM);
+
+    /* Check that the member values match the actual enum values, not sequential indices.
+     * NamingRuleType: Mandatory=1, Optional=2, Constraint=3 (not 0, 1, 2) */
+    ck_assert_int_eq((uintptr_t)namingRuleType->members[0].memberType,
+                     UA_NAMINGRULETYPE_MANDATORY);  /* Should be 1 */
+    ck_assert_int_eq((uintptr_t)namingRuleType->members[1].memberType,
+                     UA_NAMINGRULETYPE_OPTIONAL);   /* Should be 2 */
+    ck_assert_int_eq((uintptr_t)namingRuleType->members[2].memberType,
+                     UA_NAMINGRULETYPE_CONSTRAINT); /* Should be 3 */
+
+    /* Additional sanity check: verify the enum constants themselves */
+    ck_assert_int_eq(UA_NAMINGRULETYPE_MANDATORY, 1);
+    ck_assert_int_eq(UA_NAMINGRULETYPE_OPTIONAL, 2);
+    ck_assert_int_eq(UA_NAMINGRULETYPE_CONSTRAINT, 3);
+} END_TEST
+
 static Suite *testSuite_builtin(void) {
     Suite *s = suite_create("Built-in Data Types 62541-6 Table 1");
 
@@ -1844,6 +1870,7 @@ static Suite *testSuite_builtin(void) {
 
     TCase *tc_utils = tcase_create("utils");
     tcase_add_test(tc_utils, UA_StatusCode_utils);
+    tcase_add_test(tc_utils, UA_Enum_memberValuesMatchEnumDefinition);
     suite_add_tcase(s, tc_utils);
 
     return s;
