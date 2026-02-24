@@ -269,6 +269,185 @@ readValueAttribute(UA_Server *server, UA_Session *session,
                                       UA_TIMESTAMPSTORETURN_NEITHER, NULL, v);
 }
 
+/* -------------------------------------------------------------------------
+ * Helper functions for reading EnumDefinition from address space properties.
+ * Used by UA_ATTRIBUTEID_DATATYPEDEFINITION for enum DataTypes.
+ * (OPC UA Part 3, §5.8.5)
+ * ------------------------------------------------------------------------- */
+
+static UA_StatusCode
+resolveProperty(UA_Server *server, const UA_NodeId dataTypeId,
+                const char *propName, UA_NodeId *outPropId) {
+    UA_BrowseDescription bd;
+    UA_BrowseDescription_init(&bd);
+    bd.nodeId          = dataTypeId;
+    bd.browseDirection = UA_BROWSEDIRECTION_FORWARD;
+    bd.referenceTypeId = UA_NODEID_NUMERIC(0, UA_NS0ID_HASPROPERTY);
+    bd.includeSubtypes = true;
+    bd.nodeClassMask   = 0;
+    bd.resultMask      = UA_BROWSERESULTMASK_BROWSENAME |
+                         UA_BROWSERESULTMASK_REFERENCETYPEID;
+
+    UA_BrowseResult resp = UA_Server_browse(server, 0, &bd);
+    if(resp.statusCode != UA_STATUSCODE_GOOD) {
+        UA_StatusCode rc = resp.statusCode;
+        UA_BrowseResult_clear(&resp);
+        return rc;
+    }
+
+    UA_StatusCode rc = UA_STATUSCODE_BADNOTFOUND;
+    for(size_t i = 0; i < resp.referencesSize; ++i) {
+        const UA_ReferenceDescription *r = &resp.references[i];
+        if(r->browseName.namespaceIndex == 0 &&
+           r->browseName.name.length == strlen(propName) &&
+           memcmp(r->browseName.name.data, propName,
+                  r->browseName.name.length) == 0) {
+            rc = UA_NodeId_copy(&r->nodeId.nodeId, outPropId);
+            break;
+        }
+    }
+    UA_BrowseResult_clear(&resp);
+    return rc;
+}
+
+static UA_StatusCode
+readEnumValues_forDef(UA_Server *server, const UA_NodeId dataTypeId,
+                      UA_EnumValueType **outArr, size_t *outSize) {
+    *outArr  = NULL;
+    *outSize = 0;
+
+    UA_NodeId propId;
+    UA_NodeId_init(&propId);
+    UA_StatusCode st = resolveProperty(server, dataTypeId, "EnumValues", &propId);
+    if(st != UA_STATUSCODE_GOOD)
+        return st;
+
+    UA_Variant v;
+    UA_Variant_init(&v);
+    st = UA_Server_readValue(server, propId, &v);
+    UA_NodeId_clear(&propId);
+    if(st != UA_STATUSCODE_GOOD)
+        return st;
+
+    if(v.arrayLength == 0 || !v.data ||
+       v.type != &UA_TYPES[UA_TYPES_ENUMVALUETYPE]) {
+        UA_Variant_clear(&v);
+        return UA_STATUSCODE_BADTYPEMISMATCH;
+    }
+
+    size_t n = v.arrayLength;
+    UA_EnumValueType *src  = (UA_EnumValueType *)v.data;
+    UA_EnumValueType *copy = (UA_EnumValueType *)
+        UA_Array_new(n, &UA_TYPES[UA_TYPES_ENUMVALUETYPE]);
+    if(!copy) {
+        UA_Variant_clear(&v);
+        return UA_STATUSCODE_BADOUTOFMEMORY;
+    }
+    for(size_t i = 0; i < n; ++i)
+        UA_EnumValueType_copy(&src[i], &copy[i]);
+    UA_Variant_clear(&v);
+    *outArr  = copy;
+    *outSize = n;
+    return UA_STATUSCODE_GOOD;
+}
+
+static UA_StatusCode
+readEnumStrings_forDef(UA_Server *server, const UA_NodeId dataTypeId,
+                       UA_LocalizedText **outArr, size_t *outSize) {
+    *outArr  = NULL;
+    *outSize = 0;
+
+    UA_NodeId propId;
+    UA_NodeId_init(&propId);
+    UA_StatusCode st = resolveProperty(server, dataTypeId, "EnumStrings", &propId);
+    if(st != UA_STATUSCODE_GOOD)
+        return st;
+
+    UA_Variant v;
+    UA_Variant_init(&v);
+    st = UA_Server_readValue(server, propId, &v);
+    UA_NodeId_clear(&propId);
+    if(st != UA_STATUSCODE_GOOD)
+        return st;
+
+    if(v.arrayLength == 0 || !v.data ||
+       v.type != &UA_TYPES[UA_TYPES_LOCALIZEDTEXT]) {
+        UA_Variant_clear(&v);
+        return UA_STATUSCODE_BADTYPEMISMATCH;
+    }
+
+    size_t n = v.arrayLength;
+    UA_LocalizedText *src  = (UA_LocalizedText *)v.data;
+    UA_LocalizedText *copy = (UA_LocalizedText *)
+        UA_Array_new(n, &UA_TYPES[UA_TYPES_LOCALIZEDTEXT]);
+    if(!copy) {
+        UA_Variant_clear(&v);
+        return UA_STATUSCODE_BADOUTOFMEMORY;
+    }
+    for(size_t i = 0; i < n; ++i)
+        UA_LocalizedText_copy(&src[i], &copy[i]);
+    UA_Variant_clear(&v);
+    *outArr  = copy;
+    *outSize = n;
+    return UA_STATUSCODE_GOOD;
+}
+
+/* Tries EnumValues first; falls back to EnumStrings (indexed 0..N-1). */
+static UA_StatusCode
+buildEnumDefinition(UA_Server *server, const UA_NodeId dataTypeId,
+                    UA_EnumDefinition *out) {
+    out->fields     = NULL;
+    out->fieldsSize = 0;
+
+    /* 1) EnumValues */
+    UA_EnumValueType *ev = NULL;
+    size_t n = 0;
+    UA_StatusCode st = readEnumValues_forDef(server, dataTypeId, &ev, &n);
+    if(st == UA_STATUSCODE_GOOD) {
+        out->fields = (UA_EnumField *)
+            UA_Array_new(n, &UA_TYPES[UA_TYPES_ENUMFIELD]);
+        if(!out->fields) {
+            UA_Array_delete(ev, n, &UA_TYPES[UA_TYPES_ENUMVALUETYPE]);
+            return UA_STATUSCODE_BADOUTOFMEMORY;
+        }
+        out->fieldsSize = n;
+        for(size_t i = 0; i < n; ++i) {
+            out->fields[i].value = ev[i].value;
+            UA_String_copy(&ev[i].displayName.text, &out->fields[i].name);
+            UA_LocalizedText_copy(&ev[i].displayName,
+                                  &out->fields[i].displayName);
+            UA_LocalizedText_copy(&ev[i].description,
+                                  &out->fields[i].description);
+        }
+        UA_Array_delete(ev, n, &UA_TYPES[UA_TYPES_ENUMVALUETYPE]);
+        return UA_STATUSCODE_GOOD;
+    }
+
+    /* 2) Fallback: EnumStrings (implicit index 0..N-1) */
+    UA_LocalizedText *lt = NULL;
+    n = 0;
+    st = readEnumStrings_forDef(server, dataTypeId, &lt, &n);
+    if(st == UA_STATUSCODE_GOOD) {
+        out->fields = (UA_EnumField *)
+            UA_Array_new(n, &UA_TYPES[UA_TYPES_ENUMFIELD]);
+        if(!out->fields) {
+            UA_Array_delete(lt, n, &UA_TYPES[UA_TYPES_LOCALIZEDTEXT]);
+            return UA_STATUSCODE_BADOUTOFMEMORY;
+        }
+        out->fieldsSize = n;
+        for(size_t i = 0; i < n; ++i) {
+            out->fields[i].value = (UA_Int64)i;
+            UA_String_copy(&lt[i].text, &out->fields[i].name);
+            UA_LocalizedText_copy(&lt[i], &out->fields[i].displayName);
+            UA_LocalizedText_init(&out->fields[i].description);
+        }
+        UA_Array_delete(lt, n, &UA_TYPES[UA_TYPES_LOCALIZEDTEXT]);
+        return UA_STATUSCODE_GOOD;
+    }
+
+    return UA_STATUSCODE_BADNOTFOUND;
+}
+
 static const UA_String binEncoding = {sizeof("Default Binary")-1, (UA_Byte*)"Default Binary"};
 static const UA_String xmlEncoding = {sizeof("Default XML")-1, (UA_Byte*)"Default XML"};
 static const UA_String jsonEncoding = {sizeof("Default JSON")-1, (UA_Byte*)"Default JSON"};
@@ -466,6 +645,26 @@ ReadWithNodeMaybeAsync(const UA_Node *node, UA_Server *server, UA_Session *sessi
             UA_findDataTypeWithCustom(&node->head.nodeId, server->config.customDataTypes);
         if(!type) {
             retval = UA_STATUSCODE_BADATTRIBUTEIDINVALID;
+            break;
+        }
+
+        /* Create the EnumDefinition from EnumValues/EnumStrings
+         * (OPC UA Part 3, §5.8.5) */
+        if(UA_DATATYPEKIND_ENUM == type->typeKind) {
+            UA_EnumDefinition enumDef;
+            UA_EnumDefinition_init(&enumDef);
+            retval = buildEnumDefinition(server, type->typeId, &enumDef);
+            if(retval != UA_STATUSCODE_GOOD)
+                break;
+            UA_ExtensionObject eo;
+            UA_ExtensionObject_init(&eo);
+            eo.encoding = UA_EXTENSIONOBJECT_DECODED;
+            eo.content.decoded.type = &UA_TYPES[UA_TYPES_ENUMDEFINITION];
+            eo.content.decoded.data = &enumDef;
+            retval = UA_Variant_setScalarCopy(&v->value, &eo,
+                                              &UA_TYPES[UA_TYPES_EXTENSIONOBJECT]);
+            UA_Array_delete(enumDef.fields, enumDef.fieldsSize,
+                            &UA_TYPES[UA_TYPES_ENUMFIELD]);
             break;
         }
 
