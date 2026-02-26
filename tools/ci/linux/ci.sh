@@ -342,6 +342,8 @@ function unit_tests_valgrind {
           -DUA_ENABLE_PUBSUB=ON \
           -DUA_ENABLE_MQTT=ON \
           -DUA_ENABLE_PUBSUB_INFORMATIONMODEL=ON \
+          -DUA_ENABLE_GDS_PUSHMANAGEMENT=ON \
+          -DUA_NAMESPACE_ZERO=FULL \
           -DUA_ENABLE_UNIT_TESTS_MEMCHECK=ON \
           -DUA_FORCE_WERROR=ON \
           ..

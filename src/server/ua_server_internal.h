@@ -124,8 +124,10 @@ typedef struct {
     UA_UInt64 checkSessionCallbackId;
 } UA_GDSManager;
 
+#ifdef UA_ENABLE_GDS_PUSHMANAGEMENT
 void
 UA_GDSManager_clear(UA_GDSManager *gdsManager);
+#endif
 
 /********************/
 /* Server Component */

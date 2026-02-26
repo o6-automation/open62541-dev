@@ -276,6 +276,7 @@ checkSessionActive(UA_Server *server, void *data) {
             fileInfoContext->fileInfo.openCount -= 1;
 
             UA_ByteString_clear(&fileContext->file);
+            UA_ByteString_clear(&fileContext->dataToWrite);
             UA_free(fileContext);
 
             /* Updating OpenCount Variable in the information model */

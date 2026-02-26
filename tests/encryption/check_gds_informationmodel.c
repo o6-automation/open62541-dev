@@ -393,6 +393,109 @@ START_TEST(rw_trustlist) {
 }
 END_TEST
 
+/* Helper to create a connected secure client */
+static UA_Client *
+createSecureClient(void) {
+    UA_ByteString certificate;
+    certificate.length = APPLICATION_CERT_DER_LENGTH;
+    certificate.data = APPLICATION_CERT_DER_DATA;
+
+    UA_ByteString privateKey;
+    privateKey.length = APPLICATION_KEY_DER_LENGTH;
+    privateKey.data = APPLICATION_KEY_DER_DATA;
+
+    UA_Client *client = UA_Client_newForUnitTest();
+    ck_assert(client != NULL);
+    UA_ClientConfig *cc = UA_Client_getConfig(client);
+    UA_ClientConfig_setDefaultEncryption(cc, certificate, privateKey,
+                                         NULL, 0, NULL, 0);
+    cc->certificateVerification.clear(&cc->certificateVerification);
+    UA_CertificateGroup_AcceptAll(&cc->certificateVerification);
+
+    UA_String_clear(&cc->clientDescription.applicationUri);
+    cc->clientDescription.applicationUri =
+        UA_STRING_ALLOC("urn:unconfigured:application");
+
+    cc->securityPolicyUri =
+        UA_STRING_ALLOC("http://opcfoundation.org/UA/SecurityPolicy#Aes128_Sha256_RsaOaep");
+
+    UA_StatusCode retval = UA_Client_connect(client, "opc.tcp://localhost:4840");
+    ck_assert_uint_eq(retval, UA_STATUSCODE_GOOD);
+
+    return client;
+}
+
+/* Open a TrustList in read mode and deliberately do NOT close it.
+ * The server's UA_GDSManager_clear must free the fileContext and its
+ * ByteStrings without leaking. */
+START_TEST(server_delete_leaks_open_trustlist_read) {
+    UA_Client *client = createSecureClient();
+
+    UA_Variant fileHandler;
+    UA_Variant_init(&fileHandler);
+    UA_UInt32 mask = UA_TRUSTLISTMASKS_ALL;
+    UA_StatusCode retval = openTrustListWithMask(client, mask, &fileHandler);
+    ck_assert_uint_eq(retval, UA_STATUSCODE_GOOD);
+
+    /* Read some data so the fileContext->file ByteString is populated */
+    UA_UInt32 fd = *(UA_UInt32*)fileHandler.data;
+    UA_Variant bufferVar;
+    UA_Variant_init(&bufferVar);
+    retval = readTrustList(client, fd, 20000, &bufferVar);
+    ck_assert_uint_eq(retval, UA_STATUSCODE_GOOD);
+
+    /* Intentionally skip closeTrustList — teardown's UA_Server_delete
+     * must clean up the open fileContext without leaking. */
+
+    UA_Variant_clear(&fileHandler);
+    UA_Variant_clear(&bufferVar);
+    UA_Client_disconnect(client);
+    UA_Client_delete(client);
+}
+END_TEST
+
+/* Open a TrustList in write mode, write data, and deliberately do NOT close it.
+ * This exercises the dataToWrite cleanup path in UA_GDSManager_clear. */
+START_TEST(server_delete_leaks_open_trustlist_write) {
+    UA_Client *client = createSecureClient();
+
+    /* First read the existing trustlist so we have valid data to write */
+    UA_Variant fileHandler;
+    UA_Variant_init(&fileHandler);
+    UA_UInt32 mask = UA_TRUSTLISTMASKS_ALL;
+    UA_StatusCode retval = openTrustListWithMask(client, mask, &fileHandler);
+    ck_assert_uint_eq(retval, UA_STATUSCODE_GOOD);
+
+    UA_UInt32 fd = *(UA_UInt32*)fileHandler.data;
+    UA_Variant bufferVar;
+    UA_Variant_init(&bufferVar);
+    retval = readTrustList(client, fd, 20000, &bufferVar);
+    ck_assert_uint_eq(retval, UA_STATUSCODE_GOOD);
+    UA_ByteString data = *(UA_ByteString*)bufferVar.data;
+
+    retval = closeTrustList(client, fd);
+    ck_assert_uint_eq(retval, UA_STATUSCODE_GOOD);
+    UA_Variant_clear(&fileHandler);
+
+    /* Now open in write mode and write data without closing */
+    UA_Byte mode = UA_OPENFILEMODE_WRITE | UA_OPENFILEMODE_ERASEEXISTING;
+    retval = openTrustList(client, mode, &fileHandler);
+    ck_assert_uint_eq(retval, UA_STATUSCODE_GOOD);
+
+    fd = *(UA_UInt32*)fileHandler.data;
+    retval = writeTrustList(client, fd, data);
+    ck_assert_uint_eq(retval, UA_STATUSCODE_GOOD);
+
+    /* Intentionally skip closeAndUpdateTrustList — teardown's UA_Server_delete
+     * must clean up both fileContext->file and fileContext->dataToWrite. */
+
+    UA_Variant_clear(&fileHandler);
+    UA_Variant_clear(&bufferVar);
+    UA_Client_disconnect(client);
+    UA_Client_delete(client);
+}
+END_TEST
+
 static void teardown(void) {
     running = false;
     THREAD_JOIN(server_thread);
@@ -406,6 +509,8 @@ static Suite* testSuite_create_certificate(void) {
     tcase_add_checked_fixture(tc_cert, setup, teardown);
 #ifdef UA_ENABLE_ENCRYPTION
     tcase_add_test(tc_cert, rw_trustlist);
+    tcase_add_test(tc_cert, server_delete_leaks_open_trustlist_read);
+    tcase_add_test(tc_cert, server_delete_leaks_open_trustlist_write);
 #endif /* UA_ENABLE_ENCRYPTION */
     suite_add_tcase(s,tc_cert);
     return s;
