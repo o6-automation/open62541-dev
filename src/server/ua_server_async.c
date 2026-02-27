@@ -63,6 +63,8 @@ UA_AsyncOperation_delete(UA_AsyncOperation *op) {
     case UA_ASYNCOPERATIONTYPE_WRITE_DIRECT:
         break;
     case UA_ASYNCOPERATIONTYPE_CALL_DIRECT:
+        UA_CallMethodRequest_clear(&op->context.callContext.callRequest);
+        UA_NodeId_clear(&op->context.callContext.sessionId);
         UA_CallMethodResult_clear(&op->output.directCall);
         break;
     default: UA_assert(false); break;
@@ -244,6 +246,15 @@ UA_AsyncManager_processReady(UA_Server *server, UA_AsyncManager *am) {
 static void
 processOperationResult(UA_Server *server, UA_AsyncOperation *op) {
     UA_AsyncManager *am = &server->asyncManager;
+
+    /* Clean up the stored call context (deep copy of the CallMethodRequest
+     * and sessionId) as it is no longer needed after the result is set. */
+    if(op->asyncOperationType == UA_ASYNCOPERATIONTYPE_CALL_REQUEST ||
+       op->asyncOperationType == UA_ASYNCOPERATIONTYPE_CALL_DIRECT) {
+        UA_CallMethodRequest_clear(&op->context.callContext.callRequest);
+        UA_NodeId_clear(&op->context.callContext.sessionId);
+    }
+
     if(op->asyncOperationType >= UA_ASYNCOPERATIONTYPE_CALL_DIRECT) {
         /* Direct operation */
         TAILQ_REMOVE(&am->waitingOps, op, pointers);
@@ -420,6 +431,7 @@ persistAsyncResponseOperation(UA_Server *server, UA_AsyncOperation *op,
     op->asyncOperationType = opType;
     op->handling.response = ar;
     op->output.read = (UA_DataValue*)outputPtr;
+    op->asyncId = ++server->asyncManager.asyncIdCounter;
 
     /* Not enough resources to store the async operation */
     UA_AsyncManager *am = &server->asyncManager;
@@ -452,6 +464,7 @@ persistAsyncDirectOperation(UA_Server *server, UA_AsyncOperation *op,
 
     /* Not enough resources to store the async operation */
     UA_AsyncManager *am = &server->asyncManager;
+    op->asyncId = ++am->asyncIdCounter;
     if(server->config.maxAsyncOperationQueueSize != 0 &&
        am->opsCount >= server->config.maxAsyncOperationQueueSize) {
         UA_LOG_WARNING(server->config.logging, UA_LOGCATEGORY_SERVER,
@@ -811,6 +824,17 @@ Service_Call(UA_Server *server, UA_Session *session,
             persistAsyncResponseOperation(server, &aopArray[i],
                                           UA_ASYNCOPERATIONTYPE_CALL_REQUEST,
                                           ar, &response->results[i]);
+
+        /* Deep-copy the CallMethodRequest and session info for async ops so
+         * the full context remains accessible via
+         * UA_Server_getAsyncMethodCallContext from worker threads. */
+        if(!done) {
+            UA_CallMethodRequest_copy(&request->methodsToCall[i],
+                                      &aopArray[i].context.callContext.callRequest);
+            UA_NodeId_copy(&session->sessionId,
+                           &aopArray[i].context.callContext.sessionId);
+            aopArray[i].context.callContext.sessionContext = session->context;
+        }
     }
 
     /* If async operations are pending, persist them and signal the service is
@@ -842,9 +866,15 @@ call_async(UA_Server *server, UA_Session *session, const UA_CallMethodRequest *o
     /* Call the operation */
     UA_Boolean done = Operation_CallMethod(server, session, operation,
                                            &op->output.directCall);
-    if(!done)
+    if(!done) {
+        /* Deep-copy the CallMethodRequest and session info so the full context
+         * remains accessible via UA_Server_getAsyncMethodCallContext. */
+        UA_CallMethodRequest_copy(operation, &op->context.callContext.callRequest);
+        UA_NodeId_copy(&session->sessionId, &op->context.callContext.sessionId);
+        op->context.callContext.sessionContext = session->context;
         return persistAsyncDirectOperation(server, op, UA_ASYNCOPERATIONTYPE_CALL_DIRECT,
                                            context, (uintptr_t)callback, timeoutDate);
+    }
 
     /* Done, return right away */
     callback(server, context, &op->output.directCall);
@@ -864,24 +894,147 @@ UA_Server_call_async(UA_Server *server, const UA_CallMethodRequest *operation,
     return res;
 }
 
+/* Helper: find a waiting async call operation by output pointer */
+static UA_AsyncOperation *
+findAsyncCallOpByOutput(UA_AsyncManager *am, const UA_Variant *output) {
+    UA_AsyncOperation *op = NULL;
+    TAILQ_FOREACH(op, &am->waitingOps, pointers) {
+        if((op->asyncOperationType == UA_ASYNCOPERATIONTYPE_CALL_REQUEST &&
+            op->output.call->outputArguments == output) ||
+           (op->asyncOperationType == UA_ASYNCOPERATIONTYPE_CALL_DIRECT &&
+            op->output.directCall.outputArguments == output))
+            return op;
+    }
+    return NULL;
+}
+
+/* Helper: find a waiting async call operation by asyncId */
+static UA_AsyncOperation *
+findAsyncCallOpById(UA_AsyncManager *am, UA_UInt64 asyncId) {
+    UA_AsyncOperation *op = NULL;
+    TAILQ_FOREACH(op, &am->waitingOps, pointers) {
+        if(op->asyncId == asyncId &&
+           (op->asyncOperationType == UA_ASYNCOPERATIONTYPE_CALL_REQUEST ||
+            op->asyncOperationType == UA_ASYNCOPERATIONTYPE_CALL_DIRECT))
+            return op;
+    }
+    return NULL;
+}
+
+/* Helper: fill the public context struct from an async operation.
+ * Must be called with the server lock held. */
+static UA_StatusCode
+fillAsyncMethodCallContext(UA_Server *server, UA_AsyncOperation *op,
+                           UA_AsyncMethodCallContext *out) {
+    UA_LOCK_ASSERT(&server->serviceMutex);
+    memset(out, 0, sizeof(UA_AsyncMethodCallContext));
+
+    out->asyncId = op->asyncId;
+    out->sessionContext = op->context.callContext.sessionContext;
+
+    /* Deep copy session ID */
+    UA_StatusCode res = UA_NodeId_copy(&op->context.callContext.sessionId,
+                                       &out->sessionId);
+    if(res != UA_STATUSCODE_GOOD) goto error;
+
+    /* Deep copy method ID and object ID from the stored call request */
+    res = UA_NodeId_copy(&op->context.callContext.callRequest.methodId,
+                         &out->methodId);
+    if(res != UA_STATUSCODE_GOOD) goto error;
+
+    res = UA_NodeId_copy(&op->context.callContext.callRequest.objectId,
+                         &out->objectId);
+    if(res != UA_STATUSCODE_GOOD) goto error;
+
+    /* Deep copy input arguments */
+    res = UA_Array_copy(op->context.callContext.callRequest.inputArguments,
+                        op->context.callContext.callRequest.inputArgumentsSize,
+                        (void**)&out->inputArguments,
+                        &UA_TYPES[UA_TYPES_VARIANT]);
+    if(res != UA_STATUSCODE_GOOD) goto error;
+    out->inputArgumentsSize = op->context.callContext.callRequest.inputArgumentsSize;
+
+    /* Look up current node contexts from the nodestore */
+    getNodeContext(server, op->context.callContext.callRequest.methodId,
+                   &out->methodContext);
+    getNodeContext(server, op->context.callContext.callRequest.objectId,
+                   &out->objectContext);
+
+    /* Output arguments pointer and size (direct pointer, not a copy) */
+    if(op->asyncOperationType == UA_ASYNCOPERATIONTYPE_CALL_REQUEST) {
+        out->outputArguments = op->output.call->outputArguments;
+        out->outputArgumentsSize = op->output.call->outputArgumentsSize;
+    } else {
+        out->outputArguments = op->output.directCall.outputArguments;
+        out->outputArgumentsSize = op->output.directCall.outputArgumentsSize;
+    }
+
+    return UA_STATUSCODE_GOOD;
+
+ error:
+    UA_AsyncMethodCallContext_clear(out);
+    return res;
+}
+
+/* Helper: complete an async call operation */
+static void
+completeAsyncCallOp(UA_Server *server, UA_AsyncOperation *op,
+                    UA_StatusCode result) {
+    if(op->asyncOperationType == UA_ASYNCOPERATIONTYPE_CALL_REQUEST)
+        op->output.call->statusCode = result;
+    else
+        op->output.directCall.statusCode = result;
+    processOperationResult(server, op);
+}
+
 UA_StatusCode
 UA_Server_setAsyncCallMethodResult(UA_Server *server, UA_Variant *output,
                                    UA_StatusCode result) {
     lockServer(server);
-    UA_AsyncManager *am = &server->asyncManager;
-    UA_AsyncOperation *op = NULL;
-    TAILQ_FOREACH(op, &am->waitingOps, pointers) {
-        if(op->output.call->outputArguments == output) {
-            op->output.call->statusCode = result;
-            processOperationResult(server, op);
-            break;
-        }
-        if(op->output.directCall.outputArguments == output) {
-            op->output.directCall.statusCode = result;
-            processOperationResult(server, op);
-            break;
-        }
-    }
+    UA_AsyncOperation *op = findAsyncCallOpByOutput(&server->asyncManager, output);
+    if(op)
+        completeAsyncCallOp(server, op, result);
+    unlockServer(server);
+    return (op) ? UA_STATUSCODE_GOOD : UA_STATUSCODE_BADNOTFOUND;
+}
+
+UA_StatusCode
+UA_Server_getAsyncMethodCallContext(UA_Server *server, const UA_Variant *output,
+                                    UA_AsyncMethodCallContext *outContext) {
+    if(!outContext)
+        return UA_STATUSCODE_BADINVALIDARGUMENT;
+
+    lockServer(server);
+    UA_AsyncOperation *op = findAsyncCallOpByOutput(&server->asyncManager, output);
+    UA_StatusCode res = (op) ?
+        fillAsyncMethodCallContext(server, op, outContext) :
+        UA_STATUSCODE_BADNOTFOUND;
+    unlockServer(server);
+    return res;
+}
+
+UA_StatusCode
+UA_Server_getAsyncMethodCallContextById(UA_Server *server, UA_UInt64 asyncId,
+                                        UA_AsyncMethodCallContext *outContext) {
+    if(!outContext)
+        return UA_STATUSCODE_BADINVALIDARGUMENT;
+
+    lockServer(server);
+    UA_AsyncOperation *op = findAsyncCallOpById(&server->asyncManager, asyncId);
+    UA_StatusCode res = (op) ?
+        fillAsyncMethodCallContext(server, op, outContext) :
+        UA_STATUSCODE_BADNOTFOUND;
+    unlockServer(server);
+    return res;
+}
+
+UA_StatusCode
+UA_Server_setAsyncCallMethodResultById(UA_Server *server, UA_UInt64 asyncId,
+                                       UA_StatusCode result) {
+    lockServer(server);
+    UA_AsyncOperation *op = findAsyncCallOpById(&server->asyncManager, asyncId);
+    if(op)
+        completeAsyncCallOp(server, op, result);
     unlockServer(server);
     return (op) ? UA_STATUSCODE_GOOD : UA_STATUSCODE_BADNOTFOUND;
 }

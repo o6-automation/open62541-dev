@@ -65,6 +65,7 @@ if(UA_ENABLE_METHODCALLS)
     add_example(tutorial_server_method tutorial_server_method.c)
     if (UA_MULTITHREADING GREATER_EQUAL 100)
         add_example(tutorial_server_method_async tutorial_server_method_async.c)
+        add_example(tutorial_server_method_async_threads tutorial_server_method_async_threads.c)
     endif()
 endif()
 

@@ -39,6 +39,7 @@ typedef enum {
 typedef struct UA_AsyncOperation {
     TAILQ_ENTRY(UA_AsyncOperation) pointers;
     UA_AsyncOperationType asyncOperationType;
+    UA_UInt64 asyncId; /* Unique operation identifier */
 
     union {
         /* The operation is part of a service request */
@@ -73,6 +74,15 @@ typedef struct UA_AsyncOperation {
          * original request has been freed. But this uses a shallow copy. So
          * don't access the writeValue after the operationCallback. */
         UA_WriteValue writeValue;
+
+        /* Context for async method calls. The callRequest is a deep copy
+         * preserving objectId, methodId, and inputArguments. The sessionId
+         * is also deep-copied. sessionContext is a snapshot pointer. */
+        struct {
+            UA_CallMethodRequest callRequest;
+            UA_NodeId sessionId;
+            void *sessionContext;
+        } callContext;
     } context;
 } UA_AsyncOperation;
 
@@ -108,6 +118,7 @@ typedef struct {
     TAILQ_HEAD(, UA_AsyncOperation) waitingOps;
     TAILQ_HEAD(, UA_AsyncOperation) readyOps;
     size_t opsCount; /* Both waiting and ready */
+    UA_UInt64 asyncIdCounter; /* Monotonically increasing ID for async ops */
 
     UA_UInt64 checkTimeoutCallbackId; /* Registered repeated callbacks */
 

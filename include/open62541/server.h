@@ -1408,13 +1408,78 @@ UA_Server_deleteReference(UA_Server *server, const UA_NodeId sourceNodeId,
  * operation output are then no longer valid. */
 
 /* When the UA_MethodCallback returns UA_STATUSCODE_GOODCOMPLETESASYNCHRONOUSLY,
- * then an async operation is created in the server for later completion. The
- * output pointer from the method callback is used to identify the async
+ * then an async operation is created in the server for later completion. Each
+ * async operation is assigned a unique asyncId (UA_UInt64).
+ *
+ * The output pointer from the method callback can be used to identify the
  * operation. Do not access the output pointer after the operation has been
  * cancelled or after setting the result. */
+
+/**
+ * Context for a pending async method call. Mirrors the parameters of the
+ * UA_MethodCallback. NodeId members and inputArguments are deep copies owned
+ * by this struct. methodContext and objectContext are looked up from the current
+ * nodestore state and may be NULL if the nodes have been deleted.
+ * outputArguments is a direct pointer to server-internal memory — write output
+ * values there before completing the operation.
+ *
+ * Call UA_AsyncMethodCallContext_clear when done. */
+typedef struct {
+    UA_UInt64 asyncId;          /**< Unique async operation identifier */
+    UA_NodeId sessionId;        /**< Deep copy of the calling session's ID */
+    void *sessionContext;       /**< Snapshot of session context at call time */
+    UA_NodeId methodId;         /**< Deep copy of the method node ID */
+    void *methodContext;        /**< Current method node context (may be NULL) */
+    UA_NodeId objectId;         /**< Deep copy of the object (parent) node ID */
+    void *objectContext;        /**< Current object node context (may be NULL) */
+    size_t inputArgumentsSize;
+    UA_Variant *inputArguments; /**< Deep copy of the input arguments */
+    size_t outputArgumentsSize;
+    UA_Variant *outputArguments; /**< Direct pointer — write results here.
+                                     Invalid after complete/cancel. */
+} UA_AsyncMethodCallContext;
+
+static UA_INLINE void
+UA_AsyncMethodCallContext_clear(UA_AsyncMethodCallContext *ctx) {
+    UA_NodeId_clear(&ctx->sessionId);
+    UA_NodeId_clear(&ctx->methodId);
+    UA_NodeId_clear(&ctx->objectId);
+    UA_Array_delete(ctx->inputArguments, ctx->inputArgumentsSize,
+                    &UA_TYPES[UA_TYPES_VARIANT]);
+    memset(ctx, 0, sizeof(UA_AsyncMethodCallContext));
+}
+
+/* Complete an async method call, identified by the output pointer from the
+ * method callback. */
 UA_EXPORT UA_THREADSAFE UA_StatusCode
 UA_Server_setAsyncCallMethodResult(UA_Server *server, UA_Variant *output,
                                    UA_StatusCode result);
+
+/* Complete an async method call, identified by its unique asyncId. */
+UA_EXPORT UA_THREADSAFE UA_StatusCode
+UA_Server_setAsyncCallMethodResultById(UA_Server *server, UA_UInt64 asyncId,
+                                       UA_StatusCode result);
+
+/* Retrieve the full context of a pending async method call.
+ * Uses the output pointer (from the UA_MethodCallback) to find the operation.
+ * The returned context includes the asyncId, sessionId, sessionContext,
+ * methodId, methodContext, objectId, objectContext, inputArguments, and
+ * a direct pointer to outputArguments.
+ *
+ * This function is thread-safe and can be called from worker threads.
+ * Returns UA_STATUSCODE_BADNOTFOUND if the operation has completed, was
+ * cancelled, or the pointer is not recognized. */
+UA_EXPORT UA_THREADSAFE UA_StatusCode
+UA_Server_getAsyncMethodCallContext(UA_Server *server, const UA_Variant *output,
+                                    UA_AsyncMethodCallContext *outContext);
+
+/* Retrieve the full context of a pending async method call by asyncId.
+ * Same as above, but uses the unique operation ID for lookup. Useful when
+ * multiple async operations are in flight and you want to identify a specific
+ * one by its numeric ID rather than by pointer. */
+UA_EXPORT UA_THREADSAFE UA_StatusCode
+UA_Server_getAsyncMethodCallContextById(UA_Server *server, UA_UInt64 asyncId,
+                                        UA_AsyncMethodCallContext *outContext);
 
 /* See the UA_CallbackValueSource documentation */
 UA_EXPORT UA_THREADSAFE UA_StatusCode
