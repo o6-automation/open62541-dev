@@ -40,7 +40,12 @@ activateSession_default(UA_Server *server, UA_AccessControl *ac,
                         const UA_ByteString *secureChannelRemoteCertificate,
                         const UA_NodeId *sessionId,
                         const UA_ExtensionObject *userIdentityToken,
-                        void **sessionContext) {
+                        void **sessionContext
+#ifdef UA_ENABLE_RBAC
+                        , size_t *rolesSize,
+                        UA_NodeId **roleIds
+#endif
+                        ) {
     AccessControlContext *context = (AccessControlContext*)ac->context;
 
     /* The empty token is interpreted as anonymous */
@@ -110,6 +115,111 @@ activateSession_default(UA_Server *server, UA_AccessControl *ac,
         return UA_STATUSCODE_BADIDENTITYTOKENINVALID;
     }
 
+#ifdef UA_ENABLE_RBAC
+    /* Evaluate roles based on identity mapping rules according to OPC UA Part 18.
+     *
+     * Role assignment is based on the Identities property of each Role which
+     * contains an array of IdentityMappingRuleType. A role is granted if ANY
+     * of its identity mapping rules match the current session's identity.
+     */
+    if(rolesSize && roleIds) {
+        *rolesSize = 0;
+        *roleIds = NULL;
+
+        /* Determine session identity characteristics */
+        UA_Boolean isAnonymous =
+            (tokenType == &UA_TYPES[UA_TYPES_ANONYMOUSIDENTITYTOKEN]);
+        UA_Boolean isAuthenticated = !isAnonymous;
+        UA_String userName = UA_STRING_NULL;
+
+        if(tokenType == &UA_TYPES[UA_TYPES_USERNAMEIDENTITYTOKEN]) {
+            const UA_UserNameIdentityToken *userToken =
+                (UA_UserNameIdentityToken*)userIdentityToken->content.decoded.data;
+            userName = userToken->userName;
+        }
+        /* TODO: For X509, extract thumbprint/subject for matching */
+
+        /* Get all role names from the server */
+        size_t allRolesSize = 0;
+        UA_QualifiedName *allRoleNames = NULL;
+        UA_StatusCode res = UA_Server_getRoles(server, &allRolesSize, &allRoleNames);
+        if(res != UA_STATUSCODE_GOOD)
+            return res;
+
+        /* Pre-allocate for maximum possible matches */
+        UA_NodeId *matchedRoles = (UA_NodeId*)
+            UA_malloc(allRolesSize * sizeof(UA_NodeId));
+        if(!matchedRoles) {
+            UA_Array_delete(allRoleNames, allRolesSize,
+                            &UA_TYPES[UA_TYPES_QUALIFIEDNAME]);
+            return UA_STATUSCODE_BADOUTOFMEMORY;
+        }
+
+        size_t matchCount = 0;
+        for(size_t i = 0; i < allRolesSize; i++) {
+            UA_Role role;
+            res = UA_Server_getRole(server, allRoleNames[i], &role);
+            if(res != UA_STATUSCODE_GOOD)
+                continue;
+
+            /* Check if any identity mapping rule matches */
+            UA_Boolean roleMatched = false;
+            for(size_t j = 0; j < role.identityMappingRulesSize; j++) {
+                UA_Boolean match = false;
+                UA_IdentityCriteriaType criteriaType =
+                    role.identityMappingRules[j].criteriaType;
+
+                switch(criteriaType) {
+                    case UA_IDENTITYCRITERIATYPE_ANONYMOUS:
+                        match = isAnonymous;
+                        break;
+                    case UA_IDENTITYCRITERIATYPE_AUTHENTICATEDUSER:
+                        match = isAuthenticated;
+                        break;
+                    case UA_IDENTITYCRITERIATYPE_USERNAME:
+                        if(userName.length > 0 &&
+                           role.identityMappingRules[j].criteria.length > 0) {
+                            match = UA_String_equal(
+                                &userName,
+                                &role.identityMappingRules[j].criteria);
+                        }
+                        break;
+                    /* TODO: Implement additional criteria types */
+                    case UA_IDENTITYCRITERIATYPE_THUMBPRINT:
+                    case UA_IDENTITYCRITERIATYPE_ROLE:
+                    case UA_IDENTITYCRITERIATYPE_GROUPID:
+                    case UA_IDENTITYCRITERIATYPE_APPLICATION:
+                    case UA_IDENTITYCRITERIATYPE_X509SUBJECT:
+                    default:
+                        break;
+                }
+
+                if(match) {
+                    roleMatched = true;
+                    break; /* One matching rule is enough */
+                }
+            }
+
+            if(roleMatched) {
+                UA_NodeId_copy(&role.roleId, &matchedRoles[matchCount]);
+                matchCount++;
+            }
+
+            UA_Role_clear(&role);
+        }
+
+        UA_Array_delete(allRoleNames, allRolesSize,
+                        &UA_TYPES[UA_TYPES_QUALIFIEDNAME]);
+
+        if(matchCount > 0) {
+            *roleIds = matchedRoles;
+            *rolesSize = matchCount;
+        } else {
+            UA_free(matchedRoles);
+        }
+    }
+#endif
+
     return UA_STATUSCODE_GOOD;
 }
 
@@ -122,21 +232,94 @@ static UA_UInt32
 getUserRightsMask_default(UA_Server *server, UA_AccessControl *ac,
                           const UA_NodeId *sessionId, void *sessionContext,
                           const UA_NodeId *nodeId, void *nodeContext) {
+#ifdef UA_ENABLE_RBAC
+    /* Get effective permissions for this session on this node */
+    UA_PermissionType effectivePerms = 0;
+    UA_StatusCode res = UA_Server_getEffectivePermissions(server, sessionId,
+                                                          nodeId, &effectivePerms);
+    if(res != UA_STATUSCODE_GOOD)
+        return 0xFFFFFFFF; /* Default permissive on error */
+
+    /* If no RBAC configuration, allow everything */
+    if(effectivePerms == 0xFFFFFFFF)
+        return 0xFFFFFFFF;
+
+    /* Build UserWriteMask based on RBAC permissions */
+    UA_UInt32 userWriteMask = 0;
+
+    /* WriteAttribute permission allows writing most attributes */
+    if(effectivePerms & UA_PERMISSIONTYPE_WRITEATTRIBUTE) {
+        userWriteMask = 0xFFFFFFFF;
+        userWriteMask &= ~UA_WRITEMASK_ROLEPERMISSIONS;
+        userWriteMask &= ~UA_WRITEMASK_HISTORIZING;
+    }
+
+    /* WriteRolePermissions permission */
+    if(effectivePerms & UA_PERMISSIONTYPE_WRITEROLEPERMISSIONS)
+        userWriteMask |= UA_WRITEMASK_ROLEPERMISSIONS;
+
+    /* WriteHistorizing permission */
+    if(effectivePerms & UA_PERMISSIONTYPE_WRITEHISTORIZING)
+        userWriteMask |= UA_WRITEMASK_HISTORIZING;
+
+    return userWriteMask;
+#else
     return 0xFFFFFFFF;
+#endif
 }
 
 static UA_Byte
 getUserAccessLevel_default(UA_Server *server, UA_AccessControl *ac,
                            const UA_NodeId *sessionId, void *sessionContext,
                            const UA_NodeId *nodeId, void *nodeContext) {
+#ifdef UA_ENABLE_RBAC
+    /* Get effective permissions for this session on this node */
+    UA_PermissionType effectivePerms = 0;
+    UA_StatusCode res = UA_Server_getEffectivePermissions(server, sessionId,
+                                                          nodeId, &effectivePerms);
+    if(res != UA_STATUSCODE_GOOD)
+        return 0xFF; /* Default permissive on error */
+
+    /* If no RBAC configuration, allow everything */
+    if(effectivePerms == 0xFFFFFFFF)
+        return 0xFF;
+
+    /* Build UserAccessLevel based on RBAC permissions */
+    UA_Byte userAccessLevel = 0;
+
+    if(effectivePerms & UA_PERMISSIONTYPE_READ)
+        userAccessLevel |= UA_ACCESSLEVELMASK_READ;
+    if(effectivePerms & UA_PERMISSIONTYPE_WRITE)
+        userAccessLevel |= UA_ACCESSLEVELMASK_WRITE;
+    if(effectivePerms & UA_PERMISSIONTYPE_READHISTORY)
+        userAccessLevel |= UA_ACCESSLEVELMASK_HISTORYREAD;
+    if(effectivePerms & (UA_PERMISSIONTYPE_INSERTHISTORY |
+                         UA_PERMISSIONTYPE_MODIFYHISTORY |
+                         UA_PERMISSIONTYPE_DELETEHISTORY))
+        userAccessLevel |= UA_ACCESSLEVELMASK_HISTORYWRITE;
+
+    return userAccessLevel;
+#else
     return 0xFF;
+#endif
 }
 
 static UA_Boolean
 getUserExecutable_default(UA_Server *server, UA_AccessControl *ac,
                           const UA_NodeId *sessionId, void *sessionContext,
                           const UA_NodeId *methodId, void *methodContext) {
+#ifdef UA_ENABLE_RBAC
+    UA_PermissionType effectivePerms = 0;
+    UA_StatusCode res = UA_Server_getEffectivePermissions(server, sessionId,
+                                                          methodId, &effectivePerms);
+    if(res != UA_STATUSCODE_GOOD)
+        return true;
+    if(effectivePerms == 0xFFFFFFFF)
+        return true;
+    return (effectivePerms & UA_PERMISSIONTYPE_CALL) != 0;
+#else
     return true;
+#endif
 }
 
 static UA_Boolean
@@ -144,42 +327,123 @@ getUserExecutableOnObject_default(UA_Server *server, UA_AccessControl *ac,
                                   const UA_NodeId *sessionId, void *sessionContext,
                                   const UA_NodeId *methodId, void *methodContext,
                                   const UA_NodeId *objectId, void *objectContext) {
+#ifdef UA_ENABLE_RBAC
+    /* Check Call permission on the object */
+    UA_PermissionType objectPerms = 0;
+    UA_StatusCode res = UA_Server_getEffectivePermissions(server, sessionId,
+                                                          objectId, &objectPerms);
+    if(res != UA_STATUSCODE_GOOD)
+        return true;
+    if(objectPerms != 0xFFFFFFFF && !(objectPerms & UA_PERMISSIONTYPE_CALL))
+        return false;
+
+    /* Check Call permission on the method */
+    UA_PermissionType methodPerms = 0;
+    res = UA_Server_getEffectivePermissions(server, sessionId,
+                                            methodId, &methodPerms);
+    if(res != UA_STATUSCODE_GOOD)
+        return true;
+    if(methodPerms != 0xFFFFFFFF && !(methodPerms & UA_PERMISSIONTYPE_CALL))
+        return false;
+
     return true;
+#else
+    return true;
+#endif
 }
 
 static UA_Boolean
 allowAddNode_default(UA_Server *server, UA_AccessControl *ac,
                      const UA_NodeId *sessionId, void *sessionContext,
                      const UA_AddNodesItem *item) {
+#ifdef UA_ENABLE_RBAC
+    UA_PermissionType effectivePerms = 0;
+    UA_StatusCode res = UA_Server_getEffectivePermissions(server, sessionId,
+                                                          &item->parentNodeId.nodeId,
+                                                          &effectivePerms);
+    if(res != UA_STATUSCODE_GOOD)
+        return true;
+    if(effectivePerms == 0xFFFFFFFF)
+        return true;
+    return (effectivePerms & UA_PERMISSIONTYPE_ADDREFERENCE) != 0;
+#else
     return true;
+#endif
 }
 
 static UA_Boolean
 allowAddReference_default(UA_Server *server, UA_AccessControl *ac,
                           const UA_NodeId *sessionId, void *sessionContext,
                           const UA_AddReferencesItem *item) {
+#ifdef UA_ENABLE_RBAC
+    UA_PermissionType effectivePerms = 0;
+    UA_StatusCode res = UA_Server_getEffectivePermissions(server, sessionId,
+                                                          &item->sourceNodeId,
+                                                          &effectivePerms);
+    if(res != UA_STATUSCODE_GOOD)
+        return true;
+    if(effectivePerms == 0xFFFFFFFF)
+        return true;
+    return (effectivePerms & UA_PERMISSIONTYPE_ADDREFERENCE) != 0;
+#else
     return true;
+#endif
 }
 
 static UA_Boolean
 allowDeleteNode_default(UA_Server *server, UA_AccessControl *ac,
                         const UA_NodeId *sessionId, void *sessionContext,
                         const UA_DeleteNodesItem *item) {
+#ifdef UA_ENABLE_RBAC
+    UA_PermissionType effectivePerms = 0;
+    UA_StatusCode res = UA_Server_getEffectivePermissions(server, sessionId,
+                                                          &item->nodeId,
+                                                          &effectivePerms);
+    if(res != UA_STATUSCODE_GOOD)
+        return true;
+    if(effectivePerms == 0xFFFFFFFF)
+        return true;
+    return (effectivePerms & UA_PERMISSIONTYPE_DELETENODE) != 0;
+#else
     return true;
+#endif
 }
 
 static UA_Boolean
 allowDeleteReference_default(UA_Server *server, UA_AccessControl *ac,
                              const UA_NodeId *sessionId, void *sessionContext,
                              const UA_DeleteReferencesItem *item) {
+#ifdef UA_ENABLE_RBAC
+    UA_PermissionType effectivePerms = 0;
+    UA_StatusCode res = UA_Server_getEffectivePermissions(server, sessionId,
+                                                          &item->sourceNodeId,
+                                                          &effectivePerms);
+    if(res != UA_STATUSCODE_GOOD)
+        return true;
+    if(effectivePerms == 0xFFFFFFFF)
+        return true;
+    return (effectivePerms & UA_PERMISSIONTYPE_REMOVEREFERENCE) != 0;
+#else
     return true;
+#endif
 }
 
 static UA_Boolean
 allowBrowseNode_default(UA_Server *server, UA_AccessControl *ac,
                         const UA_NodeId *sessionId, void *sessionContext,
                         const UA_NodeId *nodeId, void *nodeContext) {
+#ifdef UA_ENABLE_RBAC
+    UA_PermissionType effectivePerms = 0;
+    UA_StatusCode res = UA_Server_getEffectivePermissions(server, sessionId,
+                                                          nodeId, &effectivePerms);
+    if(res != UA_STATUSCODE_GOOD)
+        return true;
+    if(effectivePerms == 0xFFFFFFFF)
+        return true;
+    return (effectivePerms & UA_PERMISSIONTYPE_BROWSE) != 0;
+#else
     return true;
+#endif
 }
 
 #ifdef UA_ENABLE_SUBSCRIPTIONS
@@ -234,7 +498,25 @@ allowHistoryUpdateUpdateData_default(UA_Server *server, UA_AccessControl *ac,
                                      const UA_NodeId *nodeId,
                                      UA_PerformUpdateType performInsertReplace,
                                      const UA_DataValue *value) {
+#ifdef UA_ENABLE_RBAC
+    UA_PermissionType effectivePerms = 0;
+    UA_StatusCode res = UA_Server_getEffectivePermissions(server, sessionId,
+                                                          nodeId, &effectivePerms);
+    if(res != UA_STATUSCODE_GOOD)
+        return true;
+    if(effectivePerms == 0xFFFFFFFF)
+        return true;
+
+    if(performInsertReplace == UA_PERFORMUPDATETYPE_INSERT)
+        return (effectivePerms & UA_PERMISSIONTYPE_INSERTHISTORY) != 0;
+    else if(performInsertReplace == UA_PERFORMUPDATETYPE_REPLACE ||
+            performInsertReplace == UA_PERFORMUPDATETYPE_UPDATE)
+        return (effectivePerms & UA_PERMISSIONTYPE_MODIFYHISTORY) != 0;
+
     return true;
+#else
+    return true;
+#endif
 }
 
 static UA_Boolean
@@ -244,7 +526,18 @@ allowHistoryUpdateDeleteRawModified_default(UA_Server *server, UA_AccessControl 
                                             UA_DateTime startTimestamp,
                                             UA_DateTime endTimestamp,
                                             bool isDeleteModified) {
+#ifdef UA_ENABLE_RBAC
+    UA_PermissionType effectivePerms = 0;
+    UA_StatusCode res = UA_Server_getEffectivePermissions(server, sessionId,
+                                                          nodeId, &effectivePerms);
+    if(res != UA_STATUSCODE_GOOD)
+        return true;
+    if(effectivePerms == 0xFFFFFFFF)
+        return true;
+    return (effectivePerms & UA_PERMISSIONTYPE_DELETEHISTORY) != 0;
+#else
     return true;
+#endif
 }
 #endif
 

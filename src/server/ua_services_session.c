@@ -18,6 +18,10 @@
 #include "ua_server_internal.h"
 #include "ua_services.h"
 
+#ifdef UA_ENABLE_RBAC
+#include "ua_server_rbac.h"
+#endif
+
 void
 notifySession(UA_Server *server, UA_Session *session,
               UA_ApplicationNotificationType type) {
@@ -1074,17 +1078,53 @@ Service_ActivateSession_inner(UA_Server *server, UA_SecureChannel *channel,
 
     /* Callback into the access control plugin.
      * This will attach a custom context pointer to the session. */
+#ifdef UA_ENABLE_RBAC
+    size_t rolesSize = 0;
+    UA_NodeId *roleIds = NULL;
+    rh->serviceResult = server->config.accessControl.
+        activateSession(server, &server->config.accessControl, ed,
+                        &channel->remoteCertificate, &session->sessionId,
+                        &req->userIdentityToken, &session->context,
+                        &rolesSize, &roleIds);
+#else
     rh->serviceResult = server->config.accessControl.
         activateSession(server, &server->config.accessControl, ed,
                         &channel->remoteCertificate, &session->sessionId,
                         &req->userIdentityToken, &session->context);
+#endif
     if(rh->serviceResult != UA_STATUSCODE_GOOD) {
         UA_LOG_ERROR_SESSION(server->config.logging, session,
                              "ActivateSession: The AccessControl plugin "
                              "denied the activation with the StatusCode %s",
                              UA_StatusCode_name(rh->serviceResult));
+#ifdef UA_ENABLE_RBAC
+        if(roleIds)
+            UA_Array_delete(roleIds, rolesSize, &UA_TYPES[UA_TYPES_NODEID]);
+#endif
         UA_SECURITY_REJECT;
     }
+
+#ifdef UA_ENABLE_RBAC
+    if(rolesSize > 0 && roleIds) {
+        UA_Array_delete(session->roles, session->rolesSize,
+                        &UA_TYPES[UA_TYPES_NODEID]);
+        session->roles = roleIds;
+        session->rolesSize = rolesSize;
+
+        /* Log assigned roles with their names */
+        for(size_t i = 0; i < rolesSize; i++) {
+            for(size_t k = 0; k < server->rolesSize; k++) {
+                if(UA_NodeId_equal(&roleIds[i], &server->roles[k].roleId)) {
+                    UA_LOG_INFO_SESSION(server->config.logging, session,
+                                        "ActivateSession: Assigned role '%.*s'",
+                                        (int)server->roles[k].roleName.name.length,
+                                        server->roles[k].roleName.name.data);
+                    break;
+                }
+            }
+        }
+    }
+#endif
 
     /* Attach the session to the currently used channel if the session isn't
      * attached to a channel or if the session is activated on a different

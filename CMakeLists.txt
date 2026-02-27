@@ -129,6 +129,13 @@ if(UA_ENABLE_RBAC)
                     "Use only for testing and development purposes.")
 endif()
 
+if(UA_ENABLE_RBAC)
+    message(WARNING "UA_ENABLE_RBAC is EXPERIMENTAL and NOT RECOMMENDED FOR PRODUCTION USE. "
+                    "The RBAC implementation is under active development and the API may change. "
+                    "Use only for testing and development purposes.")
+    option(UA_ENABLE_RBAC_INFORMATIONMODEL "Enable RBAC Information Model (NS0 role objects)" ON)
+endif()
+
 if(UA_INFORMATION_MODEL_AUTOLOAD AND NOT UA_BUILD_FUZZING)
     set(UA_ENABLE_NODESET_INJECTOR ON)
 
@@ -904,7 +911,10 @@ set(lib_sources ${PROJECT_SOURCE_DIR}/src/ua_types.c
 
 if(UA_ENABLE_RBAC)
     list(APPEND lib_sources ${PROJECT_SOURCE_DIR}/src/server/ua_server_rbac.c)
-    list(APPEND lib_sources ${PROJECT_SOURCE_DIR}/src/server/ua_server_ns0_rbac.c)
+    list(APPEND internal_headers ${PROJECT_SOURCE_DIR}/src/server/ua_server_rbac.h)
+    if(UA_ENABLE_RBAC_INFORMATIONMODEL)
+        list(APPEND lib_sources ${PROJECT_SOURCE_DIR}/src/server/ua_server_ns0_rbac.c)
+    endif()
 endif()
 
 set(lib_sources ${lib_sources}

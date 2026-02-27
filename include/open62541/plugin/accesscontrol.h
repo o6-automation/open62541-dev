@@ -60,7 +60,12 @@ struct UA_AccessControl {
                                      const UA_ByteString *secureChannelRemoteCertificate,
                                      const UA_NodeId *sessionId,
                                      const UA_ExtensionObject *userIdentityToken,
-                                     void **sessionContext);
+                                     void **sessionContext
+#ifdef UA_ENABLE_RBAC
+                                     , size_t *rolesSize,
+                                     UA_NodeId **roleIds
+#endif
+                                     );
 
     /* Deauthenticate a session and cleanup */
     void (*closeSession)(UA_Server *server, UA_AccessControl *ac,
