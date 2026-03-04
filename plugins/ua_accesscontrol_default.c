@@ -238,7 +238,7 @@ allowTransferSubscription_default(UA_Server *server, UA_AccessControl *ac,
                                   const UA_NodeId *newSessionId, void *newSessionContext) {
     if(!oldSessionId)
         return true;
-    
+
     /* Get clientUserId for both sessions */
     UA_Variant session1UserId;
     UA_Variant_init(&session1UserId);
@@ -257,8 +257,8 @@ allowTransferSubscription_default(UA_Server *server, UA_AccessControl *ac,
        session2UserId.type == &UA_TYPES[UA_TYPES_STRING]) {
         UA_String *userId1 = (UA_String*)session1UserId.data;
         UA_String *userId2 = (UA_String*)session2UserId.data;
-        
-        if(userId1->length == 0 || userId2->length == 0) {
+
+        if(userId1->length == 0 && userId2->length == 0) {
             /* Anonymous user(s) detected.
              * For anonymous users, the OPC UA specification requires
              * checking the ApplicationUri from the clientDescription
@@ -341,10 +341,10 @@ allowTransferSubscription_default(UA_Server *server, UA_AccessControl *ac,
             result = true;
         }
     }
-    
+
     UA_Variant_clear(&session1UserId);
     UA_Variant_clear(&session2UserId);
-    
+
     return result;
 }
 #endif
