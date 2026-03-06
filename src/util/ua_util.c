@@ -507,6 +507,7 @@ UA_KeyValueMap_setScalarShallow(UA_KeyValueMap *map, const UA_QualifiedName key,
     v.type = type;
     v.arrayLength = 0;
     v.data = p;
+    v.storageType = UA_VARIANT_DATA_NODELETE;
     return UA_KeyValueMap_setShallow(map, key, &v);
 }
 
