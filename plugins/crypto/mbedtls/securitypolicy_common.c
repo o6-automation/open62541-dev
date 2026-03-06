@@ -664,6 +664,29 @@ UA_mbedTLS_LoadLocalCertificate(const UA_ByteString *certData,
     return result;
 }
 
+void
+mbedtls_logError(int err, const UA_Logger *logger,
+                 UA_LogCategory category, const char *msg) {
+    if(!err)
+        return;
+    char errBuff[100];
+    mbedtls_strerror(err, errBuff, sizeof(errBuff));
+    UA_LOG_WARNING(logger, category, "%s: mbedTLS error -0x%04X - %s",
+                   msg, (unsigned int)-err, errBuff);
+}
+
+void
+mbedtls_logFlags(uint32_t flags, const UA_Logger *logger,
+                 UA_LogCategory category, const char *msg) {
+    if(!flags)
+        return;
+    char buff[200];
+    int len = mbedtls_x509_crt_verify_info(buff, sizeof(buff), "  ", flags);
+    if(len > 0)
+        UA_LOG_WARNING(logger, category, "%s: verification flags 0x%04X\n%.*s",
+                       msg, (unsigned int)flags, len, buff);
+}
+
 // mbedTLS expects PEM data to be null terminated
 // The data length parameter must include the null terminator
 UA_ByteString

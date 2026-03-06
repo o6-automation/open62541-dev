@@ -582,8 +582,12 @@ verifyCertificate(UA_CertificateGroup *certGroup, const UA_ByteString *certifica
     mbedtls_x509_crt_init(&cert);
     int mbedErr = mbedtls_x509_crt_parse(&cert, certificate->data,
                                          certificate->length);
-    if(mbedErr)
+    if(mbedErr) {
+        mbedtls_logError(mbedErr, certGroup->logging,
+                         UA_LOGCATEGORY_SECURITYPOLICY,
+                         "Could not parse the certificate");
         return UA_STATUSCODE_BADCERTIFICATEINVALID;
+    }
 
     /* Verification Step: Certificate Usage
      * Check whether the certificate is a User certificate or a CA certificate.
@@ -618,6 +622,9 @@ MemoryCertStore_verifyCertificate(UA_CertificateGroup *certGroup,
 
     UA_StatusCode retval = verifyCertificate(certGroup, certificate);
     if(retval != UA_STATUSCODE_GOOD) {
+        UA_LOG_WARNING(certGroup->logging, UA_LOGCATEGORY_SECURITYPOLICY,
+                       "Certificate verification failed: %s",
+                       UA_StatusCode_name(retval));
         if(MemoryCertStore_addToRejectedList(certGroup, certificate) != UA_STATUSCODE_GOOD) {
             UA_LOG_WARNING(certGroup->logging, UA_LOGCATEGORY_SECURITYPOLICY,
                            "Could not append certificate to rejected list");

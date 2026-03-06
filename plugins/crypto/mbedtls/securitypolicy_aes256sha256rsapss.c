@@ -798,6 +798,7 @@ error:
     return retval;
 }
 
+
 static UA_StatusCode
 createSigningRequest_aes256sha256rsapss(UA_SecurityPolicy *securityPolicy,
                                         const UA_String *subjectName,
@@ -891,6 +892,11 @@ policyContext_newContext_aes256sha256rsapss(UA_SecurityPolicy *securityPolicy,
 error:
     UA_LOG_ERROR(securityPolicy->logger, UA_LOGCATEGORY_SECURITYPOLICY,
                  "Could not create securityContext: %s", UA_StatusCode_name(retval));
+    mbedtls_logError(mbedErr, securityPolicy->logger,
+                     UA_LOGCATEGORY_SECURITYPOLICY, "mbedTLS error");
+    if(UA_ByteString_equal(&securityPolicy->localCertificate, &UA_BYTESTRING_NULL))
+        UA_LOG_ERROR(securityPolicy->logger, UA_LOGCATEGORY_SECURITYPOLICY,
+                     "localCertificate is empty");
     if(securityPolicy->policyContext != NULL)
         clear_aes256sha256rsapss(securityPolicy);
     return retval;

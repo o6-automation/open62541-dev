@@ -129,6 +129,16 @@ UA_StatusCode UA_mbedTLS_LoadLocalCertificate(const UA_ByteString *certData, UA_
 
 UA_ByteString UA_mbedTLS_CopyDataFormatAware(const UA_ByteString *data);
 
+/* Log an mbedTLS error code with a human-readable description */
+void
+mbedtls_logError(int err, const UA_Logger *logger,
+                 UA_LogCategory category, const char *msg);
+
+/* Log mbedTLS x509 certificate verification flags */
+void
+mbedtls_logFlags(uint32_t flags, const UA_Logger *logger,
+                 UA_LogCategory category, const char *msg);
+
 _UA_END_DECLS
 
 #endif

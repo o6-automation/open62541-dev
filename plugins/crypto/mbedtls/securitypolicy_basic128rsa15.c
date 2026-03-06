@@ -697,6 +697,7 @@ updateCertificateAndPrivateKey_basic128rsa15(UA_SecurityPolicy *securityPolicy,
     return retval;
 }
 
+
 static UA_StatusCode
 createSigningRequest_basic128rsa15(UA_SecurityPolicy *securityPolicy,
                                        const UA_String *subjectName,
@@ -797,6 +798,11 @@ policyContext_newContext_basic128rsa15(UA_SecurityPolicy *securityPolicy,
 error:
     UA_LOG_ERROR(securityPolicy->logger, UA_LOGCATEGORY_SECURITYPOLICY,
                  "Could not create securityContext: %s", UA_StatusCode_name(retval));
+    mbedtls_logError(mbedErr, securityPolicy->logger,
+                     UA_LOGCATEGORY_SECURITYPOLICY, "mbedTLS error");
+    if(UA_ByteString_equal(&securityPolicy->localCertificate, &UA_BYTESTRING_NULL))
+        UA_LOG_ERROR(securityPolicy->logger, UA_LOGCATEGORY_SECURITYPOLICY,
+                     "localCertificate is empty");
     if(securityPolicy->policyContext != NULL)
         clear_basic128rsa15(securityPolicy);
     return retval;
