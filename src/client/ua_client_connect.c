@@ -442,7 +442,7 @@ processACKResponse(UA_Client *client, const UA_ByteString *chunk) {
     }
 
     client->connectStatus =
-        UA_SecureChannel_processHELACK(channel, &ackMessage);
+        UA_SecureChannel_processACK(channel, &ackMessage);
     if(client->connectStatus != UA_STATUSCODE_GOOD) {
         UA_LOG_ERROR(client->config.logging, UA_LOGCATEGORY_NETWORK,
                      "Processing the ACK message failed with StatusCode %s",

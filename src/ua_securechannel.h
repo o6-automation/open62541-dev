@@ -175,10 +175,23 @@ void UA_SecureChannel_shutdown(UA_SecureChannel *channel,
 void UA_SecureChannel_clear(UA_SecureChannel *channel);
 
 /* Process the remote configuration in the HEL/ACK handshake. The connection
- * config is initialized with the local settings. */
+ * config is initialized with the local settings. The server and client sides
+ * have different semantics:
+ *
+ * Server (HEL processing): The server revises the connection parameters to
+ * values it can support and always responds with an ACK. Buffer sizes are
+ * clamped upward to the 8192-byte minimum required by Part 6, Clause 6.7.1.
+ *
+ * Client (ACK processing): The client validates the server's revised
+ * parameters. Returns an error if the parameters are unacceptable (e.g.
+ * buffer sizes below the 8192-byte minimum). */
 UA_StatusCode
-UA_SecureChannel_processHELACK(UA_SecureChannel *channel,
-                               const UA_TcpAcknowledgeMessage *remoteConfig);
+UA_SecureChannel_processHEL(UA_SecureChannel *channel,
+                            const UA_TcpAcknowledgeMessage *remoteConfig);
+
+UA_StatusCode
+UA_SecureChannel_processACK(UA_SecureChannel *channel,
+                            const UA_TcpAcknowledgeMessage *remoteConfig);
 
 UA_StatusCode
 UA_SecureChannel_setSecurityPolicy(UA_SecureChannel *channel,

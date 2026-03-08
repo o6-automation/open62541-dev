@@ -493,6 +493,147 @@ START_TEST(SecureChannel_assemblePartialChunks) {
     ck_assert_int_eq(chunks_processed, 5);
 } END_TEST
 
+/* Tests for the separated HEL (server) and ACK (client) processing */
+
+START_TEST(SecureChannel_processHEL_normalValues) {
+    /* Server-side: normal client values are accepted and revised */
+    testChannel.config.sendBufferSize = 65536;
+    testChannel.config.recvBufferSize = 65536;
+    testChannel.config.protocolVersion = 0;
+
+    UA_TcpAcknowledgeMessage remoteConfig;
+    remoteConfig.protocolVersion = 0;
+    remoteConfig.receiveBufferSize = 32768;
+    remoteConfig.sendBufferSize = 32768;
+    remoteConfig.maxMessageSize = 0;
+    remoteConfig.maxChunkCount = 0;
+
+    UA_StatusCode retval = UA_SecureChannel_processHEL(&testChannel, &remoteConfig);
+    ck_assert_uint_eq(retval, UA_STATUSCODE_GOOD);
+    /* sendBufferSize clamped to remote receiveBufferSize */
+    ck_assert_uint_eq(testChannel.config.sendBufferSize, 32768);
+    /* recvBufferSize clamped to remote sendBufferSize */
+    ck_assert_uint_eq(testChannel.config.recvBufferSize, 32768);
+} END_TEST
+
+START_TEST(SecureChannel_processHEL_smallBuffers_clampedUp) {
+    /* Server-side: client sends buffers below 8192, server clamps upward
+     * instead of rejecting (per OPC UA Part 6, §6.7.1) */
+    testChannel.config.sendBufferSize = 65536;
+    testChannel.config.recvBufferSize = 65536;
+
+    UA_TcpAcknowledgeMessage remoteConfig;
+    remoteConfig.protocolVersion = 0;
+    remoteConfig.receiveBufferSize = 4096;  /* below minimum */
+    remoteConfig.sendBufferSize = 2048;     /* below minimum */
+    remoteConfig.maxMessageSize = 0;
+    remoteConfig.maxChunkCount = 0;
+
+    UA_StatusCode retval = UA_SecureChannel_processHEL(&testChannel, &remoteConfig);
+    ck_assert_uint_eq(retval, UA_STATUSCODE_GOOD);
+    /* Values must be clamped up to the 8192 minimum, not rejected */
+    ck_assert(testChannel.config.sendBufferSize >= 8192);
+    ck_assert(testChannel.config.recvBufferSize >= 8192);
+} END_TEST
+
+START_TEST(SecureChannel_processHEL_protocolVersion) {
+    /* Server picks the lower protocol version */
+    testChannel.config.protocolVersion = 5;
+
+    UA_TcpAcknowledgeMessage remoteConfig;
+    remoteConfig.protocolVersion = 3;
+    remoteConfig.receiveBufferSize = 65536;
+    remoteConfig.sendBufferSize = 65536;
+    remoteConfig.maxMessageSize = 0;
+    remoteConfig.maxChunkCount = 0;
+
+    UA_SecureChannel_processHEL(&testChannel, &remoteConfig);
+    ck_assert_uint_eq(testChannel.config.protocolVersion, 3);
+} END_TEST
+
+START_TEST(SecureChannel_processHEL_remoteMaxMsgSize) {
+    /* Server stores remote maxMessageSize and maxChunkCount */
+    testChannel.config.sendBufferSize = 65536;
+    testChannel.config.recvBufferSize = 65536;
+
+    UA_TcpAcknowledgeMessage remoteConfig;
+    remoteConfig.protocolVersion = 0;
+    remoteConfig.receiveBufferSize = 65536;
+    remoteConfig.sendBufferSize = 65536;
+    remoteConfig.maxMessageSize = 1048576;
+    remoteConfig.maxChunkCount = 64;
+
+    UA_SecureChannel_processHEL(&testChannel, &remoteConfig);
+    ck_assert_uint_eq(testChannel.config.remoteMaxMessageSize, 1048576);
+    ck_assert_uint_eq(testChannel.config.remoteMaxChunkCount, 64);
+} END_TEST
+
+START_TEST(SecureChannel_processACK_normalValues) {
+    /* Client-side: normal server ACK is accepted */
+    testChannel.config.sendBufferSize = 65536;
+    testChannel.config.recvBufferSize = 65536;
+
+    UA_TcpAcknowledgeMessage remoteConfig;
+    remoteConfig.protocolVersion = 0;
+    remoteConfig.receiveBufferSize = 32768;
+    remoteConfig.sendBufferSize = 32768;
+    remoteConfig.maxMessageSize = 0;
+    remoteConfig.maxChunkCount = 0;
+
+    UA_StatusCode retval = UA_SecureChannel_processACK(&testChannel, &remoteConfig);
+    ck_assert_uint_eq(retval, UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(testChannel.config.sendBufferSize, 32768);
+    ck_assert_uint_eq(testChannel.config.recvBufferSize, 32768);
+} END_TEST
+
+START_TEST(SecureChannel_processACK_tooSmallBuffers_rejected) {
+    /* Client-side: server ACK with buffers below 8192 must be rejected */
+    testChannel.config.sendBufferSize = 65536;
+    testChannel.config.recvBufferSize = 65536;
+
+    UA_TcpAcknowledgeMessage remoteConfig;
+    remoteConfig.protocolVersion = 0;
+    remoteConfig.receiveBufferSize = 4096;  /* below minimum */
+    remoteConfig.sendBufferSize = 4096;     /* below minimum */
+    remoteConfig.maxMessageSize = 0;
+    remoteConfig.maxChunkCount = 0;
+
+    UA_StatusCode retval = UA_SecureChannel_processACK(&testChannel, &remoteConfig);
+    ck_assert_uint_eq(retval, UA_STATUSCODE_BADINTERNALERROR);
+} END_TEST
+
+START_TEST(SecureChannel_processACK_tooSmallRemoteMaxMsgSize_rejected) {
+    /* Client-side: remoteMaxMessageSize > 0 but < 8192 is rejected */
+    testChannel.config.sendBufferSize = 65536;
+    testChannel.config.recvBufferSize = 65536;
+
+    UA_TcpAcknowledgeMessage remoteConfig;
+    remoteConfig.protocolVersion = 0;
+    remoteConfig.receiveBufferSize = 65536;
+    remoteConfig.sendBufferSize = 65536;
+    remoteConfig.maxMessageSize = 4096;  /* below minimum */
+    remoteConfig.maxChunkCount = 0;
+
+    UA_StatusCode retval = UA_SecureChannel_processACK(&testChannel, &remoteConfig);
+    ck_assert_uint_eq(retval, UA_STATUSCODE_BADINTERNALERROR);
+} END_TEST
+
+START_TEST(SecureChannel_processACK_zeroBoundedMaxMsgSize_ok) {
+    /* Client-side: remoteMaxMessageSize == 0 means unbounded → ok */
+    testChannel.config.sendBufferSize = 65536;
+    testChannel.config.recvBufferSize = 65536;
+
+    UA_TcpAcknowledgeMessage remoteConfig;
+    remoteConfig.protocolVersion = 0;
+    remoteConfig.receiveBufferSize = 65536;
+    remoteConfig.sendBufferSize = 65536;
+    remoteConfig.maxMessageSize = 0;
+    remoteConfig.maxChunkCount = 0;
+
+    UA_StatusCode retval = UA_SecureChannel_processACK(&testChannel, &remoteConfig);
+    ck_assert_uint_eq(retval, UA_STATUSCODE_GOOD);
+} END_TEST
+
 
 static Suite *
 testSuite_SecureChannel(void) {
@@ -534,6 +675,26 @@ testSuite_SecureChannel(void) {
     tcase_add_checked_fixture(tc_processBuffer, setup_secureChannel, teardown_secureChannel);
     tcase_add_test(tc_processBuffer, SecureChannel_assemblePartialChunks);
     suite_add_tcase(s, tc_processBuffer);
+
+    TCase *tc_processHEL = tcase_create("Test server-side HEL processing");
+    tcase_add_checked_fixture(tc_processHEL, setup_funcs_called, teardown_funcs_called);
+    tcase_add_checked_fixture(tc_processHEL, setup_key_sizes, teardown_key_sizes);
+    tcase_add_checked_fixture(tc_processHEL, setup_secureChannel, teardown_secureChannel);
+    tcase_add_test(tc_processHEL, SecureChannel_processHEL_normalValues);
+    tcase_add_test(tc_processHEL, SecureChannel_processHEL_smallBuffers_clampedUp);
+    tcase_add_test(tc_processHEL, SecureChannel_processHEL_protocolVersion);
+    tcase_add_test(tc_processHEL, SecureChannel_processHEL_remoteMaxMsgSize);
+    suite_add_tcase(s, tc_processHEL);
+
+    TCase *tc_processACK = tcase_create("Test client-side ACK processing");
+    tcase_add_checked_fixture(tc_processACK, setup_funcs_called, teardown_funcs_called);
+    tcase_add_checked_fixture(tc_processACK, setup_key_sizes, teardown_key_sizes);
+    tcase_add_checked_fixture(tc_processACK, setup_secureChannel, teardown_secureChannel);
+    tcase_add_test(tc_processACK, SecureChannel_processACK_normalValues);
+    tcase_add_test(tc_processACK, SecureChannel_processACK_tooSmallBuffers_rejected);
+    tcase_add_test(tc_processACK, SecureChannel_processACK_tooSmallRemoteMaxMsgSize_rejected);
+    tcase_add_test(tc_processACK, SecureChannel_processACK_zeroBoundedMaxMsgSize_ok);
+    suite_add_tcase(s, tc_processACK);
 
     return s;
 }

@@ -244,9 +244,44 @@ UA_SecureChannel_clear(UA_SecureChannel *channel) {
     channel->renewState = UA_SECURECHANNELRENEWSTATE_NORMAL;
 }
 
+/* Server-side HEL processing: Revise the connection parameters to values the
+ * server can support. Per OPC UA Part 6, the server shall always respond with
+ * an ACK containing the revised parameters. Buffer sizes are clamped upward
+ * to the 8192-byte minimum required by Part 6, Clause 6.7.1. */
 UA_StatusCode
-UA_SecureChannel_processHELACK(UA_SecureChannel *channel,
-                               const UA_TcpAcknowledgeMessage *remoteConfig) {
+UA_SecureChannel_processHEL(UA_SecureChannel *channel,
+                            const UA_TcpAcknowledgeMessage *remoteConfig) {
+    /* The lowest common version is used by both sides */
+    if(channel->config.protocolVersion > remoteConfig->protocolVersion)
+        channel->config.protocolVersion = remoteConfig->protocolVersion;
+
+    /* Can we receive the max send size? */
+    if(channel->config.sendBufferSize > remoteConfig->receiveBufferSize)
+        channel->config.sendBufferSize = remoteConfig->receiveBufferSize;
+
+    /* Can we send the max receive size? */
+    if(channel->config.recvBufferSize > remoteConfig->sendBufferSize)
+        channel->config.recvBufferSize = remoteConfig->sendBufferSize;
+
+    channel->config.remoteMaxMessageSize = remoteConfig->maxMessageSize;
+    channel->config.remoteMaxChunkCount = remoteConfig->maxChunkCount;
+
+    /* Ensure the minimum buffer sizes required by Part 6, Clause 6.7.1.
+     * The server clamps values upward rather than rejecting the connection,
+     * so the client receives a valid ACK with revised parameters. */
+    if(channel->config.recvBufferSize < 8192)
+        channel->config.recvBufferSize = 8192;
+    if(channel->config.sendBufferSize < 8192)
+        channel->config.sendBufferSize = 8192;
+
+    return UA_STATUSCODE_GOOD;
+}
+
+/* Client-side ACK processing: Validate the server's revised parameters.
+ * Returns an error if the parameters are unacceptable. */
+UA_StatusCode
+UA_SecureChannel_processACK(UA_SecureChannel *channel,
+                            const UA_TcpAcknowledgeMessage *remoteConfig) {
     /* The lowest common version is used by both sides */
     if(channel->config.protocolVersion > remoteConfig->protocolVersion)
         channel->config.protocolVersion = remoteConfig->protocolVersion;
