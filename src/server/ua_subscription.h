@@ -235,6 +235,15 @@ struct UA_Subscription {
     UA_Session *session; /* May be NULL if no session is attached. */
     UA_UInt32 subscriptionId;
 
+    /* Identity info preserved from a timed-out session. When a session times
+     * out, subscriptions are detached (session == NULL). These fields store
+     * the old session's identity so that TransferSubscriptions can verify
+     * the requesting client per OPC UA Part 4, §5.13.7. */
+    UA_NodeId detachedSessionId;
+    UA_String detachedClientUserId;
+    UA_ApplicationDescription detachedClientDescription;
+    UA_String detachedChannelSecurityPolicyUri;
+
     /* Settings */
     UA_UInt32 lifeTimeCount;
     UA_UInt32 maxKeepAliveCount;

@@ -41,6 +41,22 @@ UA_Server_removeSession(UA_Server *server, session_list_entry *sentry,
         if(shutdownReason == UA_SHUTDOWNREASON_TIMEOUT) {
             UA_LOG_INFO_SUBSCRIPTION(server->config.logging, sub,
                                      "Detaching the Subscription from the timed-out Session");
+
+            /* Store the old session's identity on the subscription so that
+             * TransferSubscriptions can verify the requesting client even
+             * after the session is gone (OPC UA Part 4, §5.13.7). */
+            UA_NodeId_copy(&session->sessionId, &sub->detachedSessionId);
+            UA_String_copy(&session->clientUserIdOfSession,
+                           &sub->detachedClientUserId);
+            UA_ApplicationDescription_copy(&session->clientDescription,
+                                           &sub->detachedClientDescription);
+            const UA_Variant *spUriAttr =
+                UA_KeyValueMap_get(&session->attributes,
+                                   UA_QUALIFIEDNAME(0, "channelSecurityPolicyUri"));
+            if(spUriAttr && spUriAttr->type == &UA_TYPES[UA_TYPES_STRING])
+                UA_String_copy((const UA_String *)spUriAttr->data,
+                               &sub->detachedChannelSecurityPolicyUri);
+
             UA_Session_detachSubscription(server, session, sub, true);
         } else {
             UA_Subscription_delete(server, sub);

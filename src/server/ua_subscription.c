@@ -78,6 +78,12 @@ UA_Subscription_delete(UA_Server *server, UA_Subscription *sub) {
     if(sub->session)
         UA_Session_detachSubscription(server, sub->session, sub, true);
 
+    /* Clear detached session identity info */
+    UA_NodeId_clear(&sub->detachedSessionId);
+    UA_String_clear(&sub->detachedClientUserId);
+    UA_ApplicationDescription_clear(&sub->detachedClientDescription);
+    UA_String_clear(&sub->detachedChannelSecurityPolicyUri);
+
     /* Remove from the server if not previously registered */
     if(sub->serverListEntry.le_prev) {
         LIST_REMOVE(sub, serverListEntry);

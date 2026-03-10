@@ -1104,6 +1104,133 @@ START_TEST(Server_subscriptionSurvivesSessionTimeout) {
 }
 END_TEST
 
+/* Test: After session timeout, a DIFFERENT authenticated user must NOT be able
+ * to transfer the orphaned subscription. This verifies the identity check
+ * using stored session data (OPC UA Part 4, §5.13.7). */
+START_TEST(Server_transferSubscription_deniedAfterTimeout_differentUser) {
+    /* Set authenticated user for the session */
+    lockServer(server);
+    UA_String_clear(&session->clientUserIdOfSession);
+    session->clientUserIdOfSession = UA_STRING_ALLOC("alice");
+    unlockServer(server);
+
+    /* Create a subscription */
+    createSubscription();
+    createMonitoredItem();
+
+    /* Force the session to time out */
+    lockServer(server);
+    session->validTill = UA_DateTime_nowMonotonic() - UA_DATETIME_SEC;
+    UA_Server_cleanupSessions(server, UA_DateTime_nowMonotonic());
+    unlockServer(server);
+    session = NULL;
+
+    /* Subscription is orphaned */
+    lockServer(server);
+    UA_Subscription *sub = getSubscriptionById(server, subscriptionId);
+    unlockServer(server);
+    ck_assert_ptr_ne(sub, NULL);
+    ck_assert_ptr_eq(sub->session, NULL);
+
+    /* Create a new session with a DIFFERENT user */
+    UA_Session *session2 = createAuthenticatedSession("bob");
+
+    UA_TransferSubscriptionsRequest transferRequest;
+    UA_TransferSubscriptionsRequest_init(&transferRequest);
+    transferRequest.subscriptionIdsSize = 1;
+    transferRequest.subscriptionIds = &subscriptionId;
+    transferRequest.sendInitialValues = false;
+
+    UA_TransferSubscriptionsResponse transferResponse;
+    UA_TransferSubscriptionsResponse_init(&transferResponse);
+
+    lockServer(server);
+    Service_TransferSubscriptions(server, session2, &transferRequest, &transferResponse);
+    unlockServer(server);
+
+    /* Must be denied: different user trying to steal orphaned subscription */
+    ck_assert_uint_eq(transferResponse.responseHeader.serviceResult, UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(transferResponse.resultsSize, 1);
+    ck_assert_uint_eq(transferResponse.results[0].statusCode,
+                      UA_STATUSCODE_BADUSERACCESSDENIED);
+    UA_TransferSubscriptionsResponse_clear(&transferResponse);
+
+    /* Clean up: delete the orphaned subscription, close session2 */
+    lockServer(server);
+    sub = getSubscriptionById(server, subscriptionId);
+    if(sub)
+        UA_Subscription_delete(server, sub);
+    UA_Server_closeSession(server, &session2->sessionId);
+    unlockServer(server);
+
+    /* Recreate session for other tests */
+    createSession();
+}
+END_TEST
+
+/* Test: After session timeout, anonymous transfer to an anonymous session
+ * on a None-policy channel must be denied (anonymous without stored
+ * channelSecurityPolicyUri means the old session was also without
+ * encryption, or the data is simply unavailable). */
+START_TEST(Server_transferSubscription_deniedAfterTimeout_anonymous) {
+    /* Session is anonymous (clientUserIdOfSession is empty by default) */
+
+    /* Create a subscription */
+    createSubscription();
+    createMonitoredItem();
+
+    /* Force the session to time out */
+    lockServer(server);
+    session->validTill = UA_DateTime_nowMonotonic() - UA_DATETIME_SEC;
+    UA_Server_cleanupSessions(server, UA_DateTime_nowMonotonic());
+    unlockServer(server);
+    session = NULL;
+
+    /* Subscription is orphaned */
+    lockServer(server);
+    UA_Subscription *sub = getSubscriptionById(server, subscriptionId);
+    unlockServer(server);
+    ck_assert_ptr_ne(sub, NULL);
+    ck_assert_ptr_eq(sub->session, NULL);
+
+    /* Create a new anonymous session (no channelSecurityPolicyUri set,
+     * simulating SecurityPolicy#None) */
+    UA_Session *session2 = createSecondSession();
+
+    UA_TransferSubscriptionsRequest transferRequest;
+    UA_TransferSubscriptionsRequest_init(&transferRequest);
+    transferRequest.subscriptionIdsSize = 1;
+    transferRequest.subscriptionIds = &subscriptionId;
+    transferRequest.sendInitialValues = false;
+
+    UA_TransferSubscriptionsResponse transferResponse;
+    UA_TransferSubscriptionsResponse_init(&transferResponse);
+
+    lockServer(server);
+    Service_TransferSubscriptions(server, session2, &transferRequest, &transferResponse);
+    unlockServer(server);
+
+    /* Must be denied: anonymous sessions without secure channel info
+     * cannot verify ApplicationUri */
+    ck_assert_uint_eq(transferResponse.responseHeader.serviceResult, UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(transferResponse.resultsSize, 1);
+    ck_assert_uint_eq(transferResponse.results[0].statusCode,
+                      UA_STATUSCODE_BADUSERACCESSDENIED);
+    UA_TransferSubscriptionsResponse_clear(&transferResponse);
+
+    /* Clean up */
+    lockServer(server);
+    sub = getSubscriptionById(server, subscriptionId);
+    if(sub)
+        UA_Subscription_delete(server, sub);
+    UA_Server_closeSession(server, &session2->sessionId);
+    unlockServer(server);
+
+    /* Recreate session for other tests */
+    createSession();
+}
+END_TEST
+
 #endif /* UA_ENABLE_SUBSCRIPTIONS */
 
 static Suite* testSuite_Client(void) {
@@ -1129,6 +1256,8 @@ static Suite* testSuite_Client(void) {
     tcase_add_test(tc_server, Server_transferSubscriptionDiagnostics);
     tcase_add_test(tc_server, Server_transferSubscription_anonymous);
     tcase_add_test(tc_server, Server_subscriptionSurvivesSessionTimeout);
+    tcase_add_test(tc_server, Server_transferSubscription_deniedAfterTimeout_differentUser);
+    tcase_add_test(tc_server, Server_transferSubscription_deniedAfterTimeout_anonymous);
 #endif /* UA_ENABLE_SUBSCRIPTIONS */
     suite_add_tcase(s, tc_server);
 

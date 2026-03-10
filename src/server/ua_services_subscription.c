@@ -486,18 +486,62 @@ Operation_TransferSubscription(UA_Server *server, UA_Session *session,
     }
 
     /* Check with AccessControl if the transfer is allowed */
-    if(server->config.accessControl.allowTransferSubscription) {
-        if(!server->config.accessControl.
-           allowTransferSubscription(server, &server->config.accessControl,
-                                     oldSession ? &oldSession->sessionId : NULL,
-                                     oldSession ? oldSession->sessionHandle : NULL,
-                                     &session->sessionId, session->sessionHandle)) {
+    if(oldSession) {
+        /* Normal case: old session is still active. Use the access control
+         * callback which can query session attributes via the public API. */
+        if(server->config.accessControl.allowTransferSubscription) {
+            if(!server->config.accessControl.
+               allowTransferSubscription(server, &server->config.accessControl,
+                                         &oldSession->sessionId,
+                                         oldSession->sessionHandle,
+                                         &session->sessionId,
+                                         session->sessionHandle)) {
+                result->statusCode = UA_STATUSCODE_BADUSERACCESSDENIED;
+                return;
+            }
+        } else {
             result->statusCode = UA_STATUSCODE_BADUSERACCESSDENIED;
             return;
         }
     } else {
-        result->statusCode = UA_STATUSCODE_BADUSERACCESSDENIED;
-        return;
+        /* The old session has timed out. Verify identity using the information
+         * stored on the subscription during session timeout. The access control
+         * callback cannot be used here because the old session no longer exists
+         * for getSessionAttribute lookups. We apply the same OPC UA Part 4,
+         * §5.13.7 identity verification logic directly. */
+        UA_Boolean allowed = false;
+        if(sub->detachedClientUserId.length == 0) {
+            /* Anonymous user: Require both sessions to use secure channels
+             * (not SecurityPolicy#None) and matching ApplicationUri. */
+            const UA_Variant *newSpUriAttr =
+                UA_KeyValueMap_get(&session->attributes,
+                                   UA_QUALIFIEDNAME(0, "channelSecurityPolicyUri"));
+            if(newSpUriAttr && newSpUriAttr->type == &UA_TYPES[UA_TYPES_STRING] &&
+               sub->detachedChannelSecurityPolicyUri.length > 0) {
+                const UA_String *newSpUri = (const UA_String *)newSpUriAttr->data;
+                if(!UA_String_equal(&sub->detachedChannelSecurityPolicyUri,
+                                    &UA_SECURITY_POLICY_NONE_URI) &&
+                   !UA_String_equal(newSpUri, &UA_SECURITY_POLICY_NONE_URI)) {
+                    /* Both secure. Compare ApplicationUri from clientDescription. */
+                    if(sub->detachedClientDescription.applicationUri.length > 0 &&
+                       session->clientDescription.applicationUri.length > 0 &&
+                       UA_String_equal(
+                           &sub->detachedClientDescription.applicationUri,
+                           &session->clientDescription.applicationUri)) {
+                        allowed = true;
+                    }
+                }
+            }
+        } else {
+            /* Authenticated user: userId must match */
+            if(UA_String_equal(&sub->detachedClientUserId,
+                               &session->clientUserIdOfSession))
+                allowed = true;
+        }
+        if(!allowed) {
+            result->statusCode = UA_STATUSCODE_BADUSERACCESSDENIED;
+            return;
+        }
     }
 
     /* Check limits for the number of subscriptions for this Session */
@@ -540,6 +584,18 @@ Operation_TransferSubscription(UA_Server *server, UA_Session *session,
     }
 
     /* <-- The point of no return --> */
+
+    /* After memcpy, both sub and newSub share the detached identity pointers.
+     * Zero out on sub so its delete won't double-free. Clear on newSub since
+     * it's now attached to a live session and doesn't need them. */
+    UA_NodeId_init(&sub->detachedSessionId);
+    UA_String_init(&sub->detachedClientUserId);
+    UA_ApplicationDescription_init(&sub->detachedClientDescription);
+    UA_String_init(&sub->detachedChannelSecurityPolicyUri);
+    UA_NodeId_clear(&newSub->detachedSessionId);
+    UA_String_clear(&newSub->detachedClientUserId);
+    UA_ApplicationDescription_clear(&newSub->detachedClientDescription);
+    UA_String_clear(&newSub->detachedChannelSecurityPolicyUri);
 
     /* Mark the old subscription as transferred to prevent incorrect
      * diagnostic counter updates when it is deleted */
