@@ -590,7 +590,7 @@ process_RegisterServer(UA_Server *server, UA_Session *session,
         memcpy(filePath, requestServer->semaphoreFilePath.data, requestServer->semaphoreFilePath.length );
         filePath[requestServer->semaphoreFilePath.length] = '\0';
         if(!UA_fileExists( filePath )) {
-            responseHeader->serviceResult = UA_STATUSCODE_BADSEMPAHOREFILEMISSING;
+            responseHeader->serviceResult = UA_STATUSCODE_BADSEMAPHOREFILEMISSING;
             UA_free(filePath);
             return;
         }
