@@ -64,9 +64,24 @@ static void setup(void) {
     ck_assert_uint_eq(retval, UA_STATUSCODE_GOOD);
 
     /* Add identity mapping for username "operator" */
-    retval = UA_Server_addRoleIdentity(server, operatorRoleId,
-                                       UA_IDENTITYCRITERIATYPE_USERNAME,
-                                       UA_STRING("operator"));
+    {
+        UA_Role updRole;
+        retval = UA_Server_getRoleById(server, operatorRoleId, &updRole);
+        ck_assert_uint_eq(retval, UA_STATUSCODE_GOOD);
+        UA_IdentityMappingRuleType *rules = (UA_IdentityMappingRuleType*)
+            UA_realloc(updRole.identityMappingRules,
+                       (updRole.identityMappingRulesSize + 1) *
+                       sizeof(UA_IdentityMappingRuleType));
+        ck_assert_ptr_nonnull(rules);
+        updRole.identityMappingRules = rules;
+        UA_IdentityMappingRuleType_init(&rules[updRole.identityMappingRulesSize]);
+        rules[updRole.identityMappingRulesSize].criteriaType =
+            UA_IDENTITYCRITERIATYPE_USERNAME;
+        rules[updRole.identityMappingRulesSize].criteria = UA_STRING_ALLOC("operator");
+        updRole.identityMappingRulesSize++;
+        retval = UA_Server_updateRole(server, &updRole);
+        UA_Role_clear(&updRole);
+    }
     ck_assert_uint_eq(retval, UA_STATUSCODE_GOOD);
 
     /* Add permissions for this role on ServerStatus node */

@@ -136,15 +136,35 @@ int main(void) {
     }
 
     /* Add UserName identity mapping for "operator" user */
-    retval = UA_Server_addRoleIdentity(server, operatorRoleId,
-                                       UA_IDENTITYCRITERIATYPE_USERNAME,
-                                       UA_STRING("operator"));
-    if(retval == UA_STATUSCODE_GOOD) {
-        UA_LOG_INFO(UA_Log_Stdout, UA_LOGCATEGORY_USERLAND,
-                    "OperatorRole added with UserName criteria for 'operator'");
-    } else {
-        UA_LOG_WARNING(UA_Log_Stdout, UA_LOGCATEGORY_USERLAND,
-                       "Failed to add identity rule: %s", UA_StatusCode_name(retval));
+    {
+        UA_Role updRole;
+        retval = UA_Server_getRoleById(server, operatorRoleId, &updRole);
+        if(retval == UA_STATUSCODE_GOOD) {
+            UA_IdentityMappingRuleType *rules = (UA_IdentityMappingRuleType*)
+                UA_realloc(updRole.identityMappingRules,
+                           (updRole.identityMappingRulesSize + 1) *
+                           sizeof(UA_IdentityMappingRuleType));
+            if(rules) {
+                updRole.identityMappingRules = rules;
+                UA_IdentityMappingRuleType_init(&rules[updRole.identityMappingRulesSize]);
+                rules[updRole.identityMappingRulesSize].criteriaType =
+                    UA_IDENTITYCRITERIATYPE_USERNAME;
+                rules[updRole.identityMappingRulesSize].criteria =
+                    UA_STRING_ALLOC("operator");
+                updRole.identityMappingRulesSize++;
+                retval = UA_Server_updateRole(server, &updRole);
+            } else {
+                retval = UA_STATUSCODE_BADOUTOFMEMORY;
+            }
+            UA_Role_clear(&updRole);
+        }
+        if(retval == UA_STATUSCODE_GOOD) {
+            UA_LOG_INFO(UA_Log_Stdout, UA_LOGCATEGORY_USERLAND,
+                        "OperatorRole added with UserName criteria for 'operator'");
+        } else {
+            UA_LOG_WARNING(UA_Log_Stdout, UA_LOGCATEGORY_USERLAND,
+                           "Failed to add identity rule: %s", UA_StatusCode_name(retval));
+        }
     }
 
     /* Step 4: Configure permissions for the roles */

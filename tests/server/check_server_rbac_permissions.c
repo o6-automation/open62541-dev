@@ -68,9 +68,23 @@ START_TEST(Server_getEffectivePermissions_SingleRole) {
     ck_assert_uint_eq(retval, UA_STATUSCODE_GOOD);
 
     /* Add identity mapping for this role */
-    retval = UA_Server_addRoleIdentity(server, roleId,
-                                       UA_IDENTITYCRITERIATYPE_AUTHENTICATEDUSER,
-                                       UA_STRING_NULL);
+    {
+        UA_Role updRole;
+        retval = UA_Server_getRoleById(server, roleId, &updRole);
+        ck_assert_uint_eq(retval, UA_STATUSCODE_GOOD);
+        UA_IdentityMappingRuleType *rules = (UA_IdentityMappingRuleType*)
+            UA_realloc(updRole.identityMappingRules,
+                       (updRole.identityMappingRulesSize + 1) *
+                       sizeof(UA_IdentityMappingRuleType));
+        ck_assert_ptr_nonnull(rules);
+        updRole.identityMappingRules = rules;
+        UA_IdentityMappingRuleType_init(&rules[updRole.identityMappingRulesSize]);
+        rules[updRole.identityMappingRulesSize].criteriaType =
+            UA_IDENTITYCRITERIATYPE_AUTHENTICATEDUSER;
+        updRole.identityMappingRulesSize++;
+        retval = UA_Server_updateRole(server, &updRole);
+        UA_Role_clear(&updRole);
+    }
     ck_assert_uint_eq(retval, UA_STATUSCODE_GOOD);
 
     /* Add permissions */
