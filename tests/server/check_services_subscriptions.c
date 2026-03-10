@@ -1231,6 +1231,103 @@ START_TEST(Server_transferSubscription_deniedAfterTimeout_anonymous) {
 }
 END_TEST
 
+/* Regression test: Without the identity-preservation fix, ANY client could
+ * transfer ANY orphaned subscription after session timeout because the access
+ * control callback received NULL for the old session and returned true
+ * unconditionally. This test ensures that scenario stays blocked and that the
+ * rightful owner can still reclaim it. */
+START_TEST(Server_transferSubscription_regressionOrphanHijack) {
+    /* Create subscription owned by "alice" */
+    lockServer(server);
+    UA_String_clear(&session->clientUserIdOfSession);
+    session->clientUserIdOfSession = UA_STRING_ALLOC("alice");
+    unlockServer(server);
+
+    createSubscription();
+    createMonitoredItem();
+
+    /* Force session timeout -> subscription becomes orphaned */
+    lockServer(server);
+    session->validTill = UA_DateTime_nowMonotonic() - UA_DATETIME_SEC;
+    UA_Server_cleanupSessions(server, UA_DateTime_nowMonotonic());
+    unlockServer(server);
+    session = NULL;
+
+    /* Verify subscription is orphaned with preserved identity */
+    lockServer(server);
+    UA_Subscription *sub = getSubscriptionById(server, subscriptionId);
+    unlockServer(server);
+    ck_assert_ptr_ne(sub, NULL);
+    ck_assert_ptr_eq(sub->session, NULL);
+    UA_String aliceStr = UA_STRING("alice");
+    ck_assert(UA_String_equal(&sub->detachedClientUserId, &aliceStr));
+
+    /* "mallory" tries to steal the orphaned subscription.
+     * Without the fix, this would succeed (NULL bypass). */
+    UA_Session *mallory = createAuthenticatedSession("mallory");
+
+    UA_TransferSubscriptionsRequest transferRequest;
+    UA_TransferSubscriptionsRequest_init(&transferRequest);
+    transferRequest.subscriptionIdsSize = 1;
+    transferRequest.subscriptionIds = &subscriptionId;
+    transferRequest.sendInitialValues = false;
+
+    UA_TransferSubscriptionsResponse transferResponse;
+    UA_TransferSubscriptionsResponse_init(&transferResponse);
+
+    lockServer(server);
+    Service_TransferSubscriptions(server, mallory, &transferRequest, &transferResponse);
+    unlockServer(server);
+
+    /* MUST be denied */
+    ck_assert_uint_eq(transferResponse.responseHeader.serviceResult, UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(transferResponse.resultsSize, 1);
+    ck_assert_uint_eq(transferResponse.results[0].statusCode,
+                      UA_STATUSCODE_BADUSERACCESSDENIED);
+    UA_TransferSubscriptionsResponse_clear(&transferResponse);
+
+    /* Now "alice" reconnects and transfers successfully */
+    UA_Session *alice = createAuthenticatedSession("alice");
+
+    UA_TransferSubscriptionsRequest_init(&transferRequest);
+    transferRequest.subscriptionIdsSize = 1;
+    transferRequest.subscriptionIds = &subscriptionId;
+    transferRequest.sendInitialValues = false;
+
+    UA_TransferSubscriptionsResponse_init(&transferResponse);
+
+    lockServer(server);
+    Service_TransferSubscriptions(server, alice, &transferRequest, &transferResponse);
+    unlockServer(server);
+
+    /* MUST succeed for the rightful owner */
+    ck_assert_uint_eq(transferResponse.responseHeader.serviceResult, UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(transferResponse.resultsSize, 1);
+    ck_assert_uint_eq(transferResponse.results[0].statusCode, UA_STATUSCODE_GOOD);
+    UA_TransferSubscriptionsResponse_clear(&transferResponse);
+
+    /* Clean up */
+    UA_DeleteSubscriptionsRequest delRequest;
+    UA_DeleteSubscriptionsRequest_init(&delRequest);
+    delRequest.subscriptionIdsSize = 1;
+    delRequest.subscriptionIds = &subscriptionId;
+    UA_DeleteSubscriptionsResponse delResponse;
+    UA_DeleteSubscriptionsResponse_init(&delResponse);
+    lockServer(server);
+    Service_DeleteSubscriptions(server, alice, &delRequest, &delResponse);
+    unlockServer(server);
+    ck_assert_uint_eq(delResponse.results[0], UA_STATUSCODE_GOOD);
+    UA_DeleteSubscriptionsResponse_clear(&delResponse);
+
+    lockServer(server);
+    UA_Server_closeSession(server, &mallory->sessionId);
+    UA_Server_closeSession(server, &alice->sessionId);
+    unlockServer(server);
+
+    createSession();
+}
+END_TEST
+
 #endif /* UA_ENABLE_SUBSCRIPTIONS */
 
 static Suite* testSuite_Client(void) {
@@ -1258,6 +1355,7 @@ static Suite* testSuite_Client(void) {
     tcase_add_test(tc_server, Server_subscriptionSurvivesSessionTimeout);
     tcase_add_test(tc_server, Server_transferSubscription_deniedAfterTimeout_differentUser);
     tcase_add_test(tc_server, Server_transferSubscription_deniedAfterTimeout_anonymous);
+    tcase_add_test(tc_server, Server_transferSubscription_regressionOrphanHijack);
 #endif /* UA_ENABLE_SUBSCRIPTIONS */
     suite_add_tcase(s, tc_server);
 
