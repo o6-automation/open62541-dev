@@ -133,18 +133,21 @@ getNamespaceByIndex(UA_Server *server, const size_t namespaceIndex,
 
 UA_StatusCode
 UA_Server_getNamespaceByName(UA_Server *server, const UA_String namespaceUri,
-                             size_t *foundIndex) {
+                             UA_UInt16 *foundIndex) {
     lockServer(server);
-    UA_StatusCode res = getNamespaceByName(server, namespaceUri, foundIndex);
+    size_t idx = 0;
+    UA_StatusCode res = getNamespaceByName(server, namespaceUri, &idx);
     unlockServer(server);
+    if(res == UA_STATUSCODE_GOOD)
+        *foundIndex = (UA_UInt16)idx;
     return res;
 }
 
 UA_StatusCode
-UA_Server_getNamespaceByIndex(UA_Server *server, const size_t namespaceIndex,
+UA_Server_getNamespaceByIndex(UA_Server *server, const UA_UInt16 namespaceIndex,
                               UA_String *foundUri) {
     lockServer(server);
-    UA_StatusCode res = getNamespaceByIndex(server, namespaceIndex, foundUri);
+    UA_StatusCode res = getNamespaceByIndex(server, (size_t)namespaceIndex, foundUri);
     unlockServer(server);
     return res;
 }
