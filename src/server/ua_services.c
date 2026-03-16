@@ -345,9 +345,15 @@ processRequest(UA_Server *server, UA_SecureChannel *channel,
     if(config->globalNotificationCallback)
         config->globalNotificationCallback(server, nt, notifyPayloadMap);
 
+    ServiceRequestContext src;
+    src.requestHeader = (const UA_RequestHeader*)request;
+    src.session = session;
+
     /* Process the service */
+    server->requestContext = &src;
     UA_Boolean done = processServiceInternal(server, channel, session,
                                              requestId, sd, request, response);
+    server->requestContext = NULL;
 
     /* Notify with UA_APPLICATIONNOTIFICATIONTYPE_SERVICE_END if the service was
      * completed synchronously. For async completion of a service, this gets

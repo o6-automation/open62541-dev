@@ -184,6 +184,13 @@ getServerComponentByName(UA_Server *server, UA_String name);
 /* Server Structure */
 /********************/
 
+/* When a service is called over the network (not via the C API), the service
+ * context gets set in the server object. */
+typedef struct {
+    UA_Session *session;
+    const UA_RequestHeader *requestHeader;
+} ServiceRequestContext;
+
 #ifdef UA_ENABLE_RBAC
 /* Internal role-permission entry with reference counting.
  * Multiple nodes can share the same entry via the permissionIndex stored
@@ -241,6 +248,9 @@ struct UA_Server {
     /* Session for local access to the services for upkeep and the C API. Comes
      * equipped with all possible access rights (Session Id: 1). */
     UA_Session adminSession;
+
+    /* Non-NULL during service-execution when called from a client */
+    ServiceRequestContext *requestContext;
 
     /* SecureChannels */
     TAILQ_HEAD(, UA_SecureChannel) channels;
