@@ -35,13 +35,21 @@ auditEvent(UA_Server *server, UA_ApplicationNotificationType type,
 
     UA_UInt32 channelId = (channel) ? channel->securityToken.channelId : 0;
     UA_NodeId sessionId = (session) ? session->sessionId : UA_NODEID_NULL;
+
+    /* Use the audit entry id sent by the client in the request.
+     * If none defined, create an internal audit entry id. */
+    UA_String auditEntryId;
     UA_Byte entryIdBuf[521];
-    UA_String auditEntryId = {512, entryIdBuf};
-    UA_String_format(&auditEntryId, "%u:%N:%s", channelId, sessionId, serviceName);
-    UA_String clientUserId = (session) ?
-        session->clientUserIdOfSession : UA_STRING_NULL;
-    UA_DateTime actionTimestamp =
-        config->eventLoop->dateTime_now(config->eventLoop);
+    if(server->requestContext &&
+       server->requestContext->requestHeader->auditEntryId.length > 0) {
+        auditEntryId = server->requestContext->requestHeader->auditEntryId;
+    } else {
+        auditEntryId = (UA_String){512, entryIdBuf};
+        UA_String_format(&auditEntryId, "%u:%N:%s", channelId, sessionId, serviceName);
+    }
+
+    UA_String clientUserId = (session) ? session->clientUserIdOfSession : UA_STRING_NULL;
+    UA_DateTime actionTimestamp = config->eventLoop->dateTime_now(config->eventLoop);
 
     UA_Variant_setScalar(&payload.map[0].value, &actionTimestamp,
                          &UA_TYPES[UA_TYPES_DATETIME]);
