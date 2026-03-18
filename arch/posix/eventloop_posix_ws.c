@@ -35,7 +35,7 @@ struct WSConnection;
 typedef struct WSConnection WSConnection;
 
 /* Connection parameters for openConnection */
-#define WS_PARAMETERSSIZE 8
+#define WS_PARAMETERSSIZE 9
 #define WS_PARAMINDEX_ADDR     0
 #define WS_PARAMINDEX_PORT     1
 #define WS_PARAMINDEX_LISTEN   2
@@ -44,17 +44,23 @@ typedef struct WSConnection WSConnection;
 #define WS_PARAMINDEX_KEY      5
 #define WS_PARAMINDEX_PATH     6
 #define WS_PARAMINDEX_TLS      7
+#define WS_PARAMINDEX_SUBPROTO 8
 
 static UA_KeyValueRestriction wsConnectionParams[WS_PARAMETERSSIZE] = {
-    {{0, UA_STRING_STATIC("address")},     &UA_TYPES[UA_TYPES_STRING],     false, true, true},
-    {{0, UA_STRING_STATIC("port")},        &UA_TYPES[UA_TYPES_UINT16],     true,  true, false},
-    {{0, UA_STRING_STATIC("listen")},      &UA_TYPES[UA_TYPES_BOOLEAN],    false, true, false},
-    {{0, UA_STRING_STATIC("validate")},    &UA_TYPES[UA_TYPES_BOOLEAN],    false, true, false},
-    {{0, UA_STRING_STATIC("certificate")}, &UA_TYPES[UA_TYPES_BYTESTRING], false, true, false},
-    {{0, UA_STRING_STATIC("privatekey")},  &UA_TYPES[UA_TYPES_BYTESTRING], false, true, false},
-    {{0, UA_STRING_STATIC("path")},        &UA_TYPES[UA_TYPES_STRING],     false, true, false},
-    {{0, UA_STRING_STATIC("tls")},         &UA_TYPES[UA_TYPES_BOOLEAN],    false, true, false}
+    {{0, UA_STRING_STATIC("address")},       &UA_TYPES[UA_TYPES_STRING],     false, true, true},
+    {{0, UA_STRING_STATIC("port")},          &UA_TYPES[UA_TYPES_UINT16],     true,  true, false},
+    {{0, UA_STRING_STATIC("listen")},        &UA_TYPES[UA_TYPES_BOOLEAN],    false, true, false},
+    {{0, UA_STRING_STATIC("validate")},      &UA_TYPES[UA_TYPES_BOOLEAN],    false, true, false},
+    {{0, UA_STRING_STATIC("certificate")},   &UA_TYPES[UA_TYPES_BYTESTRING], false, true, false},
+    {{0, UA_STRING_STATIC("privatekey")},    &UA_TYPES[UA_TYPES_BYTESTRING], false, true, false},
+    {{0, UA_STRING_STATIC("path")},          &UA_TYPES[UA_TYPES_STRING],     false, true, false},
+    {{0, UA_STRING_STATIC("tls")},           &UA_TYPES[UA_TYPES_BOOLEAN],    false, true, false},
+    {{0, UA_STRING_STATIC("subprotocol")},   &UA_TYPES[UA_TYPES_STRING],     false, true, false}
 };
+
+/* Sub-protocol name constants */
+#define WS_SUBPROTOCOL_UACP  "opcua+uacp"
+#define WS_SUBPROTOCOL_UAJSON "opcua+uajson"
 
 /* Per-connection state */
 struct WSConnection {
@@ -75,6 +81,7 @@ struct WSConnection {
     UA_ByteString sendBuffer;      /* Pending outgoing data */
     UA_Boolean sendPending;        /* lws_callback_on_writable was called */
     UA_Boolean closing;            /* Connection is shutting down */
+    UA_Boolean isTextProtocol;     /* opcua+uajson uses text frames */
 
     UA_DelayedCallback dc;         /* Deferred cleanup callback */
 };
@@ -239,8 +246,14 @@ callback_ws(struct lws *wsi, enum lws_callback_reasons reason,
         /* Store connection pointer in per-session user data pointer */
         *(WSConnection **)user = wc;
 
+        /* Detect the negotiated sub-protocol */
+        const struct lws_protocols *proto = lws_get_protocol(wsi);
+        if(proto && proto->name &&
+           strcmp(proto->name, WS_SUBPROTOCOL_UAJSON) == 0)
+            wc->isTextProtocol = true;
+
         /* Report the new connection as ESTABLISHED.
-         * Provide listen-port and listen-address like TCP CM does. */
+         * Provide listen-port, remote-address, and sub-protocol. */
         UA_UInt16 listenPort = 0;
         if(listener) {
             /* Try to get port from listener context */
@@ -250,23 +263,29 @@ callback_ws(struct lws *wsi, enum lws_callback_reasons reason,
         char peerName[256];
         lws_get_peer_simple(wsi, peerName, sizeof(peerName));
         UA_String remoteAddr = UA_STRING(peerName);
+        UA_String subProto = wc->isTextProtocol ?
+            UA_STRING(WS_SUBPROTOCOL_UAJSON) : UA_STRING(WS_SUBPROTOCOL_UACP);
 
-        UA_KeyValuePair kvp[2];
+        UA_KeyValuePair kvp[3];
         kvp[0].key = UA_QUALIFIEDNAME(0, "listen-port");
         UA_Variant_setScalar(&kvp[0].value, &listenPort,
                              &UA_TYPES[UA_TYPES_UINT16]);
         kvp[1].key = UA_QUALIFIEDNAME(0, "remote-address");
         UA_Variant_setScalar(&kvp[1].value, &remoteAddr,
                              &UA_TYPES[UA_TYPES_STRING]);
-        UA_KeyValueMap kvm = {2, kvp};
+        kvp[2].key = UA_QUALIFIEDNAME(0, "subprotocol");
+        UA_Variant_setScalar(&kvp[2].value, &subProto,
+                             &UA_TYPES[UA_TYPES_STRING]);
+        UA_KeyValueMap kvm = {3, kvp};
 
         wc->applicationCB(&wcm->cm, wc->connectionId, wc->application,
                           &wc->context, UA_CONNECTIONSTATE_ESTABLISHED,
                           &kvm, UA_BYTESTRING_NULL);
 
         UA_LOG_INFO(el->logger, UA_LOGCATEGORY_NETWORK,
-                    "WS %u\t| New WebSocket connection from %s",
-                    (unsigned)wc->connectionId, peerName);
+                    "WS %u\t| New WebSocket connection from %s (%s)",
+                    (unsigned)wc->connectionId, peerName,
+                    wc->isTextProtocol ? "uajson" : "uacp");
         break;
     }
 
@@ -298,10 +317,12 @@ callback_ws(struct lws *wsi, enum lws_callback_reasons reason,
             break;
 
         if(wc->sendBuffer.length > 0) {
+            enum lws_write_protocol wp = wc->isTextProtocol ?
+                LWS_WRITE_TEXT : LWS_WRITE_BINARY;
             int written = lws_write(wsi,
                                     wc->sendBuffer.data + LWS_PRE,
                                     wc->sendBuffer.length - LWS_PRE,
-                                    LWS_WRITE_BINARY);
+                                    wp);
             if(written < 0) {
                 UA_LOG_WARNING(el->logger, UA_LOGCATEGORY_NETWORK,
                                "WS %u\t| Write failed",
@@ -323,14 +344,30 @@ callback_ws(struct lws *wsi, enum lws_callback_reasons reason,
         if(!wc)
             break;
 
+        /* Detect the negotiated sub-protocol */
+        const struct lws_protocols *proto = lws_get_protocol(wsi);
+        if(proto && proto->name &&
+           strcmp(proto->name, WS_SUBPROTOCOL_UAJSON) == 0)
+            wc->isTextProtocol = true;
+
+        UA_String subProto = wc->isTextProtocol ?
+            UA_STRING(WS_SUBPROTOCOL_UAJSON) : UA_STRING(WS_SUBPROTOCOL_UACP);
+
+        UA_KeyValuePair kvp[1];
+        kvp[0].key = UA_QUALIFIEDNAME(0, "subprotocol");
+        UA_Variant_setScalar(&kvp[0].value, &subProto,
+                             &UA_TYPES[UA_TYPES_STRING]);
+        UA_KeyValueMap kvm = {1, kvp};
+
         UA_LOG_INFO(el->logger, UA_LOGCATEGORY_NETWORK,
-                    "WS %u\t| Client WebSocket connected",
-                    (unsigned)wc->connectionId);
+                    "WS %u\t| Client WebSocket connected (%s)",
+                    (unsigned)wc->connectionId,
+                    wc->isTextProtocol ? "uajson" : "uacp");
 
         wc->applicationCB(&wcm->cm, wc->connectionId,
                           wc->application, &wc->context,
                           UA_CONNECTIONSTATE_ESTABLISHED,
-                          &UA_KEYVALUEMAP_NULL, UA_BYTESTRING_NULL);
+                          &kvm, UA_BYTESTRING_NULL);
         break;
     }
 
@@ -362,10 +399,12 @@ callback_ws(struct lws *wsi, enum lws_callback_reasons reason,
             break;
 
         if(wc->sendBuffer.length > 0) {
+            enum lws_write_protocol wp = wc->isTextProtocol ?
+                LWS_WRITE_TEXT : LWS_WRITE_BINARY;
             int written = lws_write(wsi,
                                     wc->sendBuffer.data + LWS_PRE,
                                     wc->sendBuffer.length - LWS_PRE,
-                                    LWS_WRITE_BINARY);
+                                    wp);
             if(written < 0) {
                 UA_LOG_WARNING(el->logger, UA_LOGCATEGORY_NETWORK,
                                "WS %u\t| Client write failed",
@@ -464,7 +503,8 @@ callback_ws(struct lws *wsi, enum lws_callback_reasons reason,
 }
 
 static const struct lws_protocols ws_protocols[] = {
-    {"opcua+uacp", callback_ws, sizeof(WSConnection *), 65536, 0, NULL, 0},
+    {WS_SUBPROTOCOL_UACP,  callback_ws, sizeof(WSConnection *), 65536, 0, NULL, 0},
+    {WS_SUBPROTOCOL_UAJSON, callback_ws, sizeof(WSConnection *), 65536, 0, NULL, 0},
     LWS_PROTOCOL_LIST_TERM
 };
 
@@ -724,7 +764,17 @@ WS_openActiveConnection(WSConnectionManager *wcm, const UA_KeyValueMap *params,
     ccinfo.path = path_str;
     ccinfo.host = addr_str;
     ccinfo.origin = addr_str;
-    ccinfo.protocol = "opcua+uacp";
+
+    /* Select the WebSocket sub-protocol (default: opcua+uacp) */
+    const UA_String *subProto = (const UA_String *)
+        UA_KeyValueMap_getScalar(params, UA_QUALIFIEDNAME(0, "subprotocol"),
+                                 &UA_TYPES[UA_TYPES_STRING]);
+    UA_String uajsonStr = UA_STRING(WS_SUBPROTOCOL_UAJSON);
+    if(subProto && subProto->length > 0 &&
+       UA_String_equal(subProto, &uajsonStr))
+        ccinfo.protocol = WS_SUBPROTOCOL_UAJSON;
+    else
+        ccinfo.protocol = WS_SUBPROTOCOL_UACP;
 
     /* TLS: use SSL if the "tls" parameter is set, or if a certificate
      * was provided in the connection params */
@@ -823,8 +873,9 @@ WS_sendWithConnection(UA_ConnectionManager *cm, uintptr_t connectionId,
      * we support a single pending buffer and reject additional sends. */
     if(wc->sendPending) {
         /* Try direct write if writable */
-        int written = lws_write(wc->wsi, buf->data, buf->length,
-                                LWS_WRITE_BINARY);
+        enum lws_write_protocol wp = wc->isTextProtocol ?
+            LWS_WRITE_TEXT : LWS_WRITE_BINARY;
+        int written = lws_write(wc->wsi, buf->data, buf->length, wp);
         /* Free original allocation */
         UA_free(sendBuf.data);
         UA_ByteString_init(buf);
