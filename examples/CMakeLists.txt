@@ -163,6 +163,8 @@ endif()
 if(UA_ENABLE_LWS)
     add_example(server_lws_http_client lws/server_lws_http_client.c)
     add_example(server_lws_http_client_post lws/server_lws_http_client_post.c)
+    add_example(server_wss lws/server_wss.c)
+    add_example(client_wss lws/client_wss.c)
 endif()
 
 add_subdirectory(nodeset)
