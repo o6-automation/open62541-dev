@@ -678,9 +678,16 @@ createServerSecureChannel(UA_BinaryProtocolManager *bpm, UA_ConnectionManager *c
 }
 
 static void
-addDiscoveryUrl(UA_Server *server, const UA_String hostname, UA_UInt16 port) {
+addDiscoveryUrl(UA_Server *server, const UA_String hostname, UA_UInt16 port,
+                  const UA_ConnectionManager *cm) {
+    /* Determine URL scheme from the ConnectionManager protocol */
+    const char *scheme = "opc.tcp";
+    UA_String wsProto = UA_STRING("ws");
+    if(UA_String_equal(&wsProto, &cm->protocol))
+        scheme = "opc.wss";
+
     char urlstr[1024];
-    mp_snprintf(urlstr, 1024, "opc.tcp://%S:%d", hostname, port);
+    mp_snprintf(urlstr, 1024, "%s://%S:%d", scheme, hostname, port);
     UA_String discoveryServerUrl = UA_STRING(urlstr);
 
     /* Check if the ServerUrl is already present in the DiscoveryUrl array.
@@ -752,7 +759,7 @@ serverNetworkCallbackLocked(UA_ConnectionManager *cm, uintptr_t connectionId,
             UA_KeyValueMap_getScalar(params, UA_QUALIFIEDNAME(0, "listen-address"),
                                      &UA_TYPES[UA_TYPES_STRING]);
         if(port && address)
-            addDiscoveryUrl(bpm->sc.server, *address, *port);
+            addDiscoveryUrl(bpm->sc.server, *address, *port, cm);
         return;
     }
 
@@ -879,14 +886,21 @@ createServerConnection(UA_BinaryProtocolManager *bpm, const UA_String *serverUrl
     if(res != UA_STATUSCODE_GOOD)
         return res;
 
-    UA_String tcpString = UA_STRING("tcp");
+    /* Determine the CM protocol from the URL scheme.
+     * opc.tcp:// -> "tcp", opc.wss:// -> "ws" */
+    UA_String protoString = UA_STRING("tcp");
+    UA_String wssScheme = UA_STRING("opc.wss://");
+    if(serverUrl->length >= wssScheme.length &&
+       memcmp(serverUrl->data, wssScheme.data, wssScheme.length) == 0)
+        protoString = UA_STRING("ws");
+
     for(UA_EventSource *es = config->eventLoop->eventSources;
         es != NULL; es = es->next) {
         /* Is this a usable connection manager? */
         if(es->eventSourceType != UA_EVENTSOURCETYPE_CONNECTIONMANAGER)
             continue;
         UA_ConnectionManager *cm = (UA_ConnectionManager*)es;
-        if(!UA_String_equal(&tcpString, &cm->protocol))
+        if(!UA_String_equal(&protoString, &cm->protocol))
             continue;
 
         /* Set up the parameters */

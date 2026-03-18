@@ -2186,15 +2186,23 @@ initConnect(UA_Client *client) {
         return;
     }
 
-    /* Initialize the TCP connection */
-    UA_String tcpString = UA_STRING("tcp");
+    /* Initialize the connection.
+     * Determine the CM protocol from the URL scheme:
+     * opc.tcp:// -> "tcp", opc.wss:// -> "ws" */
+    UA_String protoString = UA_STRING("tcp");
+    UA_String wssScheme = UA_STRING("opc.wss://");
+    if(client->config.endpointUrl.length >= wssScheme.length &&
+       memcmp(client->config.endpointUrl.data,
+              wssScheme.data, wssScheme.length) == 0)
+        protoString = UA_STRING("ws");
+
     for(UA_EventSource *es = client->config.eventLoop->eventSources;
         es != NULL; es = es->next) {
         /* Is this a usable connection manager? */
         if(es->eventSourceType != UA_EVENTSOURCETYPE_CONNECTIONMANAGER)
             continue;
         UA_ConnectionManager *cm = (UA_ConnectionManager*)es;
-        if(!UA_String_equal(&tcpString, &cm->protocol))
+        if(!UA_String_equal(&protoString, &cm->protocol))
             continue;
 
         /* Set up the parameters */
@@ -2222,10 +2230,10 @@ initConnect(UA_Client *client) {
     if(client->channel.state == UA_SECURECHANNELSTATE_CLOSED)
         client->connectStatus = UA_STATUSCODE_BADINTERNALERROR;
 
-    /* Opening the TCP connection failed */
+    /* Opening the connection failed */
     if(client->connectStatus != UA_STATUSCODE_GOOD) {
         UA_LOG_WARNING(client->config.logging, UA_LOGCATEGORY_CLIENT,
-                       "Could not open a TCP connection to %S",
+                       "Could not open a connection to %S",
                        client->config.endpointUrl);
         client->connectStatus = UA_STATUSCODE_BADCONNECTIONCLOSED;
     }
