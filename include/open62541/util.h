@@ -4,6 +4,7 @@
  *
  *    Copyright 2018 (c) Stefan Profanter, fortiss GmbH
  *    Copyright 2025 (c) o6 Automation GmbH (Author: Julius Pfrommer)
+ *    Copyright 2026 (c) o6 Automation GmbH (Author: Andreas Ebner)
  */
 
 #ifndef UA_HELPER_H_
