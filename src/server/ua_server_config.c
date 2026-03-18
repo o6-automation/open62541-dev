@@ -49,6 +49,8 @@ UA_ServerConfig_clear(UA_ServerConfig *config) {
                     &UA_TYPES[UA_TYPES_STRING]);
     config->serverUrls = NULL;
     config->serverUrlsSize = 0;
+    UA_ByteString_clear(&config->wssCertificate);
+    UA_ByteString_clear(&config->wssPrivateKey);
 
     /* Security Policies */
     for(size_t i = 0; i < config->securityPoliciesSize; ++i) {

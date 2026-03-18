@@ -2194,15 +2194,20 @@ initConnect(UA_Client *client) {
 
     /* Initialize the connection.
      * Determine the CM protocol from the URL scheme:
-     * opc.tcp:// -> "tcp", opc.wss:// -> "ws" */
+     * opc.tcp:// -> "tcp", opc.ws:// and opc.wss:// -> "ws" */
     UA_String protoString = UA_STRING("tcp");
     UA_Boolean useWss = false;
     UA_String wssScheme = UA_STRING("opc.wss://");
+    UA_String wsScheme = UA_STRING("opc.ws://");
     if(client->config.endpointUrl.length >= wssScheme.length &&
        memcmp(client->config.endpointUrl.data,
               wssScheme.data, wssScheme.length) == 0) {
         protoString = UA_STRING("ws");
         useWss = true;
+    } else if(client->config.endpointUrl.length >= wsScheme.length &&
+              memcmp(client->config.endpointUrl.data,
+                     wsScheme.data, wsScheme.length) == 0) {
+        protoString = UA_STRING("ws");
     }
 
     for(UA_EventSource *es = client->config.eventLoop->eventSources;

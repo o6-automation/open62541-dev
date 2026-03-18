@@ -669,6 +669,7 @@ WS_openPassiveConnection(WSConnectionManager *wcm, const UA_KeyValueMap *params,
     }
 
     /* TLS configuration */
+    UA_Boolean useTls = false;
     if(cert && cert->length > 0 && key && key->length > 0) {
         info.options |= LWS_SERVER_OPTION_DO_SSL_GLOBAL_INIT;
         /* lws supports passing cert/key as in-memory buffers */
@@ -676,6 +677,7 @@ WS_openPassiveConnection(WSConnectionManager *wcm, const UA_KeyValueMap *params,
         info.server_ssl_cert_mem_len = (unsigned int)cert->length;
         info.server_ssl_private_key_mem = key->data;
         info.server_ssl_private_key_mem_len = (unsigned int)key->length;
+        useTls = true;
     }
 
     wc->lwsContext = lws_create_context(&info);
@@ -695,14 +697,17 @@ WS_openPassiveConnection(WSConnectionManager *wcm, const UA_KeyValueMap *params,
     if(address && address->length > 0)
         listenAddr = *address;
 
-    UA_KeyValuePair kvp[2];
+    UA_KeyValuePair kvp[3];
     kvp[0].key = UA_QUALIFIEDNAME(0, "listen-port");
     UA_Variant_setScalar(&kvp[0].value, (UA_UInt16 *)(uintptr_t)port,
                          &UA_TYPES[UA_TYPES_UINT16]);
     kvp[1].key = UA_QUALIFIEDNAME(0, "listen-address");
     UA_Variant_setScalar(&kvp[1].value, &listenAddr,
                          &UA_TYPES[UA_TYPES_STRING]);
-    UA_KeyValueMap kvm = {2, kvp};
+    kvp[2].key = UA_QUALIFIEDNAME(0, "tls");
+    UA_Variant_setScalar(&kvp[2].value, &useTls,
+                         &UA_TYPES[UA_TYPES_BOOLEAN]);
+    UA_KeyValueMap kvm = {3, kvp};
 
     connectionCallback(&wcm->cm, wc->connectionId, application,
                        &wc->context, UA_CONNECTIONSTATE_ESTABLISHED,

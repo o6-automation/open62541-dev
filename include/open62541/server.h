@@ -2246,6 +2246,14 @@ struct UA_ServerConfig {
                               * (default: 0 -> unbounded) */
     UA_Boolean tcpReuseAddr;
 
+    /* WebSocket TLS Settings
+     * ~~~~~~~~~~~~~~~~~~~~~~
+     * TLS certificate and private key for opc.wss:// WebSocket transport.
+     * Required for encrypted WSS connections (OPC UA Part 6, Section 7.5).
+     * If not set, WSS connections use unencrypted WebSocket (for testing). */
+    UA_ByteString wssCertificate; /* TLS certificate (PEM or DER) */
+    UA_ByteString wssPrivateKey;  /* TLS private key (PEM or DER) */
+
     /* Security and Encryption
      * ~~~~~~~~~~~~~~~~~~~~~~~ */
     size_t securityPoliciesSize;

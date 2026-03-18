@@ -680,12 +680,12 @@ createServerSecureChannel(UA_BinaryProtocolManager *bpm, UA_ConnectionManager *c
 
 static void
 addDiscoveryUrl(UA_Server *server, const UA_String hostname, UA_UInt16 port,
-                  const UA_ConnectionManager *cm) {
+                  const UA_ConnectionManager *cm, UA_Boolean useTls) {
     /* Determine URL scheme from the ConnectionManager protocol */
     const char *scheme = "opc.tcp";
     UA_String wsProto = UA_STRING("ws");
     if(UA_String_equal(&wsProto, &cm->protocol))
-        scheme = "opc.wss";
+        scheme = useTls ? "opc.wss" : "opc.ws";
 
     char urlstr[1024];
     mp_snprintf(urlstr, 1024, "%s://%S:%d", scheme, hostname, port);
@@ -759,8 +759,13 @@ serverNetworkCallbackLocked(UA_ConnectionManager *cm, uintptr_t connectionId,
         const UA_String *address = (const UA_String*)
             UA_KeyValueMap_getScalar(params, UA_QUALIFIEDNAME(0, "listen-address"),
                                      &UA_TYPES[UA_TYPES_STRING]);
-        if(port && address)
-            addDiscoveryUrl(bpm->sc.server, *address, *port, cm);
+        if(port && address) {
+            const UA_Boolean *useTls = (const UA_Boolean *)
+                UA_KeyValueMap_getScalar(params, UA_QUALIFIEDNAME(0, "tls"),
+                                         &UA_TYPES[UA_TYPES_BOOLEAN]);
+            addDiscoveryUrl(bpm->sc.server, *address, *port, cm,
+                           useTls ? *useTls : false);
+        }
         return;
     }
 
@@ -888,12 +893,19 @@ createServerConnection(UA_BinaryProtocolManager *bpm, const UA_String *serverUrl
         return res;
 
     /* Determine the CM protocol from the URL scheme.
-     * opc.tcp:// -> "tcp", opc.wss:// -> "ws" */
+     * opc.tcp:// -> "tcp", opc.ws:// and opc.wss:// -> "ws" */
     UA_String protoString = UA_STRING("tcp");
+    UA_Boolean isWss = false;
     UA_String wssScheme = UA_STRING("opc.wss://");
+    UA_String wsScheme = UA_STRING("opc.ws://");
     if(serverUrl->length >= wssScheme.length &&
-       memcmp(serverUrl->data, wssScheme.data, wssScheme.length) == 0)
+       memcmp(serverUrl->data, wssScheme.data, wssScheme.length) == 0) {
         protoString = UA_STRING("ws");
+        isWss = true;
+    } else if(serverUrl->length >= wsScheme.length &&
+              memcmp(serverUrl->data, wsScheme.data, wsScheme.length) == 0) {
+        protoString = UA_STRING("ws");
+    }
 
     for(UA_EventSource *es = config->eventLoop->eventSources;
         es != NULL; es = es->next) {
@@ -905,7 +917,7 @@ createServerConnection(UA_BinaryProtocolManager *bpm, const UA_String *serverUrl
             continue;
 
         /* Set up the parameters */
-        UA_KeyValuePair params[4];
+        UA_KeyValuePair params[7];
         size_t paramsSize = 3;
 
         params[0].key = UA_QUALIFIEDNAME(0, "port");
@@ -921,9 +933,28 @@ createServerConnection(UA_BinaryProtocolManager *bpm, const UA_String *serverUrl
 
         /* The hostname is non-empty */
         if(hostname.length > 0) {
-            params[3].key = UA_QUALIFIEDNAME(0, "address");
-            UA_Variant_setArray(&params[3].value, &hostname, 1, &UA_TYPES[UA_TYPES_STRING]);
-            paramsSize = 4;
+            params[paramsSize].key = UA_QUALIFIEDNAME(0, "address");
+            UA_Variant_setArray(&params[paramsSize].value, &hostname, 1,
+                                &UA_TYPES[UA_TYPES_STRING]);
+            paramsSize++;
+        }
+
+        /* For WSS connections, pass TLS certificate and private key */
+        if(isWss) {
+            if(config->wssCertificate.length > 0) {
+                params[paramsSize].key = UA_QUALIFIEDNAME(0, "certificate");
+                UA_Variant_setScalar(&params[paramsSize].value,
+                                     &config->wssCertificate,
+                                     &UA_TYPES[UA_TYPES_BYTESTRING]);
+                paramsSize++;
+            }
+            if(config->wssPrivateKey.length > 0) {
+                params[paramsSize].key = UA_QUALIFIEDNAME(0, "privatekey");
+                UA_Variant_setScalar(&params[paramsSize].value,
+                                     &config->wssPrivateKey,
+                                     &UA_TYPES[UA_TYPES_BYTESTRING]);
+                paramsSize++;
+            }
         }
 
         UA_KeyValueMap paramsMap;

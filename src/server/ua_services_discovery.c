@@ -516,9 +516,12 @@ setCurrentEndPointsArray(UA_Server *server, UA_SecureChannel *channel,
                 /* Adjust the TransportProfileUri for WebSocket endpoints
                  * (OPC UA Part 6, Section 7.5) */
                 UA_String wssScheme = UA_STRING("opc.wss://");
-                if(sc->applicationDescription.discoveryUrls[i].length >= wssScheme.length &&
-                   memcmp(sc->applicationDescription.discoveryUrls[i].data,
-                          wssScheme.data, wssScheme.length) == 0) {
+                UA_String wsScheme = UA_STRING("opc.ws://");
+                UA_String *durl = &sc->applicationDescription.discoveryUrls[i];
+                if((durl->length >= wssScheme.length &&
+                    memcmp(durl->data, wssScheme.data, wssScheme.length) == 0) ||
+                   (durl->length >= wsScheme.length &&
+                    memcmp(durl->data, wsScheme.data, wsScheme.length) == 0)) {
                     UA_String_clear(&ed->transportProfileUri);
                     ed->transportProfileUri = UA_STRING_ALLOC(
                         "http://opcfoundation.org/UA-Profile/Transport/"
