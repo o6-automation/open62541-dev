@@ -135,8 +135,6 @@ callback_http(struct lws *wsi, enum lws_callback_reasons reason,
     UA_ConnectionManager *cm = &hc->hcm->cm;
     UA_EventLoop *el = cm->eventSource.eventLoop;
 
-    printf("%i %p %p\n", reason, (void*)wsi, (void*)hr);
-
     switch(reason) {
     case LWS_CALLBACK_WSI_DESTROY:
         /* Last callback for the request-wsi */

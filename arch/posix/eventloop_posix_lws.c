@@ -29,25 +29,24 @@ connectionCallback(UA_ConnectionManager *cm, LWS_FD *conn, short event) {
     eventfd.revents = 0;
 
     if(event == UA_FDEVENT_ERR) {
-        UA_LOG_ERROR(UA_Log_Stdout, UA_LOGCATEGORY_EVENTLOOP,
-                     "Error in Connection Callback for FD %d", conn->rfd.fd);
+        eventfd.events = LWS_POLLHUP;
+        eventfd.revents = LWS_POLLHUP;
+        lws_service_fd((struct lws_context*)conn->context, &eventfd);
     }
     if(event == UA_FDEVENT_OUT) {
         eventfd.events = LWS_POLLOUT;
-        eventfd.revents =  LWS_POLLOUT;
+        eventfd.revents = LWS_POLLOUT;
         lws_service_fd((struct lws_context*)conn->context, &eventfd);
     }
     if(event == UA_FDEVENT_IN) {
         eventfd.events = LWS_POLLIN;
-        eventfd.revents =  LWS_POLLIN;
+        eventfd.revents = LWS_POLLIN;
         lws_service_fd((struct lws_context*)conn->context, &eventfd);
     }
     /* Check if the connection requires forced service */
     while(!lws_service_adjust_timeout((struct lws_context*)conn->context, 1, 0)) {
-        UA_LOG_DEBUG(UA_Log_Stdout, UA_LOGCATEGORY_EVENTLOOP,
-                     "Process connection with pending work.");
         eventfd.events = LWS_POLLIN;
-        eventfd.revents =  LWS_POLLIN;
+        eventfd.revents = LWS_POLLIN;
         lws_service_fd((struct lws_context*)conn->context, &eventfd);
     }
 }
@@ -120,7 +119,6 @@ io_custom(struct lws *wsi, unsigned int flags) {
     if(!conn)
         return;
 
-    conn->rfd.listenEvents = 0;
     if(flags & LWS_EV_START) {
         if(flags & LWS_EV_WRITE)
             conn->rfd.listenEvents |= UA_FDEVENT_OUT;
@@ -128,9 +126,9 @@ io_custom(struct lws *wsi, unsigned int flags) {
             conn->rfd.listenEvents |= UA_FDEVENT_IN;
     } else {
         if(flags & LWS_EV_WRITE)
-            conn->rfd.listenEvents |= UA_FDEVENT_IN;
+            conn->rfd.listenEvents &= (short)~UA_FDEVENT_OUT;
         if(flags & LWS_EV_READ)
-            conn->rfd.listenEvents |= UA_FDEVENT_IN;
+            conn->rfd.listenEvents &= (short)~UA_FDEVENT_IN;
     }
 
     UA_EventLoopPOSIX_modifyFD(priv->io_loop, &conn->rfd);
@@ -144,7 +142,6 @@ delayedClose(void *application, void *context) {
                  "HTTP %u\t| Delayed closing of the connection",
                  (unsigned)conn->rfd.fd);
     UA_free(conn);
-    conn = NULL;
 }
 
 static int
@@ -191,23 +188,22 @@ const lws_plugin_evlib_t evlib_open62541 = {
     .ops = &event_loop_ops_custom
 };
 
-/* To integrate libwebsockets logging with open62541 logging. */
+/* To integrate libwebsockets logging with open62541 logging.
+ * Uses UA_Log_Stdout as this is called from lws context where
+ * we don't have an EventLoop logger reference. */
 static void
 open62541_log_emit_cx(struct lws_log_cx *cx, int level, const char *line,
                      size_t len) {
-
-    const UA_Logger *logger = UA_Log_Stdout;
-
     if(level == LLL_NOTICE)
-        UA_LOG_DEBUG(logger, UA_LOGCATEGORY_NETWORK, "%s", line);
+        UA_LOG_DEBUG(UA_Log_Stdout, UA_LOGCATEGORY_NETWORK, "%s", line);
     else if(level == LLL_USER)
-        UA_LOG_DEBUG(logger, UA_LOGCATEGORY_USERLAND, "%s", line);
+        UA_LOG_DEBUG(UA_Log_Stdout, UA_LOGCATEGORY_USERLAND, "%s", line);
     else if(level == LLL_WARN)
-        UA_LOG_WARNING(logger, UA_LOGCATEGORY_NETWORK, "%s", line);
+        UA_LOG_WARNING(UA_Log_Stdout, UA_LOGCATEGORY_NETWORK, "%s", line);
     else if(level == LLL_ERR)
-        UA_LOG_ERROR(logger, UA_LOGCATEGORY_NETWORK, "%s", line);
+        UA_LOG_ERROR(UA_Log_Stdout, UA_LOGCATEGORY_NETWORK, "%s", line);
     else
-        UA_LOG_DEBUG(logger, UA_LOGCATEGORY_NETWORK, "%s", line);
+        UA_LOG_DEBUG(UA_Log_Stdout, UA_LOGCATEGORY_NETWORK, "%s", line);
 }
 
 lws_log_cx_t open62541_log_cx = {
