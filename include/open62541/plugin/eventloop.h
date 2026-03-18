@@ -727,6 +727,30 @@ UA_EXPORT UA_ConnectionManager *
 UA_ConnectionManager_new_HTTP(const UA_String eventSourceName);
 
 /**
+ * WebSocket Connection Manager
+ * ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+ *
+ * The WebSocket ConnectionManager uses libwebsockets to provide OPC UA over
+ * WebSocket (opc.wss) transport as defined in OPC UA Part 6, Section 7.5.
+ * Supports the opcua+uacp (binary) and opcua+uajson (JSON) sub-protocols.
+ *
+ * Passive (Server) Connection Parameters:
+ * - 0:port [uint16]: Port to listen on (default: 443).
+ * - 0:address [string]: Bind address (optional, all interfaces by default).
+ * - 0:certificate [bytestring]: TLS certificate (PEM or DER).
+ * - 0:privatekey [bytestring]: TLS private key (PEM or DER).
+ *
+ * Active (Client) Connection Parameters:
+ * - 0:hostname [string]: Target hostname (required).
+ * - 0:port [uint16]: Target port (default: 443).
+ * - 0:path [string]: URL path (default: /).
+ *
+ * Send Parameters: none (data is sent as WebSocket binary or text frames).
+ */
+UA_EXPORT UA_ConnectionManager *
+UA_ConnectionManager_new_POSIX_WS(const UA_String eventSourceName);
+
+/**
  * MQTT Connection Manager
  * ~~~~~~~~~~~~~~~~~~~~~~~
  * The MQTT ConnectionManager reuses the TCP ConnectionManager that is

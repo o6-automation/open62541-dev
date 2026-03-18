@@ -81,9 +81,10 @@ START_TEST(parse_url_wss) {
     UA_String host, path;
     UA_UInt16 port = 0;
     UA_StatusCode res = UA_parseEndpointUrl(&url, &host, &port, &path);
-    /* BUG: opc.wss is a valid OPC UA endpoint scheme (Part 6) but
-     * UA_parseEndpointUrl does not support it. See COVERAGE_BUGS.md #6. */
-    ck_assert(res != UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(res, UA_STATUSCODE_GOOD);
+    UA_String expectedHost = UA_STRING("host");
+    ck_assert(UA_String_equal(&host, &expectedHost));
+    ck_assert_uint_eq(port, 8080);
 } END_TEST
 
 /* ========== parseEndpointUrlEthernet ========== */
