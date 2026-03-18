@@ -2190,11 +2190,14 @@ initConnect(UA_Client *client) {
      * Determine the CM protocol from the URL scheme:
      * opc.tcp:// -> "tcp", opc.wss:// -> "ws" */
     UA_String protoString = UA_STRING("tcp");
+    UA_Boolean useWss = false;
     UA_String wssScheme = UA_STRING("opc.wss://");
     if(client->config.endpointUrl.length >= wssScheme.length &&
        memcmp(client->config.endpointUrl.data,
-              wssScheme.data, wssScheme.length) == 0)
+              wssScheme.data, wssScheme.length) == 0) {
         protoString = UA_STRING("ws");
+        useWss = true;
+    }
 
     for(UA_EventSource *es = client->config.eventLoop->eventSources;
         es != NULL; es = es->next) {
@@ -2206,7 +2209,9 @@ initConnect(UA_Client *client) {
             continue;
 
         /* Set up the parameters */
-        UA_KeyValuePair params[3];
+        UA_Boolean tlsEnabled = true;
+        UA_KeyValuePair params[4];
+        size_t paramsSize = 3;
         params[0].key = UA_QUALIFIEDNAME(0, "port");
         UA_Variant_setScalar(&params[0].value, &port, &UA_TYPES[UA_TYPES_UINT16]);
         params[1].key = UA_QUALIFIEDNAME(0, "address");
@@ -2214,10 +2219,16 @@ initConnect(UA_Client *client) {
         params[2].key = UA_QUALIFIEDNAME(0, "reuse");
         UA_Variant_setScalar(&params[2].value, &client->config.tcpReuseAddr,
                              &UA_TYPES[UA_TYPES_BOOLEAN]);
+        if(useWss) {
+            params[3].key = UA_QUALIFIEDNAME(0, "tls");
+            UA_Variant_setScalar(&params[3].value, &tlsEnabled,
+                                 &UA_TYPES[UA_TYPES_BOOLEAN]);
+            paramsSize = 4;
+        }
 
         UA_KeyValueMap paramMap;
         paramMap.map = params;
-        paramMap.mapSize = 3;
+        paramMap.mapSize = paramsSize;
 
         /* Open the client TCP connection */
         UA_StatusCode res = cm->openConnection(cm, &paramMap, client,

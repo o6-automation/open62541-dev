@@ -258,6 +258,7 @@ endif()
 
 if(UA_ENABLE_LWS)
     ua_add_test(check_eventloop_http.c)
+    ua_add_test(check_eventloop_ws.c)
 endif()
 
 # Test Server

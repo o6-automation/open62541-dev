@@ -35,7 +35,7 @@ struct WSConnection;
 typedef struct WSConnection WSConnection;
 
 /* Connection parameters for openConnection */
-#define WS_PARAMETERSSIZE 7
+#define WS_PARAMETERSSIZE 8
 #define WS_PARAMINDEX_ADDR     0
 #define WS_PARAMINDEX_PORT     1
 #define WS_PARAMINDEX_LISTEN   2
@@ -43,6 +43,7 @@ typedef struct WSConnection WSConnection;
 #define WS_PARAMINDEX_CERT     4
 #define WS_PARAMINDEX_KEY      5
 #define WS_PARAMINDEX_PATH     6
+#define WS_PARAMINDEX_TLS      7
 
 static UA_KeyValueRestriction wsConnectionParams[WS_PARAMETERSSIZE] = {
     {{0, UA_STRING_STATIC("address")},     &UA_TYPES[UA_TYPES_STRING],     false, true, true},
@@ -51,7 +52,8 @@ static UA_KeyValueRestriction wsConnectionParams[WS_PARAMETERSSIZE] = {
     {{0, UA_STRING_STATIC("validate")},    &UA_TYPES[UA_TYPES_BOOLEAN],    false, true, false},
     {{0, UA_STRING_STATIC("certificate")}, &UA_TYPES[UA_TYPES_BYTESTRING], false, true, false},
     {{0, UA_STRING_STATIC("privatekey")},  &UA_TYPES[UA_TYPES_BYTESTRING], false, true, false},
-    {{0, UA_STRING_STATIC("path")},        &UA_TYPES[UA_TYPES_STRING],     false, true, false}
+    {{0, UA_STRING_STATIC("path")},        &UA_TYPES[UA_TYPES_STRING],     false, true, false},
+    {{0, UA_STRING_STATIC("tls")},         &UA_TYPES[UA_TYPES_BOOLEAN],    false, true, false}
 };
 
 /* Per-connection state */
@@ -73,6 +75,8 @@ struct WSConnection {
     UA_ByteString sendBuffer;      /* Pending outgoing data */
     UA_Boolean sendPending;        /* lws_callback_on_writable was called */
     UA_Boolean closing;            /* Connection is shutting down */
+
+    UA_DelayedCallback dc;         /* Deferred cleanup callback */
 };
 
 /* The ConnectionManager */
@@ -119,6 +123,16 @@ WS_findListener(WSConnectionManager *wcm, struct lws_context *ctx) {
     return NULL;
 }
 
+/* Deferred cleanup of the client lws_context.
+ * Cannot call lws_context_destroy from within a lws callback. */
+static void
+WS_deferredContextDestroy(void *application, void *context) {
+    WSConnection *wc = (WSConnection *)application;
+    struct lws_context *ctx = (struct lws_context *)context;
+    lws_context_destroy(ctx);
+    UA_free(wc);
+}
+
 static void
 WS_removeConnection(WSConnection *wc) {
     if(!wc)
@@ -136,7 +150,21 @@ WS_removeConnection(WSConnection *wc) {
     }
 
     UA_ByteString_clear(&wc->sendBuffer);
-    UA_free(wc);
+
+    /* Schedule deferred destruction of the client lws_context.
+     * We cannot call lws_context_destroy from within a lws callback.
+     * The delayed callback is embedded in the WSConnection struct, so
+     * we must NOT free wc here — it will be freed in the deferred callback. */
+    if(wc->lwsContext && !wc->isListener) {
+        UA_EventLoop *el = wcm->cm.eventSource.eventLoop;
+        wc->dc.callback = WS_deferredContextDestroy;
+        wc->dc.application = wc; /* So we can free it later */
+        wc->dc.context = wc->lwsContext;
+        el->addDelayedCallback(el, &wc->dc);
+        wc->lwsContext = NULL;
+    } else {
+        UA_free(wc);
+    }
 
     /* Check if we can transition to STOPPED */
     if(wcm->cm.eventSource.state == UA_EVENTSOURCESTATE_STOPPING &&
@@ -159,10 +187,10 @@ WS_closeConnection_internal(WSConnection *wc) {
         WS_removeConnection(wc);
     } else if(wc->wsi) {
         /* Request lws to close the WebSocket gracefully.
-         * The WSI_DESTROY callback will trigger removal. */
+         * Keep wc->wsi set so the CLOSED/WSI_DESTROY callbacks can
+         * find this connection and call WS_removeConnection. */
         lws_set_timeout(wc->wsi, PENDING_TIMEOUT_CLOSE_SEND,
                         LWS_TO_KILL_ASYNC);
-        wc->wsi = NULL;
     } else {
         WS_removeConnection(wc);
     }
@@ -374,10 +402,18 @@ callback_ws(struct lws *wsi, enum lws_callback_reasons reason,
 
     case LWS_CALLBACK_CLOSED:
     case LWS_CALLBACK_CLIENT_CLOSED: {
-        /* Connection closed (server or client side) */
+        /* Connection closed (server or client side).
+         * Verify the user pointer is still valid. */
         WSConnection *wc = NULL;
-        if(reason == LWS_CALLBACK_CLOSED) {
-            wc = user ? *(WSConnection **)user : NULL;
+        if(reason == LWS_CALLBACK_CLOSED && user) {
+            WSConnection *candidate = *(WSConnection **)user;
+            WSConnection *iter;
+            LIST_FOREACH(iter, &wcm->connections, pointers) {
+                if(iter == candidate) {
+                    wc = candidate;
+                    break;
+                }
+            }
         } else {
             wc = WS_findConnectionByWsi(wcm, wsi);
         }
@@ -395,10 +431,21 @@ callback_ws(struct lws *wsi, enum lws_callback_reasons reason,
 
     case LWS_CALLBACK_WSI_DESTROY: {
         /* Final cleanup for a wsi — this is the very last callback.
-         * For server child connections, also try to clean up. */
+         * The WSConnection may have already been freed (e.g. when the
+         * connection was closed before the listener's lws_context was
+         * destroyed). Verify the connection is still in our list. */
         WSConnection *wc = NULL;
-        if(user)
-            wc = *(WSConnection **)user;
+        if(user) {
+            WSConnection *candidate = *(WSConnection **)user;
+            /* Verify that this pointer is still in our list */
+            WSConnection *iter;
+            LIST_FOREACH(iter, &wcm->connections, pointers) {
+                if(iter == candidate) {
+                    wc = candidate;
+                    break;
+                }
+            }
+        }
         if(!wc)
             wc = WS_findConnectionByWsi(wcm, wsi);
         if(wc) {
@@ -678,9 +725,20 @@ WS_openActiveConnection(WSConnectionManager *wcm, const UA_KeyValueMap *params,
     ccinfo.host = addr_str;
     ccinfo.origin = addr_str;
     ccinfo.protocol = "opcua+uacp";
-    ccinfo.ssl_connection = LCCSCF_USE_SSL |
-                            LCCSCF_ALLOW_SELFSIGNED |
-                            LCCSCF_SKIP_SERVER_CERT_HOSTNAME_CHECK;
+
+    /* TLS: use SSL if the "tls" parameter is set, or if a certificate
+     * was provided in the connection params */
+    const UA_Boolean *useTls = (const UA_Boolean *)
+        UA_KeyValueMap_getScalar(params, UA_QUALIFIEDNAME(0, "tls"),
+                                 &UA_TYPES[UA_TYPES_BOOLEAN]);
+    const UA_ByteString *cert = (const UA_ByteString *)
+        UA_KeyValueMap_getScalar(params, UA_QUALIFIEDNAME(0, "certificate"),
+                                 &UA_TYPES[UA_TYPES_BYTESTRING]);
+    if((useTls && *useTls) || (cert && cert->length > 0)) {
+        ccinfo.ssl_connection = LCCSCF_USE_SSL |
+                                LCCSCF_ALLOW_SELFSIGNED |
+                                LCCSCF_SKIP_SERVER_CERT_HOSTNAME_CHECK;
+    }
 
     wc->wsi = lws_client_connect_via_info(&ccinfo);
     if(!wc->wsi) {
@@ -845,8 +903,16 @@ WS_eventSourceStop(UA_ConnectionManager *cm) {
 
     WSConnectionManager *wcm = (WSConnectionManager *)cm;
     WSConnection *wc, *wc_tmp;
+
+    /* Close child/client connections first (they reference the listener's
+     * lws_context and wsi). Then close listeners. */
     LIST_FOREACH_SAFE(wc, &wcm->connections, pointers, wc_tmp) {
-        WS_closeConnection_internal(wc);
+        if(!wc->isListener)
+            WS_closeConnection_internal(wc);
+    }
+    LIST_FOREACH_SAFE(wc, &wcm->connections, pointers, wc_tmp) {
+        if(wc->isListener)
+            WS_closeConnection_internal(wc);
     }
 
     if(LIST_EMPTY(&wcm->connections))
