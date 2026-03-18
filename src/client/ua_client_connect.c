@@ -1059,6 +1059,9 @@ activateSessionAsync(UA_Client *client) {
 static const UA_String binaryTransport =
     UA_STRING_STATIC("http://opcfoundation.org/UA-Profile/Transport/uatcp-uasc-uabinary");
 
+static const UA_String wssBinaryTransport =
+    UA_STRING_STATIC("http://opcfoundation.org/UA-Profile/Transport/wss-uasc-uabinary");
+
 /* Find a matching endpoint -- the UserTokenPolicy is matched later */
 static UA_Boolean
 matchEndpoint(UA_Client *client, const UA_EndpointDescription *endpoint, unsigned i) {
@@ -1074,9 +1077,11 @@ matchEndpoint(UA_Client *client, const UA_EndpointDescription *endpoint, unsigne
     }
 
     /* Look out for binary transport endpoints.
-     * Note: Siemens returns empty ProfileUrl, we will accept it as binary. */
+     * Note: Siemens returns empty ProfileUrl, we will accept it as binary.
+     * Accept both TCP and WSS binary transport profiles. */
     if(endpoint->transportProfileUri.length != 0 &&
-       !UA_String_equal(&endpoint->transportProfileUri, &binaryTransport)) {
+       !UA_String_equal(&endpoint->transportProfileUri, &binaryTransport) &&
+       !UA_String_equal(&endpoint->transportProfileUri, &wssBinaryTransport)) {
         UA_LOG_INFO(client->config.logging, UA_LOGCATEGORY_CLIENT,
                     "Endpoint %u: Rejected, the TransportProfileUri %S "
                     "is not supported", i, endpoint->transportProfileUri);

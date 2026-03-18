@@ -61,6 +61,10 @@ static UA_KeyValueRestriction wsConnectionParams[WS_PARAMETERSSIZE] = {
 #define WS_SUBPROTOCOL_UACP  "opcua+uacp"
 #define WS_SUBPROTOCOL_UAJSON "opcua+uajson"
 
+/* Maximum WebSocket message size (OPC UA Part 6, Section 7.5.2).
+ * Messages exceeding this limit are rejected with close code 1009. */
+#define WS_MAX_MESSAGE_SIZE (16u * 1024u * 1024u) /* 16 MiB */
+
 /* Per-connection state */
 struct WSConnection {
     LIST_ENTRY(WSConnection) pointers;
@@ -294,6 +298,18 @@ callback_ws(struct lws *wsi, enum lws_callback_reasons reason,
         if(!wc || wc->closing)
             break;
 
+        /* Check frame size limit (OPC UA Part 6, Section 7.5.2) */
+        size_t totalSize = len + lws_remaining_packet_payload(wsi);
+        if(totalSize > WS_MAX_MESSAGE_SIZE) {
+            UA_LOG_WARNING(el->logger, UA_LOGCATEGORY_NETWORK,
+                           "WS %u\t| Message too large (%zu bytes), "
+                           "closing with status 1009",
+                           (unsigned)wc->connectionId, totalSize);
+            lws_close_reason(wsi, LWS_CLOSE_STATUS_MESSAGE_TOO_LARGE,
+                             (unsigned char *)"message too large", 17);
+            return -1;
+        }
+
         UA_ByteString msg;
         msg.data = (UA_Byte *)in;
         msg.length = len;
@@ -343,10 +359,21 @@ callback_ws(struct lws *wsi, enum lws_callback_reasons reason,
         if(!wc)
             break;
 
-        /* Detect the negotiated sub-protocol */
+        /* Verify the server negotiated a sub-protocol
+         * (OPC UA Part 6, Section 7.5.2) */
         const struct lws_protocols *proto = lws_get_protocol(wsi);
-        if(proto && proto->name &&
-           strcmp(proto->name, WS_SUBPROTOCOL_UAJSON) == 0)
+        if(!proto || !proto->name) {
+            UA_LOG_WARNING(el->logger, UA_LOGCATEGORY_NETWORK,
+                           "WS %u\t| Server did not negotiate a sub-protocol, "
+                           "closing connection",
+                           (unsigned)wc->connectionId);
+            lws_close_reason(wsi, LWS_CLOSE_STATUS_PROTOCOL_ERR,
+                             (unsigned char *)"no sub-protocol", 15);
+            return -1;
+        }
+
+        /* Detect the negotiated sub-protocol */
+        if(strcmp(proto->name, WS_SUBPROTOCOL_UAJSON) == 0)
             wc->isTextProtocol = true;
 
         UA_String subProto = wc->isTextProtocol ?
@@ -375,6 +402,18 @@ callback_ws(struct lws *wsi, enum lws_callback_reasons reason,
         WSConnection *wc = WS_findConnectionByWsi(wcm, wsi);
         if(!wc || wc->closing)
             break;
+
+        /* Check frame size limit (OPC UA Part 6, Section 7.5.2) */
+        size_t totalSize = len + lws_remaining_packet_payload(wsi);
+        if(totalSize > WS_MAX_MESSAGE_SIZE) {
+            UA_LOG_WARNING(el->logger, UA_LOGCATEGORY_NETWORK,
+                           "WS %u\t| Client message too large (%zu bytes), "
+                           "closing with status 1009",
+                           (unsigned)wc->connectionId, totalSize);
+            lws_close_reason(wsi, LWS_CLOSE_STATUS_MESSAGE_TOO_LARGE,
+                             (unsigned char *)"message too large", 17);
+            return -1;
+        }
 
         UA_ByteString msg;
         msg.data = (UA_Byte *)in;
@@ -491,6 +530,20 @@ callback_ws(struct lws *wsi, enum lws_callback_reasons reason,
             if(!wc->isListener)
                 WS_removeConnection(wc);
         }
+        break;
+    }
+
+    case LWS_CALLBACK_ADD_HEADERS: {
+        /* Add CORS header for browser-based WebSocket clients
+         * (OPC UA Part 6, Section 7.5.3) */
+        struct lws_process_html_args *args =
+            (struct lws_process_html_args *)in;
+        if(lws_add_http_header_by_name(wsi,
+                (unsigned char *)"access-control-allow-origin:",
+                (unsigned char *)"*", 1,
+                (unsigned char **)&args->p,
+                (unsigned char *)args->p + args->max_len))
+            return 1;
         break;
     }
 

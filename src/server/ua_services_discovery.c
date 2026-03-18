@@ -508,11 +508,22 @@ setCurrentEndPointsArray(UA_Server *server, UA_SecureChannel *channel,
              * AuthenticationToken. */
             retval |= updateEndpointUserIdentityToken(server, sp->policyType, ed);
 
-            /* Set the EndpointURL */
+            /* Set the EndpointURL and the TransportProfileUri */
             UA_String_clear(&ed->endpointUrl);
             if(endpointUrl.length == 0) {
                 retval |= UA_String_copy(&sc->applicationDescription.discoveryUrls[i],
                                          &ed->endpointUrl);
+                /* Adjust the TransportProfileUri for WebSocket endpoints
+                 * (OPC UA Part 6, Section 7.5) */
+                UA_String wssScheme = UA_STRING("opc.wss://");
+                if(sc->applicationDescription.discoveryUrls[i].length >= wssScheme.length &&
+                   memcmp(sc->applicationDescription.discoveryUrls[i].data,
+                          wssScheme.data, wssScheme.length) == 0) {
+                    UA_String_clear(&ed->transportProfileUri);
+                    ed->transportProfileUri = UA_STRING_ALLOC(
+                        "http://opcfoundation.org/UA-Profile/Transport/"
+                        "wss-uasc-uabinary");
+                }
             } else {
                 /* Mirror back the requested EndpointUrl and also add it to the
                  * array of discovery urls */
