@@ -1107,6 +1107,7 @@ endif()
 if(UA_ENABLE_LWS)
     list(APPEND plugin_sources
          ${PROJECT_SOURCE_DIR}/arch/posix/eventloop_posix_http.c
+         ${PROJECT_SOURCE_DIR}/arch/posix/eventloop_posix_ws.c
          ${PROJECT_SOURCE_DIR}/arch/posix/eventloop_posix_lws.h
          ${PROJECT_SOURCE_DIR}/arch/posix/eventloop_posix_lws.c)
 endif()
