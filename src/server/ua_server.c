@@ -105,13 +105,13 @@ UA_Server_getConfig(UA_Server *server) {
 
 UA_StatusCode
 getNamespaceByName(UA_Server *server, const UA_String namespaceUri,
-                   size_t *foundIndex) {
+                   UA_UInt16 *foundIndex) {
     /* ensure that the uri for ns1 is set up from the app description */
     setupNs1Uri(server);
     UA_StatusCode res = UA_STATUSCODE_BADNOTFOUND;
     for(size_t idx = 0; idx < server->namespacesSize; idx++) {
         if(UA_String_equal(&server->namespaces[idx], &namespaceUri)) {
-            (*foundIndex) = idx;
+            (*foundIndex) = (UA_UInt16)idx;
             res = UA_STATUSCODE_GOOD;
             break;
         }
@@ -120,7 +120,7 @@ getNamespaceByName(UA_Server *server, const UA_String namespaceUri,
 }
 
 UA_StatusCode
-getNamespaceByIndex(UA_Server *server, const size_t namespaceIndex,
+getNamespaceByIndex(UA_Server *server, const UA_UInt16 namespaceIndex,
                    UA_String *foundUri) {
     /* ensure that the uri for ns1 is set up from the app description */
     setupNs1Uri(server);
@@ -133,7 +133,7 @@ getNamespaceByIndex(UA_Server *server, const size_t namespaceIndex,
 
 UA_StatusCode
 UA_Server_getNamespaceByName(UA_Server *server, const UA_String namespaceUri,
-                             size_t *foundIndex) {
+                             UA_UInt16 *foundIndex) {
     lockServer(server);
     UA_StatusCode res = getNamespaceByName(server, namespaceUri, foundIndex);
     unlockServer(server);
@@ -141,7 +141,7 @@ UA_Server_getNamespaceByName(UA_Server *server, const UA_String namespaceUri,
 }
 
 UA_StatusCode
-UA_Server_getNamespaceByIndex(UA_Server *server, const size_t namespaceIndex,
+UA_Server_getNamespaceByIndex(UA_Server *server, const UA_UInt16 namespaceIndex,
                               UA_String *foundUri) {
     lockServer(server);
     UA_StatusCode res = getNamespaceByIndex(server, namespaceIndex, foundUri);

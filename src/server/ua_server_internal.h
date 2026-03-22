@@ -351,10 +351,10 @@ notifySecureChannel(UA_Server *server, UA_SecureChannel *channel,
 
 UA_StatusCode
 getNamespaceByName(UA_Server *server, const UA_String namespaceUri,
-                   size_t *foundIndex);
+                   UA_UInt16 *foundIndex);
 
 UA_StatusCode
-getNamespaceByIndex(UA_Server *server, const size_t namespaceIndex,
+getNamespaceByIndex(UA_Server *server, const UA_UInt16 namespaceIndex,
                     UA_String *foundUri);
 
 UA_StatusCode

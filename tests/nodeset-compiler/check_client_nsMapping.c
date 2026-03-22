@@ -34,7 +34,7 @@ static void setup(void) {
     server = UA_Server_newForUnitTest();
     ck_assert(server != NULL);
 
-    size_t idx = LONG_MAX;
+    UA_UInt16 idx = UA_UINT16_MAX;
     UA_StatusCode retval = UA_Server_getNamespaceByName(server, UA_STRING("http://opcfoundation.org/UA/DI/"), &idx);
     if(retval != UA_STATUSCODE_GOOD) {
         retval = namespace_tests_di_generated(server);

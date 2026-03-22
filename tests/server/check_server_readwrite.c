@@ -336,7 +336,7 @@ START_TEST(srv_addNamespace) {
 } END_TEST
 
 START_TEST(srv_getNamespaceByName) {
-    size_t nsIdx;
+    UA_UInt16 nsIdx;
     UA_String uri = UA_STRING("http://opcfoundation.org/UA/");
     UA_StatusCode res = UA_Server_getNamespaceByName(server, uri, &nsIdx);
     ck_assert_uint_eq(res, UA_STATUSCODE_GOOD);

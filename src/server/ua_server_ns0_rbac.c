@@ -249,13 +249,13 @@ addRoleMethodCallback(UA_Server *server,
 
     /* Per specification, use NS1 if no namespaceUri is given */
     if(namespaceUri->length > 0) {
-        size_t nsIdx = 0;
+        UA_UInt16 nsIdx = 0;
         UA_StatusCode res = UA_Server_getNamespaceByName(server, *namespaceUri, &nsIdx);
         if(res != UA_STATUSCODE_GOOD) {
             UA_Role_clear(&role);
             return UA_STATUSCODE_BADINVALIDARGUMENT;
         }
-        role.roleName.namespaceIndex = (UA_UInt16)nsIdx;
+        role.roleName.namespaceIndex = nsIdx;
     } else {
         role.roleName.namespaceIndex = 1;
     }

@@ -31,7 +31,7 @@ setup(void) {
     // Add DI datatypes to server
     const UA_StatusCode resDi = namespace_tests_di_generated(server);
     ck_assert_uint_eq(resDi, UA_STATUSCODE_GOOD);
-    size_t diIndex = 0;
+    UA_UInt16 diIndex = 0;
     const UA_StatusCode resIdx = UA_Server_getNamespaceByName(server,
         UA_STRING("http://opcfoundation.org/UA/DI/"), &diIndex);
     ck_assert_uint_eq(resIdx, UA_STATUSCODE_GOOD);

@@ -670,7 +670,7 @@ START_TEST(namespace_operations) {
     ck_assert_uint_eq(nsIdx3, nsIdx);
 
     /* Get namespace by name */
-    size_t found;
+    UA_UInt16 found;
     UA_StatusCode res = UA_Server_getNamespaceByName(server,
         UA_STRING("urn:test:namespace"), &found);
     ck_assert_uint_eq(res, UA_STATUSCODE_GOOD);

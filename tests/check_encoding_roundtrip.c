@@ -501,10 +501,10 @@ START_TEST(server_config_ops) {
 
     /* Get namespace by name */
     UA_String nsUri = UA_STRING("http://test.namespace.org");
-    size_t foundIdx = 0;
+    UA_UInt16 foundIdx = 0;
     res = UA_Server_getNamespaceByName(s, nsUri, &foundIdx);
     ck_assert_uint_eq(res, UA_STATUSCODE_GOOD);
-    ck_assert_uint_eq(foundIdx, (size_t)nsIdx);
+    ck_assert_uint_eq(foundIdx, nsIdx);
 
     UA_Server_delete(s);
 } END_TEST

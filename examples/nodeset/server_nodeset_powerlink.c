@@ -27,7 +27,7 @@ int main(int argc, char** argv) {
     UA_ServerConfig_setDefault(UA_Server_getConfig(server));
 
     /* create nodes from nodeset */
-    size_t idx = LONG_MAX;
+    UA_UInt16 idx = UA_UINT16_MAX;
     UA_StatusCode retval = UA_Server_getNamespaceByName(server, UA_STRING("http://opcfoundation.org/UA/DI/"), &idx);
     if(retval != UA_STATUSCODE_GOOD) {
         retval = namespace_di_generated(server);
