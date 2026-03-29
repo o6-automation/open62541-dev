@@ -388,7 +388,7 @@ mark_as_advanced(UA_ENABLE_STATUSCODE_DESCRIPTIONS)
 option(UA_ENABLE_TYPEDESCRIPTION "Add the type and member names to the UA_DataType structure" ON)
 mark_as_advanced(UA_ENABLE_TYPEDESCRIPTION)
 
-option(UA_ENABLE_IMMUTABLE_DATATYPES "Declare generated UA_DataType arrays as const, enabling placement in .rodata/flash on embedded targets (~30KB DRAM saving)" OFF)
+option(UA_ENABLE_IMMUTABLE_DATATYPES "Declare generated UA_DataType arrays as const" OFF)
 mark_as_advanced(UA_ENABLE_IMMUTABLE_DATATYPES)
 
 option(UA_ENABLE_NODESET_COMPILER_DESCRIPTIONS "Set node description attribute for nodeset compiler generated nodes" ON)

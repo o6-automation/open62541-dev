@@ -75,7 +75,7 @@ parser.add_argument('--gen-doc',
 parser.add_argument('--const-arrays',
                     action='store_true',
                     dest="const_arrays",
-                    help='Declare generated UA_DataType arrays as const (for placement in .rodata/flash)')
+                    help='Declare generated UA_DataType arrays as const')
 
 parser.add_argument('-t', '--type-bsd',
                     metavar="<typeBsds>",

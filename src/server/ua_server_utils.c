@@ -64,7 +64,7 @@ addDataType(UA_Server *server, UA_DataType *dt) {
 
         /* Add a new types list. With the space for the datatypes already appended */
         current = &server->customTypes_internal[server->customTypes_internalSize-1];
-        current->types = (const UA_DataType*)UA_calloc(TYPES_LIST_SIZE, sizeof(UA_DataType));
+        current->types = (UA_DataType*)UA_calloc(TYPES_LIST_SIZE, sizeof(UA_DataType));
         current->typesSize = 0;
         if(!current->types) {
             server->customTypes_internalSize--;
