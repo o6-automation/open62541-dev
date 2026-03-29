@@ -235,6 +235,11 @@ function(ua_generate_datatypes)
         set(FILE_XML "--xml=${UA_GEN_DT_FILE_XML}")
     endif()
 
+    set(UA_GEN_CONST_ARG "")
+    if(UA_ENABLE_IMMUTABLE_DATATYPES)
+        set(UA_GEN_CONST_ARG "--const-arrays")
+    endif()
+
     # Command generating the DataType code files
     add_custom_command(COMMAND ${ARG_CONV_EXCL_ENV} ${Python3_EXECUTABLE}
                                ${open62541_TOOLS_DIR}/generate_datatypes.py
@@ -245,6 +250,7 @@ function(ua_generate_datatypes)
                                --type-csv=${UA_GEN_DT_FILE_CSV}
                                ${UA_GEN_DT_NO_BUILTIN}
                                ${UA_GEN_DT_INTERNAL_ARG}
+                               ${UA_GEN_CONST_ARG}
                                ${UA_GEN_DT_OUTPUT_DIR}/${UA_GEN_DT_NAME}
                                ${UA_GEN_DOC_ARG}
                        OUTPUT  ${UA_GEN_DT_OUTPUT_DIR}/${UA_GEN_DT_NAME}_generated.c

@@ -72,6 +72,11 @@ parser.add_argument('--gen-doc',
                     dest="gen_doc",
                     help='Generate a .rst documentation version of the type definition')
 
+parser.add_argument('--const-arrays',
+                    action='store_true',
+                    dest="const_arrays",
+                    help='Declare generated UA_DataType arrays as const (for placement in .rodata/flash)')
+
 parser.add_argument('-t', '--type-bsd',
                     metavar="<typeBsds>",
                     type=argparse.FileType('r'),
@@ -179,12 +184,13 @@ def _types_definition_equal(t1, t2):
     return False
 
 class CGenerator:
-    def __init__(self, parser, inname, outfile, is_internal_types, gen_doc, namespaceMap):
+    def __init__(self, parser, inname, outfile, is_internal_types, gen_doc, namespaceMap, const_arrays=False):
         self.parser = parser
         self.inname = inname
         self.outfile = outfile
         self.is_internal_types = is_internal_types
         self.gen_doc = gen_doc
+        self.const_arrays = const_arrays
         self.filtered_types = None
         self.namespaceMap = namespaceMap
         self.fh = None
@@ -586,7 +592,7 @@ _UA_BEGIN_DECLS
         if totalCount > 0:
 
             self.printh(
-                "extern UA_EXPORT UA_DataType UA_" + self.parser.outname.upper() + "[UA_" + self.parser.outname.upper() + "_COUNT];")
+                "extern UA_EXPORT " + ("const " if self.const_arrays else "") + "UA_DataType UA_" + self.parser.outname.upper() + "[UA_" + self.parser.outname.upper() + "_COUNT];")
 
             for ns in self.filtered_types:
                 for i, t_name in enumerate(self.filtered_types[ns]):
@@ -648,7 +654,7 @@ _UA_END_DECLS
 
         if totalCount > 0:
             self.printc(
-                "UA_DataType UA_{}[UA_{}_COUNT] = {{".format(self.parser.outname.upper(), self.parser.outname.upper()))
+                ("const " if self.const_arrays else "") + "UA_DataType UA_{}[UA_{}_COUNT] = {{".format(self.parser.outname.upper(), self.parser.outname.upper()))
 
             for ns in self.filtered_types:
                 for _, t_name in enumerate(self.filtered_types[ns]):
@@ -677,5 +683,5 @@ parser = CSVBSDTypeParser(args.opaque_map, args.selected_types,
                           namespaceMap)
 parser.create_types()
 
-generator = CGenerator(parser, inname, args.outfile, args.internal, args.gen_doc, namespaceMap)
+generator = CGenerator(parser, inname, args.outfile, args.internal, args.gen_doc, namespaceMap, args.const_arrays)
 generator.write_definitions()
