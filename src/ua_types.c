@@ -181,10 +181,10 @@ UA_cleanupDataTypeWithCustom(UA_DataTypeArray *customTypes) {
         UA_DataTypeArray *next = customTypes->next;
         if(customTypes->cleanup) {
             for(size_t i = 0; i < customTypes->typesSize; ++i) {
-                UA_DataType *type = (UA_DataType*)&customTypes->types[i];
+                UA_DataType *type = (UA_DataType*)(uintptr_t)&customTypes->types[i];
                 UA_DataType_clear(type);
             }
-            UA_free((UA_DataType*)customTypes->types);
+            UA_free((void*)(uintptr_t)customTypes->types);
             UA_free(customTypes);
         }
         customTypes = next;

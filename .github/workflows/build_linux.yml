@@ -30,9 +30,6 @@ jobs:
           - name: "Debug Build & Unit Tests with Alarms&Conditions (gcc)"
             cmd_action: unit_tests_alarms
 
-          - name: "Debug Build & Unit Tests with Immutable DataTypes (gcc)"
-            cmd_action: unit_tests_immutable_datatypes
-
           - name: "Debug Build & Unit Tests (tcc)"
             cmd_deps: sudo apt-get install -y -qq tcc
             cmd_action: CC=tcc unit_tests
@@ -99,6 +96,12 @@ jobs:
               name: "Debug Build & Unit Tests (clang-18)"
               cmd_deps: sudo apt-get install -y -qq clang-18 clang-tools-18 && sudo sysctl -w vm.mmap_rnd_bits=28
               cmd_action: CC=clang-18 CXX=clang++-18 unit_tests
+
+          # Immutable DataTypes build for latest Ubuntu only
+          - os: ubuntu-24.04
+            build:
+              name: "Debug Build & Unit Tests with Immutable DataTypes (gcc)"
+              cmd_action: unit_tests_immutable_datatypes
 
           # LWIP Build for specific Ubuntu version
           - os: ubuntu-24.04
