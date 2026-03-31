@@ -267,6 +267,8 @@ isTrue(uint8_t expr) {
 # ifdef UA_ARCHITECTURE_WIN32
 #  include <io.h>
 #  define UA_fileExists(X) ( _access(X, 0) == 0)
+# elif defined(UA_ARCHITECTURE_ZEPHYR)
+   int UA_fileExists(const char *path); /* implemented in arch/zephyr/fs_zephyr.c */
 # else
 #  include <unistd.h>
 #  define UA_fileExists(X) ( access(X, 0) == 0)
