@@ -2049,6 +2049,9 @@ UA_Server_readObjectProperty(UA_Server *server, const UA_NodeId objectId,
 
 #ifdef UA_ENABLE_RBAC
 
+/* Convenience bitmask: all permission bits set */
+#define UA_PERMISSIONTYPE_ALL ((UA_PermissionType)0xFFFFFFFF)
+
 /* UA_RolePermission
  * Maps a single role to its permissions bitmask. Used in the server
  * configuration to define presets and in the public API to set or query

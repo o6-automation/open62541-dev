@@ -1800,4 +1800,23 @@ initNS0PushManagement(UA_Server *server) {
     return retval;
 }
 
-#endif
+#ifdef UA_ENABLE_RBAC
+/* OPC UA Part 12 §7.2: The ServerConfiguration Object shall restrict
+ * access to the SecurityAdmin role. Set permissions on the object
+ * recursively so that all children (methods, variables, sub-objects)
+ * are protected. The RBAC-aware access control callbacks enforce
+ * CALL / READ / BROWSE based on the effective permissions. */
+UA_StatusCode
+initGDSRolePermissions(UA_Server *server) {
+    const UA_NodeId secAdmin =
+        UA_NODEID_NUMERIC(0, UA_NS0ID_WELLKNOWNROLE_SECURITYADMIN);
+    const UA_NodeId serverConfig =
+        UA_NODEID_NUMERIC(0, UA_NS0ID_SERVERCONFIGURATION);
+
+    return UA_Server_addRolePermissions(
+        server, serverConfig, secAdmin,
+        UA_PERMISSIONTYPE_ALL, true, true);
+}
+#endif /* UA_ENABLE_RBAC */
+
+#endif /* UA_ENABLE_GDS_PUSHMANAGEMENT */

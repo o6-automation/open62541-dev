@@ -246,7 +246,7 @@ START_TEST(Server_getEffectivePermissions_NoPermissionsOnNode) {
     retval = UA_Server_getEffectivePermissions(server, &adminSessionId,
                                                &testNodeId, &effectivePerms);
     ck_assert_uint_eq(retval, UA_STATUSCODE_GOOD);
-    ck_assert_uint_eq(effectivePerms, 0xFFFFFFFF);
+    ck_assert_uint_eq(effectivePerms, UA_PERMISSIONTYPE_ALL);
 
     UA_Server_deleteNode(server, testNodeId, true);
 }
