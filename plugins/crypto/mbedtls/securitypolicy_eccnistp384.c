@@ -8,7 +8,9 @@
 #include <open62541/plugin/securitypolicy_default.h>
 #include <open62541/util.h>
 
-#if defined(UA_ENABLE_ENCRYPTION_MBEDTLS) && MBEDTLS_VERSION_NUMBER >= 0x03000000
+#if defined(UA_ENABLE_ENCRYPTION_MBEDTLS)
+#include <mbedtls/version.h>
+#if MBEDTLS_VERSION_NUMBER >= 0x03000000
 
 #include "securitypolicy_common.h"
 
@@ -661,4 +663,5 @@ UA_SecurityPolicy_EccNistP384(UA_SecurityPolicy *sp,
     return UA_STATUSCODE_GOOD;
 }
 
-#endif
+#endif /* MBEDTLS_VERSION_NUMBER >= 0x03000000 */
+#endif /* UA_ENABLE_ENCRYPTION_MBEDTLS */
