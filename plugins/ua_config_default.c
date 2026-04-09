@@ -12,6 +12,7 @@
  *    Copyright 2017-2020 (c) HMS Industrial Networks AB (Author: Jonas Green)
  *    Copyright 2020 (c) Wind River Systems, Inc.
  *    Copyright 2024 (c) Siemens AG (Authors: Tin Raic, Thomas Zeschg)
+ *    Copyright 2026 (c) o6 Automation GmbH (Author: Andreas Ebner)
  */
 
 #include <open62541/plugin/accesscontrol_default.h>
@@ -210,7 +211,7 @@ const UA_ConnectionConfig UA_ConnectionConfig_default = {
 #define APPLICATION_URI "urn:open62541.unconfigured.application"
 
 /* Upper bound */
-#define SECURITY_POLICY_SIZE 7
+#define SECURITY_POLICY_SIZE 12
 
 #define STRINGIFY(arg) #arg
 #define VERSION(MAJOR, MINOR, PATCH, LABEL) \
