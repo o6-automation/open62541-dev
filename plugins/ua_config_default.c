@@ -28,6 +28,10 @@
 
 #include "../deps/mp_printf.h"
 
+#if defined(UA_ENABLE_ENCRYPTION_MBEDTLS)
+#include <mbedtls/version.h>
+#endif
+
 #include <stdio.h>
 #ifdef UA_ARCHITECTURE_WIN32
 # include <winsock2.h>
@@ -864,7 +868,8 @@ UA_ServerConfig_addSecurityPolicyAes256Sha256RsaPss(UA_ServerConfig *config,
     return UA_STATUSCODE_GOOD;
 }
 
-#if defined(UA_ENABLE_ENCRYPTION_OPENSSL)
+#if defined(UA_ENABLE_ENCRYPTION_OPENSSL) || \
+    (defined(UA_ENABLE_ENCRYPTION_MBEDTLS) && MBEDTLS_VERSION_NUMBER >= 0x03000000)
 UA_EXPORT UA_StatusCode
 UA_ServerConfig_addSecurityPolicyEccNistP256(UA_ServerConfig *config,
                                                      const UA_ByteString *certificate,
@@ -996,6 +1001,9 @@ UA_ServerConfig_addSecurityPolicyEccBrainpoolP384r1(UA_ServerConfig *config,
     config->securityPoliciesSize++;
     return UA_STATUSCODE_GOOD;
 }
+#endif /* UA_ENABLE_ENCRYPTION_OPENSSL || mbedTLS ECC */
+
+#if defined(UA_ENABLE_ENCRYPTION_OPENSSL)
 UA_EXPORT UA_StatusCode
 UA_ServerConfig_addSecurityPolicyEccCurve25519(UA_ServerConfig *config,
                                                const UA_ByteString *certificate,
@@ -1099,7 +1107,8 @@ addAllSecurityPolicies(UA_SecurityPolicy *sp, size_t *length,
                        UA_StatusCode_name(retval));
     }
 
-#if defined(UA_ENABLE_ENCRYPTION_OPENSSL)
+#if defined(UA_ENABLE_ENCRYPTION_OPENSSL) || \
+    (defined(UA_ENABLE_ENCRYPTION_MBEDTLS) && MBEDTLS_VERSION_NUMBER >= 0x03000000)
     /* EccNistP256 */
     retval = UA_SecurityPolicy_EccNistP256(sp + *length, applicationType,
                                            certificate, privateKey, logging);
@@ -1139,7 +1148,9 @@ addAllSecurityPolicies(UA_SecurityPolicy *sp, size_t *length,
                        "Could not add SecurityPolicy#EccBrainpoolP384r1 with error code %s",
                        UA_StatusCode_name(retval));
     }
+#endif /* UA_ENABLE_ENCRYPTION_OPENSSL || mbedTLS ECC */
 
+#if defined(UA_ENABLE_ENCRYPTION_OPENSSL)
     /* EccCurve25519 */
     retval = UA_SecurityPolicy_EccCurve25519(sp + *length, applicationType,
                                              certificate, privateKey, logging);
