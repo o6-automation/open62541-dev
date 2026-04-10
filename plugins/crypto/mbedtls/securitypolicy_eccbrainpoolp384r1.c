@@ -88,9 +88,19 @@ UA_Policy_EccBrainpoolP384r1_New_Context(UA_SecurityPolicy *securityPolicy,
     }
 
     UA_StatusCode retval =
-        mbedtls_thumbprint_sha1(&securityPolicy->localCertificate,
-                                &context->localCertThumbprint);
+        UA_ByteString_allocBuffer(&context->localCertThumbprint, UA_SHA1_LENGTH);
     if(retval != UA_STATUSCODE_GOOD) {
+        mbedtls_pk_free(&context->localPrivateKey);
+        mbedtls_ctr_drbg_free(&context->drbgContext);
+        mbedtls_entropy_free(&context->entropyContext);
+        UA_free(context);
+        return retval;
+    }
+
+    retval = mbedtls_thumbprint_sha1(&securityPolicy->localCertificate,
+                                     &context->localCertThumbprint);
+    if(retval != UA_STATUSCODE_GOOD) {
+        UA_ByteString_clear(&context->localCertThumbprint);
         mbedtls_pk_free(&context->localPrivateKey);
         mbedtls_ctr_drbg_free(&context->drbgContext);
         mbedtls_entropy_free(&context->entropyContext);
@@ -170,6 +180,9 @@ updateCertificateAndPrivateKey_sp_EccBrainpoolP384r1(UA_SecurityPolicy *security
     }
 
     UA_ByteString_clear(&pc->localCertThumbprint);
+    retval = UA_ByteString_allocBuffer(&pc->localCertThumbprint, UA_SHA1_LENGTH);
+    if(retval != UA_STATUSCODE_GOOD)
+        goto error;
     retval = mbedtls_thumbprint_sha1(&securityPolicy->localCertificate,
                                      &pc->localCertThumbprint);
     if(retval != UA_STATUSCODE_GOOD)

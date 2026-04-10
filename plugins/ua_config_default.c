@@ -1565,11 +1565,9 @@ UA_ServerConfig_addSecurityPolicies_Filestore(UA_ServerConfig *config,
     if(certificate && privateKey) {
         size_t certificateKeyLength = 0;
         retval = UA_CertificateUtils_getKeySize((UA_ByteString*)(uintptr_t)certificate, &certificateKeyLength);
-        if(retval != UA_STATUSCODE_GOOD)
-            return retval;
-
-        if(certificateKeyLength > 2048)
+        if(retval == UA_STATUSCODE_GOOD && certificateKeyLength > 2048)
             onlySecure = true;
+        retval = UA_STATUSCODE_GOOD;
     } else {
         onlyNone = true;
     }
@@ -1792,7 +1790,8 @@ UA_ServerConfig_addSecurityPolicies_Filestore(UA_ServerConfig *config,
         }
     }
 
-#if defined(UA_ENABLE_ENCRYPTION_OPENSSL)
+#if defined(UA_ENABLE_ENCRYPTION_OPENSSL) || \
+    (defined(UA_ENABLE_ENCRYPTION_MBEDTLS) && MBEDTLS_VERSION_NUMBER >= 0x03000000)
     /* EccNistP256 */
     UA_SecurityPolicy *eccnistp256Policy =
         (UA_SecurityPolicy*)UA_calloc(1, sizeof(UA_SecurityPolicy));
@@ -1816,6 +1815,87 @@ UA_ServerConfig_addSecurityPolicies_Filestore(UA_ServerConfig *config,
         if(retval != UA_STATUSCODE_GOOD) {
             UA_LOG_WARNING(config->logging, UA_LOGCATEGORY_APPLICATION,
                            "Could not add SecurityPolicy#ECC_nistP256 with error code %s",
+                           UA_StatusCode_name(retval));
+        }
+    }
+
+    /* EccNistP384 */
+    UA_SecurityPolicy *eccnistp384Policy =
+        (UA_SecurityPolicy*)UA_calloc(1, sizeof(UA_SecurityPolicy));
+    if(!eccnistp384Policy) {
+        UA_ByteString_memZero(&decryptedPrivateKey);
+        UA_ByteString_clear(&decryptedPrivateKey);
+        return UA_STATUSCODE_BADOUTOFMEMORY;
+    }
+    retval = UA_SecurityPolicy_EccNistP384(eccnistp384Policy, UA_APPLICATIONTYPE_SERVER,
+                                        localCertificate, decryptedPrivateKey,
+                                        config->logging);
+    if(retval != UA_STATUSCODE_GOOD) {
+        UA_LOG_WARNING(config->logging, UA_LOGCATEGORY_APPLICATION,
+                       "Could not add SecurityPolicy#ECC_nistP384 with error code %s",
+                       UA_StatusCode_name(retval));
+        eccnistp384Policy->clear(eccnistp384Policy);
+        UA_free(eccnistp384Policy);
+        eccnistp384Policy = NULL;
+    } else {
+        retval = UA_ServerConfig_addSecurityPolicy_Filestore(config, eccnistp384Policy, storePath);
+        if(retval != UA_STATUSCODE_GOOD) {
+            UA_LOG_WARNING(config->logging, UA_LOGCATEGORY_APPLICATION,
+                           "Could not add SecurityPolicy#ECC_nistP384 with error code %s",
+                           UA_StatusCode_name(retval));
+        }
+    }
+
+    /* EccBrainpoolP256r1 */
+    UA_SecurityPolicy *eccbrainpoolp256r1Policy =
+        (UA_SecurityPolicy*)UA_calloc(1, sizeof(UA_SecurityPolicy));
+    if(!eccbrainpoolp256r1Policy) {
+        UA_ByteString_memZero(&decryptedPrivateKey);
+        UA_ByteString_clear(&decryptedPrivateKey);
+        return UA_STATUSCODE_BADOUTOFMEMORY;
+    }
+    retval = UA_SecurityPolicy_EccBrainpoolP256r1(eccbrainpoolp256r1Policy, UA_APPLICATIONTYPE_SERVER,
+                                        localCertificate, decryptedPrivateKey,
+                                        config->logging);
+    if(retval != UA_STATUSCODE_GOOD) {
+        UA_LOG_WARNING(config->logging, UA_LOGCATEGORY_APPLICATION,
+                       "Could not add SecurityPolicy#ECC_brainpoolP256r1 with error code %s",
+                       UA_StatusCode_name(retval));
+        eccbrainpoolp256r1Policy->clear(eccbrainpoolp256r1Policy);
+        UA_free(eccbrainpoolp256r1Policy);
+        eccbrainpoolp256r1Policy = NULL;
+    } else {
+        retval = UA_ServerConfig_addSecurityPolicy_Filestore(config, eccbrainpoolp256r1Policy, storePath);
+        if(retval != UA_STATUSCODE_GOOD) {
+            UA_LOG_WARNING(config->logging, UA_LOGCATEGORY_APPLICATION,
+                           "Could not add SecurityPolicy#ECC_brainpoolP256r1 with error code %s",
+                           UA_StatusCode_name(retval));
+        }
+    }
+
+    /* EccBrainpoolP384r1 */
+    UA_SecurityPolicy *eccbrainpoolp384r1Policy =
+        (UA_SecurityPolicy*)UA_calloc(1, sizeof(UA_SecurityPolicy));
+    if(!eccbrainpoolp384r1Policy) {
+        UA_ByteString_memZero(&decryptedPrivateKey);
+        UA_ByteString_clear(&decryptedPrivateKey);
+        return UA_STATUSCODE_BADOUTOFMEMORY;
+    }
+    retval = UA_SecurityPolicy_EccBrainpoolP384r1(eccbrainpoolp384r1Policy, UA_APPLICATIONTYPE_SERVER,
+                                        localCertificate, decryptedPrivateKey,
+                                        config->logging);
+    if(retval != UA_STATUSCODE_GOOD) {
+        UA_LOG_WARNING(config->logging, UA_LOGCATEGORY_APPLICATION,
+                       "Could not add SecurityPolicy#ECC_brainpoolP384r1 with error code %s",
+                       UA_StatusCode_name(retval));
+        eccbrainpoolp384r1Policy->clear(eccbrainpoolp384r1Policy);
+        UA_free(eccbrainpoolp384r1Policy);
+        eccbrainpoolp384r1Policy = NULL;
+    } else {
+        retval = UA_ServerConfig_addSecurityPolicy_Filestore(config, eccbrainpoolp384r1Policy, storePath);
+        if(retval != UA_STATUSCODE_GOOD) {
+            UA_LOG_WARNING(config->logging, UA_LOGCATEGORY_APPLICATION,
+                           "Could not add SecurityPolicy#ECC_brainpoolP384r1 with error code %s",
                            UA_StatusCode_name(retval));
         }
     }
