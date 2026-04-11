@@ -481,7 +481,8 @@ if(UA_ENABLE_ENCRYPTION_OPENSSL OR
     ua_add_test(encryption/check_encryption_eccnistp256.c)
 endif()
 
-if(UA_ENABLE_ENCRYPTION_OPENSSL)
+if(UA_ENABLE_ENCRYPTION_OPENSSL OR
+   (UA_ENABLE_ENCRYPTION_MBEDTLS AND MBEDTLS_VERSION_MAJOR GREATER_EQUAL 3))
     ua_add_test(encryption/check_encryption_ecc.c)
 endif()
 

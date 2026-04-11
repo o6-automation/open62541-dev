@@ -63,6 +63,7 @@ static EccCurveTestData eccCurves[] = {
      KEY_BP384R1_DER_DATA, KEY_BP384R1_DER_LENGTH,
      CERT_BP384R1_PEM_DATA, CERT_BP384R1_PEM_LENGTH,
      KEY_BP384R1_PEM_DATA, KEY_BP384R1_PEM_LENGTH},
+#ifdef UA_ENABLE_ENCRYPTION_OPENSSL
     {"ECC_curve25519",
      "http://opcfoundation.org/UA/SecurityPolicy#ECC_curve25519",
      CERT_ED25519_DER_DATA, CERT_ED25519_DER_LENGTH,
@@ -75,6 +76,7 @@ static EccCurveTestData eccCurves[] = {
      KEY_ED448_DER_DATA, KEY_ED448_DER_LENGTH,
      CERT_ED448_PEM_DATA, CERT_ED448_PEM_LENGTH,
      KEY_ED448_PEM_DATA, KEY_ED448_PEM_LENGTH}
+#endif
 };
 
 #define NUM_ECC_CURVES (sizeof(eccCurves) / sizeof(eccCurves[0]))
@@ -127,11 +129,16 @@ static void setup_common(void) {
 DEFINE_CURVE_SETUP(0)
 DEFINE_CURVE_SETUP(1)
 DEFINE_CURVE_SETUP(2)
+#ifdef UA_ENABLE_ENCRYPTION_OPENSSL
 DEFINE_CURVE_SETUP(3)
 DEFINE_CURVE_SETUP(4)
+#endif
 
 static void (*curveSetups[])(void) = {
-    setup_curve_0, setup_curve_1, setup_curve_2, setup_curve_3, setup_curve_4
+    setup_curve_0, setup_curve_1, setup_curve_2,
+#ifdef UA_ENABLE_ENCRYPTION_OPENSSL
+    setup_curve_3, setup_curve_4
+#endif
 };
 
 static void teardown(void) {
