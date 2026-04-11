@@ -1,0 +1,274 @@
+/* ========================================================================
+ * Interoperability tests: .NET OPC UA client against open62541 C server.
+ *
+ * Reads OPCUA_INTEROP_SERVER_URL environment variable for the C server
+ * endpoint (e.g. "opc.tcp://localhost:4840").
+ *
+ * The C server is expected to be an instance of ci_server with:
+ *   - User credentials: user1 / password
+ *   - Variable: ns=1;s=the.answer (Int32 = 43)
+ *   - Method: ns=1;i=62541 (HelloWorld)
+ * ======================================================================*/
+
+using Microsoft.Extensions.Logging;
+using NUnit.Framework;
+using Opc.Ua;
+using Opc.Ua.Client;
+using Opc.Ua.Configuration;
+
+namespace Opc.Ua.Interop.Tests
+{
+    internal sealed class InteropTelemetryContext : TelemetryContextBase
+    {
+        public InteropTelemetryContext()
+            : base(Microsoft.Extensions.Logging.LoggerFactory.Create(builder => builder
+                .SetMinimumLevel(LogLevel.Debug))) { }
+    }
+
+    [TestFixture]
+    [Category("Interop")]
+    public class InteropClientTest
+    {
+        private string _serverUrl = null!;
+        private ApplicationConfiguration _config = null!;
+        private DefaultSessionFactory _sessionFactory = null!;
+        private ITelemetryContext _telemetry = null!;
+
+        [OneTimeSetUp]
+        public async Task OneTimeSetUp()
+        {
+            _serverUrl = Environment.GetEnvironmentVariable("OPCUA_INTEROP_SERVER_URL")
+                ?? "opc.tcp://localhost:4840";
+
+            _telemetry = new InteropTelemetryContext();
+
+            TestContext.Out.WriteLine($"Interop server URL: {_serverUrl}");
+
+            var pkiRoot = Path.Combine(Path.GetTempPath(),
+                "interop_pki_" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(pkiRoot);
+
+            var applicationCerts =
+                ApplicationConfigurationBuilder.CreateDefaultApplicationCertificates(
+                    "CN=InteropTestClient, O=open62541, DC=localhost",
+                    CertificateStoreType.Directory,
+                    pkiRoot);
+
+            _config = await new ApplicationInstance(_telemetry)
+            {
+                ApplicationName = "InteropTestClient",
+                ApplicationType = ApplicationType.Client
+            }
+                .Build("urn:localhost:open62541:InteropTestClient",
+                       "http://open62541.org/UA/InteropTestClient")
+                .AsClient()
+                .AddSecurityConfiguration(applicationCerts, pkiRoot)
+                .SetAutoAcceptUntrustedCertificates(true)
+                .SetRejectSHA1SignedCertificates(false)
+                .SetMinimumCertificateKeySize(0)
+                .CreateAsync().ConfigureAwait(false);
+
+            // Generate application certificates if they don't exist
+            var app = new ApplicationInstance(_telemetry)
+            {
+                ApplicationName = "InteropTestClient",
+                ApplicationType = ApplicationType.Client,
+                ApplicationConfiguration = _config
+            };
+            await app.CheckApplicationInstanceCertificatesAsync(true)
+                .ConfigureAwait(false);
+
+            _sessionFactory = new DefaultSessionFactory(_telemetry);
+        }
+
+        private async Task<ConfiguredEndpoint> GetEndpointAsync(bool useSecurity)
+        {
+            var endpoint = await CoreClientUtils.SelectEndpointAsync(
+                _config, _serverUrl, useSecurity: useSecurity,
+                telemetry: _telemetry, ct: CancellationToken.None).ConfigureAwait(false);
+            return new ConfiguredEndpoint(null, endpoint,
+                EndpointConfiguration.Create(_config));
+        }
+
+        private Task<ISession> CreateSessionAsync(
+            ConfiguredEndpoint endpoint, IUserIdentity? identity = null)
+        {
+            return _sessionFactory.CreateAsync(
+                _config, endpoint, false, false,
+                "InteropTest", 30_000u,
+                identity ?? new UserIdentity(),
+                default, CancellationToken.None);
+        }
+
+        [Test, Order(1)]
+        public async Task ConnectAnonymous()
+        {
+            var endpoint = await GetEndpointAsync(useSecurity: false).ConfigureAwait(false);
+            using var session = await CreateSessionAsync(endpoint).ConfigureAwait(false);
+
+            Assert.That(session.Connected, Is.True, "Session should be connected");
+
+            var serverState = await session.ReadValueAsync(
+                VariableIds.Server_ServerStatus_State,
+                CancellationToken.None).ConfigureAwait(false);
+            Assert.That(serverState, Is.Not.Null);
+            Assert.That(serverState.StatusCode, Is.EqualTo(StatusCodes.Good));
+
+            TestContext.Out.WriteLine($"Server state: {serverState.WrappedValue}");
+
+            await session.CloseAsync(CancellationToken.None).ConfigureAwait(false);
+        }
+
+        [Test, Order(2)]
+        public async Task ConnectUsernamePassword()
+        {
+            var endpoint = await GetEndpointAsync(useSecurity: false).ConfigureAwait(false);
+            using var session = await CreateSessionAsync(endpoint,
+                new UserIdentity("user1", "password"u8)).ConfigureAwait(false);
+
+            Assert.That(session.Connected, Is.True,
+                "Session should be connected with username/password");
+
+            await session.CloseAsync(CancellationToken.None).ConfigureAwait(false);
+        }
+
+        [Test, Order(3)]
+        public async Task ReadNamespaceArray()
+        {
+            var endpoint = await GetEndpointAsync(useSecurity: false).ConfigureAwait(false);
+            using var session = await CreateSessionAsync(endpoint).ConfigureAwait(false);
+
+            var namespaceArray = await session.ReadValueAsync(
+                VariableIds.Server_NamespaceArray,
+                CancellationToken.None).ConfigureAwait(false);
+            Assert.That(namespaceArray, Is.Not.Null);
+            Assert.That(namespaceArray.StatusCode, Is.EqualTo(StatusCodes.Good));
+
+            var rawValue = namespaceArray.WrappedValue.AsBoxedObject();
+            string[]? namespaces = rawValue as string[];
+            if (namespaces == null && rawValue is IConvertableToArray convertable)
+            {
+                namespaces = convertable.ToArray() as string[];
+            }
+            Assert.That(namespaces, Is.Not.Null,
+                $"Expected string[], got {rawValue?.GetType().FullName ?? "null"}");
+            Assert.That(namespaces!.Length, Is.GreaterThan(0));
+            Assert.That(namespaces[0], Is.EqualTo(Namespaces.OpcUa));
+
+            TestContext.Out.WriteLine($"Namespaces: {string.Join(", ", namespaces)}");
+
+            await session.CloseAsync(CancellationToken.None).ConfigureAwait(false);
+        }
+
+        [Test, Order(4)]
+        public async Task ReadCustomVariable()
+        {
+            var endpoint = await GetEndpointAsync(useSecurity: false).ConfigureAwait(false);
+            using var session = await CreateSessionAsync(endpoint).ConfigureAwait(false);
+
+            // ci_server exposes ns=1;s=the.answer as Int32 = 43
+            var nodeId = new NodeId("the.answer", 1);
+            var value = await session.ReadValueAsync(
+                nodeId, CancellationToken.None).ConfigureAwait(false);
+            Assert.That(value, Is.Not.Null);
+            Assert.That(value.StatusCode, Is.EqualTo(StatusCodes.Good));
+            Assert.That(value.WrappedValue.AsBoxedObject(), Is.EqualTo(43));
+
+            TestContext.Out.WriteLine($"the.answer = {value.WrappedValue.AsBoxedObject()}");
+
+            await session.CloseAsync(CancellationToken.None).ConfigureAwait(false);
+        }
+
+        [Test, Order(5)]
+        public async Task CallHelloWorldMethod()
+        {
+            var endpoint = await GetEndpointAsync(useSecurity: false).ConfigureAwait(false);
+            using var session = await CreateSessionAsync(endpoint).ConfigureAwait(false);
+
+            // ci_server HelloWorld method: ns=1;i=62541
+            // Parent object: ObjectsFolder (ns=0;i=85)
+            // Input: String, Output: String "Hello <input>"
+            var objectId = ObjectIds.ObjectsFolder;
+            var methodId = new NodeId(62541, 1);
+
+            var outputs = await session.CallAsync(
+                objectId, methodId, CancellationToken.None,
+                new Variant("World")).ConfigureAwait(false);
+
+            Assert.That(outputs.Count, Is.GreaterThan(0),
+                "Method should return at least one output");
+
+            TestContext.Out.WriteLine($"HelloWorld result: {outputs[0]}");
+
+            await session.CloseAsync(CancellationToken.None).ConfigureAwait(false);
+        }
+
+        [Test, Order(10)]
+        public async Task ConnectWithSecurityBasic256Sha256()
+        {
+            // Discover endpoints
+            var endpointConfig = EndpointConfiguration.Create(_config);
+            endpointConfig.OperationTimeout = 15000;
+
+            using var discoveryClient = await DiscoveryClient.CreateAsync(
+                new Uri(_serverUrl), endpointConfig,
+                telemetry: _telemetry, ct: CancellationToken.None).ConfigureAwait(false);
+
+            var endpoints = await discoveryClient.GetEndpointsAsync(
+                default, CancellationToken.None).ConfigureAwait(false);
+
+            await discoveryClient.CloseAsync(CancellationToken.None).ConfigureAwait(false);
+
+            EndpointDescription? secureEndpoint = null;
+            foreach (var e in endpoints)
+            {
+                if (e.SecurityPolicyUri == SecurityPolicies.Basic256Sha256 &&
+                    e.SecurityMode == MessageSecurityMode.SignAndEncrypt)
+                {
+                    secureEndpoint = e;
+                    break;
+                }
+            }
+
+            if (secureEndpoint == null)
+            {
+                Assert.Ignore("Server does not offer Basic256Sha256 SignAndEncrypt endpoint");
+                return;
+            }
+
+            var configuredEndpoint = new ConfiguredEndpoint(null, secureEndpoint,
+                EndpointConfiguration.Create(_config));
+
+            ISession session;
+            try
+            {
+                session = await CreateSessionAsync(configuredEndpoint).ConfigureAwait(false);
+            }
+            catch (ServiceResultException ex) when (
+                ex.StatusCode == StatusCodes.BadSecurityChecksFailed ||
+                ex.StatusCode == StatusCodes.BadCertificateUntrusted)
+            {
+                Assert.Ignore(
+                    "Server rejected client certificate (mutual trust not configured). " +
+                    "Use interop_test.sh orchestration for encrypted connections.");
+                return;
+            }
+
+            using (session)
+            {
+                Assert.That(session.Connected, Is.True,
+                    "Session should be connected with Basic256Sha256");
+
+                var serverState = await session.ReadValueAsync(
+                    VariableIds.Server_ServerStatus_State,
+                    CancellationToken.None).ConfigureAwait(false);
+                Assert.That(serverState.StatusCode, Is.EqualTo(StatusCodes.Good));
+
+                TestContext.Out.WriteLine(
+                    $"Secure session established with {session.Endpoint.SecurityPolicyUri}");
+
+                await session.CloseAsync(CancellationToken.None).ConfigureAwait(false);
+            }
+        }
+    }
+}
