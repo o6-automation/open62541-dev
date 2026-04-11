@@ -1564,10 +1564,10 @@ UA_ServerConfig_addSecurityPolicies_Filestore(UA_ServerConfig *config,
 
     if(certificate && privateKey) {
         size_t certificateKeyLength = 0;
-        retval = UA_CertificateUtils_getKeySize((UA_ByteString*)(uintptr_t)certificate, &certificateKeyLength);
-        if(retval == UA_STATUSCODE_GOOD && certificateKeyLength > 2048)
+        if(UA_CertificateUtils_getKeySize((UA_ByteString*)(uintptr_t)certificate,
+                                          &certificateKeyLength) == UA_STATUSCODE_GOOD &&
+           certificateKeyLength > 2048)
             onlySecure = true;
-        retval = UA_STATUSCODE_GOOD;
     } else {
         onlyNone = true;
     }
