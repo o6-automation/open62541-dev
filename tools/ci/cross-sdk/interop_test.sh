@@ -109,6 +109,19 @@ if ! wait_for_server "localhost:$C_PORT"; then
     echo "FAIL: C server did not start"
     RESULT=1
 else
+    echo "Running C interop client against C server (self-test)..."
+    if "$INTEROP_CLIENT" \
+        "opc.tcp://localhost:$C_PORT" \
+        "$CERT_DIR/client_c.cert.der" \
+        "$CERT_DIR/client_c.key.der" \
+        "$CERT_DIR/server_c.cert.der" 2>&1; then
+        echo "PASS: Scenario A - C client self-test passed"
+    else
+        echo "FAIL: Scenario A - C client self-test failed"
+        RESULT=1
+    fi
+
+    echo ""
     echo "Running .NET interop tests against C server..."
     export OPCUA_INTEROP_SERVER_URL="opc.tcp://localhost:$C_PORT"
     export OPCUA_INTEROP_CERT_DIR="$CERT_DIR"
@@ -152,24 +165,15 @@ if ! wait_for_server "localhost:$DOTNET_PORT"; then
     RESULT=1
 else
     echo "Running C interop client against .NET server..."
-    # Test without encryption first (None policy)
-    if "$INTEROP_CLIENT" "opc.tcp://localhost:$DOTNET_PORT" 2>&1; then
-        echo "PASS: Scenario B - C client (no encryption) tests passed"
-    else
-        echo "FAIL: Scenario B - C client (no encryption) tests failed"
-        RESULT=1
-    fi
-
-    # Test with Basic256Sha256 encryption
+    # C client auto-tests all policies when certs are provided
     if "$INTEROP_CLIENT" \
         "opc.tcp://localhost:$DOTNET_PORT" \
-        "http://opcfoundation.org/UA/SecurityPolicy#Basic256Sha256" \
         "$CERT_DIR/client_c.cert.der" \
         "$CERT_DIR/client_c.key.der" \
         "$CERT_DIR/server_dotnet.cert.der" 2>&1; then
-        echo "PASS: Scenario B - C client (Basic256Sha256) tests passed"
+        echo "PASS: Scenario B - C client tests passed"
     else
-        echo "FAIL: Scenario B - C client (Basic256Sha256) tests failed"
+        echo "FAIL: Scenario B - C client tests failed"
         RESULT=1
     fi
 fi

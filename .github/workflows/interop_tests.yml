@@ -30,6 +30,11 @@ jobs:
         with:
           submodules: true
 
+      - name: Unshallow UA-.NETStandard submodule
+        # Nerdbank.GitVersioning requires full git history; the default
+        # shallow submodule clone (--depth=1) causes a build error.
+        run: git -C internal/UA-.NETStandard fetch --unshallow
+
       - name: Install system dependencies
         run: |
           sudo apt-get update

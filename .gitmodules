@@ -13,3 +13,6 @@
 	path = deps/nodesetLoader
 	url = https://github.com/open62541/nodesetLoader
 	branch = master
+[submodule "internal/UA-.NETStandard"]
+	path = internal/UA-.NETStandard
+	url = https://github.com/OPCFoundation/UA-.NETStandard.git

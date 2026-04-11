@@ -206,29 +206,33 @@ namespace Opc.Ua.Interop.Tests
         [Test, Order(10)]
         public async Task ConnectWithSecurityBasic256Sha256()
         {
-            // Discover endpoints
-            var endpointConfig = EndpointConfiguration.Create(_config);
-            endpointConfig.OperationTimeout = 15000;
+            await ConnectWithSecurityPolicyAsync(
+                SecurityPolicies.Basic256Sha256,
+                "Basic256Sha256").ConfigureAwait(false);
+        }
 
-            using var discoveryClient = await DiscoveryClient.CreateAsync(
-                new Uri(_serverUrl), endpointConfig,
-                telemetry: _telemetry, ct: CancellationToken.None).ConfigureAwait(false);
+        [Test, Order(11)]
+        public async Task ConnectWithSecurityAes128Sha256RsaOaep()
+        {
+            await ConnectWithSecurityPolicyAsync(
+                SecurityPolicies.Aes128_Sha256_RsaOaep,
+                "Aes128_Sha256_RsaOaep").ConfigureAwait(false);
+        }
 
-            var endpoints = await discoveryClient.GetEndpointsAsync(
-                default, CancellationToken.None).ConfigureAwait(false);
+        [Test, Order(12)]
+        public async Task ConnectWithSecurityAes256Sha256RsaPss()
+        {
+            await ConnectWithSecurityPolicyAsync(
+                SecurityPolicies.Aes256_Sha256_RsaPss,
+                "Aes256_Sha256_RsaPss").ConfigureAwait(false);
+        }
 
-            await discoveryClient.CloseAsync(CancellationToken.None).ConfigureAwait(false);
-
-            EndpointDescription? secureEndpoint = null;
-            foreach (var e in endpoints)
-            {
-                if (e.SecurityPolicyUri == SecurityPolicies.Basic256Sha256 &&
-                    e.SecurityMode == MessageSecurityMode.SignAndEncrypt)
-                {
-                    secureEndpoint = e;
-                    break;
-                }
-            }
+        [Test, Order(20)]
+        public async Task ConnectUsernameOverEncrypted()
+        {
+            // T-8: Username/Password over Basic256Sha256
+            var secureEndpoint = await FindSecureEndpointAsync(
+                SecurityPolicies.Basic256Sha256).ConfigureAwait(false);
 
             if (secureEndpoint == null)
             {
@@ -242,14 +246,165 @@ namespace Opc.Ua.Interop.Tests
             ISession session;
             try
             {
-                session = await CreateSessionAsync(configuredEndpoint).ConfigureAwait(false);
+                session = await CreateSessionAsync(configuredEndpoint,
+                    new UserIdentity("user1", "password"u8)).ConfigureAwait(false);
             }
             catch (ServiceResultException ex) when (
                 ex.StatusCode == StatusCodes.BadSecurityChecksFailed ||
                 ex.StatusCode == StatusCodes.BadCertificateUntrusted)
             {
                 Assert.Ignore(
-                    "Server rejected client certificate (mutual trust not configured). " +
+                    "Server rejected client certificate (mutual trust not configured).");
+                return;
+            }
+
+            using (session)
+            {
+                Assert.That(session.Connected, Is.True,
+                    "Session should be connected with username over Basic256Sha256");
+
+                var serverState = await session.ReadValueAsync(
+                    VariableIds.Server_ServerStatus_State,
+                    CancellationToken.None).ConfigureAwait(false);
+                Assert.That(serverState.StatusCode, Is.EqualTo(StatusCodes.Good));
+
+                TestContext.Out.WriteLine(
+                    $"T-8: Username session over {session.Endpoint.SecurityPolicyUri}");
+
+                await session.CloseAsync(CancellationToken.None).ConfigureAwait(false);
+            }
+        }
+
+        [Test, Order(21)]
+        public async Task ConnectWithCertificateAuth()
+        {
+            // T-9: X509 Certificate Authentication
+            var secureEndpoint = await FindSecureEndpointAsync(
+                SecurityPolicies.Basic256Sha256).ConfigureAwait(false);
+
+            if (secureEndpoint == null)
+            {
+                Assert.Ignore("Server does not offer Basic256Sha256 SignAndEncrypt endpoint");
+                return;
+            }
+
+            // Check if the endpoint supports X509 user token
+            bool hasX509Token = false;
+            foreach (var policy in secureEndpoint.UserIdentityTokens)
+            {
+                if (policy.TokenType == UserTokenType.Certificate)
+                {
+                    hasX509Token = true;
+                    break;
+                }
+            }
+            if (!hasX509Token)
+            {
+                Assert.Ignore("Server does not offer X509 certificate user token");
+                return;
+            }
+
+            var configuredEndpoint = new ConfiguredEndpoint(null, secureEndpoint,
+                EndpointConfiguration.Create(_config));
+
+            // Use the application instance certificate as user identity
+            var appCert = await _config.SecurityConfiguration
+                .ApplicationCertificate.FindAsync(true).ConfigureAwait(false);
+            if (appCert == null)
+            {
+                Assert.Ignore("No application certificate available for X509 auth");
+                return;
+            }
+
+            ISession session;
+            try
+            {
+                session = await CreateSessionAsync(configuredEndpoint,
+                    new UserIdentity(appCert)).ConfigureAwait(false);
+            }
+            catch (ServiceResultException ex) when (
+                ex.StatusCode == StatusCodes.BadSecurityChecksFailed ||
+                ex.StatusCode == StatusCodes.BadCertificateUntrusted ||
+                ex.StatusCode == StatusCodes.BadIdentityTokenRejected)
+            {
+                Assert.Ignore(
+                    "Server rejected X509 identity (trust not configured). " +
+                    $"Status: {ex.StatusCode}");
+                return;
+            }
+
+            using (session)
+            {
+                Assert.That(session.Connected, Is.True,
+                    "Session should be connected with X509 certificate auth");
+
+                var serverState = await session.ReadValueAsync(
+                    VariableIds.Server_ServerStatus_State,
+                    CancellationToken.None).ConfigureAwait(false);
+                Assert.That(serverState.StatusCode, Is.EqualTo(StatusCodes.Good));
+
+                TestContext.Out.WriteLine(
+                    $"T-9: X509 auth session over {session.Endpoint.SecurityPolicyUri}");
+
+                await session.CloseAsync(CancellationToken.None).ConfigureAwait(false);
+            }
+        }
+
+        // Helper: find a secure endpoint by policy URI
+        private async Task<EndpointDescription?> FindSecureEndpointAsync(string policyUri)
+        {
+            var endpointConfig = EndpointConfiguration.Create(_config);
+            endpointConfig.OperationTimeout = 15000;
+
+            using var discoveryClient = await DiscoveryClient.CreateAsync(
+                new Uri(_serverUrl), endpointConfig,
+                telemetry: _telemetry, ct: CancellationToken.None).ConfigureAwait(false);
+
+            var endpoints = await discoveryClient.GetEndpointsAsync(
+                default, CancellationToken.None).ConfigureAwait(false);
+
+            await discoveryClient.CloseAsync(CancellationToken.None).ConfigureAwait(false);
+
+            foreach (var e in endpoints)
+            {
+                if (e.SecurityPolicyUri == policyUri &&
+                    e.SecurityMode == MessageSecurityMode.SignAndEncrypt)
+                {
+                    return e;
+                }
+            }
+            return null;
+        }
+
+        // Helper: connect with a given security policy (T-5/6/7)
+        private async Task ConnectWithSecurityPolicyAsync(
+            string policyUri, string policyName)
+        {
+            var secureEndpoint = await FindSecureEndpointAsync(policyUri)
+                .ConfigureAwait(false);
+
+            if (secureEndpoint == null)
+            {
+                Assert.Ignore(
+                    $"Server does not offer {policyName} SignAndEncrypt endpoint");
+                return;
+            }
+
+            var configuredEndpoint = new ConfiguredEndpoint(null, secureEndpoint,
+                EndpointConfiguration.Create(_config));
+
+            ISession session;
+            try
+            {
+                session = await CreateSessionAsync(configuredEndpoint)
+                    .ConfigureAwait(false);
+            }
+            catch (ServiceResultException ex) when (
+                ex.StatusCode == StatusCodes.BadSecurityChecksFailed ||
+                ex.StatusCode == StatusCodes.BadCertificateUntrusted)
+            {
+                Assert.Ignore(
+                    $"Server rejected client certificate for {policyName}. " +
                     "Use interop_test.sh orchestration for encrypted connections.");
                 return;
             }
@@ -257,7 +412,7 @@ namespace Opc.Ua.Interop.Tests
             using (session)
             {
                 Assert.That(session.Connected, Is.True,
-                    "Session should be connected with Basic256Sha256");
+                    $"Session should be connected with {policyName}");
 
                 var serverState = await session.ReadValueAsync(
                     VariableIds.Server_ServerStatus_State,
