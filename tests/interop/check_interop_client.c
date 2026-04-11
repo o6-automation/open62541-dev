@@ -308,6 +308,22 @@ test_encrypted_anonymous(const char *url, const char *policyUri,
     retval = UA_Client_connect(client, url);
     char msg[128];
     snprintf(msg, sizeof(msg), "%s Encrypted anonymous connect", label);
+
+    /* A server that doesn't offer this security policy returns
+     * BadSecurityPolicyRejected (or BadSecureChannelIdInvalid / BadNoMatch
+     * from some stacks). Treat that as a graceful SKIP rather than a failure
+     * so that SDKs with a limited policy set don't break the test suite. */
+    if(retval == UA_STATUSCODE_BADSECURITYPOLICYREJECTED ||
+       retval == UA_STATUSCODE_BADSECURITYMODEREJECTED   ||
+       retval == UA_STATUSCODE_BADNOTSUPPORTED) {
+        char skip_msg[160];
+        snprintf(skip_msg, sizeof(skip_msg),
+                 "%s (policy not offered by server)", label);
+        interop_skip(skip_msg);
+        UA_Client_delete(client);
+        return;
+    }
+
     INTEROP_CHECK(retval == UA_STATUSCODE_GOOD, msg);
 
     if(retval == UA_STATUSCODE_GOOD) {

@@ -65,6 +65,12 @@ generate_rsa_cert "client_dotnet" \
     "urn:localhost:UA:InteropClient" \
     "$OUTDIR"
 
+# --- node-opcua SDK server certificate ---
+generate_rsa_cert "server_nodeopcua" \
+    "node-opcua Interop Server" \
+    "urn:localhost:node-opcua:interop" \
+    "$OUTDIR"
+
 # --- Set up trust directories ---
 echo ""
 echo "=== Setting up trust stores ==="
@@ -95,6 +101,22 @@ cp "$OUTDIR/client_dotnet.cert.der" "$DOTNET_PKI/trusted/certs/"
 
 echo "  .NET PKI trust store: $DOTNET_PKI"
 echo "  Trusted certs: $(ls "$DOTNET_PKI/trusted/certs/" | wc -l) files"
+
+# ---- node-opcua PKI directory structure ----
+NODE_PKI="$OUTDIR/node_pki"
+mkdir -p "$NODE_PKI/trusted/certs"
+mkdir -p "$NODE_PKI/rejected/certs"
+mkdir -p "$NODE_PKI/own/certs"
+mkdir -p "$NODE_PKI/own/private"
+
+# node-opcua server's own certificate and key
+cp "$OUTDIR/server_nodeopcua.cert.pem" "$NODE_PKI/own/certs/"
+cp "$OUTDIR/server_nodeopcua.key.pem"  "$NODE_PKI/own/private/"
+
+# Trust the C SDK client certificate so the server accepts T-9 X509 auth
+cp "$OUTDIR/client_c.cert.der" "$NODE_PKI/trusted/certs/"
+
+echo "  node-opcua PKI trust store: $NODE_PKI"
 
 echo ""
 echo "=== Certificate generation complete ==="

@@ -29,6 +29,7 @@ DOTNET_SERVER_PROJECT="$DOTNET_SDK_DIR/Applications/ConsoleReferenceServer/Conso
 RESULT=0
 C_SERVER_PID=""
 DOTNET_SERVER_PID=""
+NODEOPCUA_SERVER_PID=""
 
 cleanup() {
     echo ""
@@ -42,6 +43,11 @@ cleanup() {
         echo "  Stopping .NET server (PID $DOTNET_SERVER_PID)"
         kill "$DOTNET_SERVER_PID" 2>/dev/null || true
         wait "$DOTNET_SERVER_PID" 2>/dev/null || true
+    fi
+    if [[ -n "$NODEOPCUA_SERVER_PID" ]] && kill -0 "$NODEOPCUA_SERVER_PID" 2>/dev/null; then
+        echo "  Stopping node-opcua server (PID $NODEOPCUA_SERVER_PID)"
+        kill "$NODEOPCUA_SERVER_PID" 2>/dev/null || true
+        wait "$NODEOPCUA_SERVER_PID" 2>/dev/null || true
     fi
 }
 trap cleanup EXIT
@@ -186,6 +192,53 @@ if [[ -n "$DOTNET_SERVER_PID" ]] && kill -0 "$DOTNET_SERVER_PID" 2>/dev/null; th
     wait "$DOTNET_SERVER_PID" 2>/dev/null || true
 fi
 DOTNET_SERVER_PID=""
+
+# ============================================================
+# Scenario C: node-opcua server <--> C client
+# ============================================================
+
+echo ""
+echo "=========================================="
+echo "  Scenario C: node-opcua server <--> C client"
+echo "=========================================="
+echo ""
+
+NODEOPCUA_PORT=62542
+NODEOPCUA_SERVER_DIR="$REPO_ROOT/tests/interop/node-opcua"
+NODE_PKI="$CERT_DIR/node_pki"
+echo "Starting node-opcua server on port $NODEOPCUA_PORT..."
+node "$NODEOPCUA_SERVER_DIR/server.mjs" \
+    "$NODEOPCUA_PORT" \
+    "$CERT_DIR/server_nodeopcua.cert.pem" \
+    "$CERT_DIR/server_nodeopcua.key.pem" \
+    "$NODE_PKI" &
+NODEOPCUA_SERVER_PID=$!
+
+if ! wait_for_server "localhost:$NODEOPCUA_PORT"; then
+    echo "FAIL: node-opcua server did not start"
+    RESULT=1
+else
+    echo "Running C interop client against node-opcua server..."
+    # Policies not offered by node-opcua (e.g. Aes128/Aes256_RsaPss)
+    # are automatically SKIP-ped by the C client (BadSecurityPolicyRejected).
+    if "$INTEROP_CLIENT" \
+        "opc.tcp://localhost:$NODEOPCUA_PORT" \
+        "$CERT_DIR/client_c.cert.der" \
+        "$CERT_DIR/client_c.key.der" \
+        "$CERT_DIR/server_nodeopcua.cert.der" 2>&1; then
+        echo "PASS: Scenario C - node-opcua server tests passed"
+    else
+        echo "FAIL: Scenario C - node-opcua server tests failed"
+        RESULT=1
+    fi
+fi
+
+# Stop node-opcua server
+if [[ -n "$NODEOPCUA_SERVER_PID" ]] && kill -0 "$NODEOPCUA_SERVER_PID" 2>/dev/null; then
+    kill "$NODEOPCUA_SERVER_PID" 2>/dev/null || true
+    wait "$NODEOPCUA_SERVER_PID" 2>/dev/null || true
+fi
+NODEOPCUA_SERVER_PID=""
 
 # ============================================================
 # Summary

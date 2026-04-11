@@ -1,0 +1,12 @@
+{
+  "name": "node-opcua-interop-server",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Minimal OPC UA server using node-opcua for cross-SDK interoperability tests",
+  "scripts": {
+    "start": "node server.mjs"
+  },
+  "dependencies": {
+    "node-opcua": "latest"
+  }
+}
