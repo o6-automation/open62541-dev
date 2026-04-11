@@ -104,7 +104,11 @@ endif()
 # Feature Examples #
 ####################
 
-add_example(ci_server ci_server.c)
+# ci_server is also built standalone under UA_BUILD_INTEROP_TESTS; guard
+# against duplicate target when UA_BUILD_EXAMPLES is also enabled.
+if(NOT TARGET ci_server)
+    add_example(ci_server ci_server.c)
+endif()
 add_example(server_settimestamp server_settimestamp.c)
 add_example(server_mainloop server_mainloop.c)
 add_example(server_instantiation server_instantiation.c)

@@ -68,7 +68,6 @@ jobs:
         run: |
           mkdir -p build && cd build
           cmake -DCMAKE_BUILD_TYPE=Debug \
-                -DUA_BUILD_EXAMPLES=ON \
                 -DUA_BUILD_INTEROP_TESTS=ON \
                 -DUA_ENABLE_ENCRYPTION=${{ matrix.cmake_crypto }} \
                 -DUA_FORCE_WERROR=ON \

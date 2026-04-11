@@ -77,10 +77,16 @@ wait_for_server() {
     # before the OPC UA stack is initialised, returning BadServerHalted
     # on early requests.  Poll with a lightweight anonymous connect
     # until T-1 passes or we time out.
+    #
+    # NOTE: capture output before grepping – with set -o pipefail, piping
+    # "$INTEROP_CLIENT | grep" would fail if the client exits non-zero
+    # (e.g. T-3/T-4 fail on servers without the custom variable/method)
+    # even when T-1 already printed PASS.
     echo "  Port open, verifying OPC UA readiness..."
+    local probe_out
     while (( SECONDS - start < timeout )); do
-        if "$INTEROP_CLIENT" "opc.tcp://localhost:$port" 2>/dev/null | \
-           grep -q '\bPASS\b'; then
+        probe_out=$("$INTEROP_CLIENT" "opc.tcp://localhost:$port" 2>/dev/null) || true
+        if echo "$probe_out" | grep -q 'PASS'; then
             echo "  Server is ready (took $(( SECONDS - start ))s)"
             return 0
         fi

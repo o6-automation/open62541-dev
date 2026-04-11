@@ -1541,8 +1541,16 @@ if(UA_BUILD_UNIT_TESTS)
     add_subdirectory(tests)
 endif()
 
-# Build the interop client standalone (without Check framework) when only interop tests are needed
+# Build the interop targets standalone (no Check framework, no full examples) when only
+# interop tests are needed. ci_server and check_interop_client are the only two binaries
+# required by tools/ci/cross-sdk/interop_test.sh.
 if(UA_BUILD_INTEROP_TESTS AND NOT UA_BUILD_UNIT_TESTS)
+    add_executable(ci_server examples/ci_server.c)
+    target_link_libraries(ci_server open62541::open62541)
+    set_target_properties(ci_server PROPERTIES
+        FOLDER "examples"
+        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin/examples")
+
     add_executable(check_interop_client tests/interop/check_interop_client.c)
     target_link_libraries(check_interop_client open62541::open62541)
     set_target_properties(check_interop_client PROPERTIES
