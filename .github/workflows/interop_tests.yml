@@ -73,7 +73,7 @@ jobs:
                 -DUA_ENABLE_ENCRYPTION=${{ matrix.cmake_crypto }} \
                 -DUA_FORCE_WERROR=ON \
                 ..
-          make -j$(nproc)
+          make -j$(nproc) ci_server check_interop_client
 
       - name: Build .NET SDK
         run: |

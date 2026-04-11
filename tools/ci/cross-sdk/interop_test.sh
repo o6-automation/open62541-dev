@@ -55,16 +55,38 @@ trap cleanup EXIT
 wait_for_server() {
     local url="$1"
     local timeout="${2:-30}"
+    local port="${url##*:}"
     local start=$SECONDS
     echo "  Waiting for server at $url (timeout: ${timeout}s)..."
+
+    # Phase 1: wait for TCP port to open
     while (( SECONDS - start < timeout )); do
-        if nc -z localhost "${url##*:}" 2>/dev/null; then
-            echo "  Server is ready (took $(( SECONDS - start ))s)"
-            return 0
+        if nc -z localhost "$port" 2>/dev/null; then
+            break
         fi
         sleep 1
     done
-    echo "  ERROR: Server did not start within ${timeout}s"
+
+    if ! nc -z localhost "$port" 2>/dev/null; then
+        echo "  ERROR: Server did not open port within ${timeout}s"
+        return 1
+    fi
+
+    # Phase 2: verify OPC UA-level readiness.
+    # Some servers (e.g. .NET Reference Server) bind the TCP port well
+    # before the OPC UA stack is initialised, returning BadServerHalted
+    # on early requests.  Poll with a lightweight anonymous connect
+    # until T-1 passes or we time out.
+    echo "  Port open, verifying OPC UA readiness..."
+    while (( SECONDS - start < timeout )); do
+        if "$INTEROP_CLIENT" "opc.tcp://localhost:$port" 2>/dev/null | \
+           grep -q '\bPASS\b'; then
+            echo "  Server is ready (took $(( SECONDS - start ))s)"
+            return 0
+        fi
+        sleep 2
+    done
+    echo "  ERROR: Server did not become OPC-UA-ready within ${timeout}s"
     return 1
 }
 
@@ -168,7 +190,7 @@ DOTNET_SERVER_DIR="$(dirname "$DOTNET_SERVER_PROJECT")"
     --configuration "${DOTNET_CONFIG:-Debug}" -- -a -c) &
 DOTNET_SERVER_PID=$!
 
-if ! wait_for_server "localhost:$DOTNET_PORT"; then
+if ! wait_for_server "localhost:$DOTNET_PORT" 60; then
     echo "FAIL: .NET server did not start"
     RESULT=1
 else
