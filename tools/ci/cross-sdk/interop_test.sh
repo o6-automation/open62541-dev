@@ -157,6 +157,7 @@ echo ""
 DOTNET_PORT=62541
 echo "Starting .NET Reference Server on port $DOTNET_PORT..."
 dotnet run --project "$DOTNET_SERVER_PROJECT" --no-build \
+    --framework net9.0 \
     --configuration "${DOTNET_CONFIG:-Debug}" -- -a -c &
 DOTNET_SERVER_PID=$!
 

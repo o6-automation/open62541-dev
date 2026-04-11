@@ -1541,6 +1541,15 @@ if(UA_BUILD_UNIT_TESTS)
     add_subdirectory(tests)
 endif()
 
+# Build the interop client standalone (without Check framework) when only interop tests are needed
+if(UA_BUILD_INTEROP_TESTS AND NOT UA_BUILD_UNIT_TESTS)
+    add_executable(check_interop_client tests/interop/check_interop_client.c)
+    target_link_libraries(check_interop_client open62541::open62541)
+    set_target_properties(check_interop_client PROPERTIES
+        FOLDER "tests"
+        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin/tests")
+endif()
+
 if(UA_BUILD_FUZZING OR UA_BUILD_OSS_FUZZ OR UA_BUILD_FUZZING_CORPUS)
     add_subdirectory(tests/fuzz)
 endif()

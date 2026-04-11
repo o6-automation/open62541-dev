@@ -506,7 +506,7 @@ if(${CMAKE_SYSTEM_NAME} STREQUAL "Linux" AND NOT UA_ARCHITECTURE_LWIP AND NOT UA
 endif()
 
 # Cross-SDK interoperability test client (standalone, no check framework)
-if(UA_BUILD_INTEROP_TESTS)
+if(UA_BUILD_INTEROP_TESTS AND NOT TARGET check_interop_client)
     add_executable(check_interop_client interop/check_interop_client.c
         $<TARGET_OBJECTS:open62541-object>
         $<TARGET_OBJECTS:open62541-plugins>)
