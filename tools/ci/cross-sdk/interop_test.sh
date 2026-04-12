@@ -58,41 +58,35 @@ wait_for_server() {
     local port="${url##*:}"
     local start=$SECONDS
     echo "  Waiting for server at $url (timeout: ${timeout}s)..."
-
-    # Phase 1: wait for TCP port to open
     while (( SECONDS - start < timeout )); do
         if nc -z localhost "$port" 2>/dev/null; then
-            break
-        fi
-        sleep 1
-    done
-
-    if ! nc -z localhost "$port" 2>/dev/null; then
-        echo "  ERROR: Server did not open port within ${timeout}s"
-        return 1
-    fi
-
-    # Phase 2: verify OPC UA-level readiness.
-    # Some servers (e.g. .NET Reference Server) bind the TCP port well
-    # before the OPC UA stack is initialised, returning BadServerHalted
-    # on early requests.  Poll with a lightweight anonymous connect
-    # until T-1 passes or we time out.
-    #
-    # NOTE: capture output before grepping – with set -o pipefail, piping
-    # "$INTEROP_CLIENT | grep" would fail if the client exits non-zero
-    # (e.g. T-3/T-4 fail on servers without the custom variable/method)
-    # even when T-1 already printed PASS.
-    echo "  Port open, verifying OPC UA readiness..."
-    local probe_out
-    while (( SECONDS - start < timeout )); do
-        probe_out=$("$INTEROP_CLIENT" "opc.tcp://localhost:$port" 2>/dev/null) || true
-        if echo "$probe_out" | grep -q 'PASS'; then
             echo "  Server is ready (took $(( SECONDS - start ))s)"
             return 0
         fi
-        sleep 2
+        sleep 1
     done
-    echo "  ERROR: Server did not become OPC-UA-ready within ${timeout}s"
+    echo "  ERROR: Server did not start within ${timeout}s"
+    return 1
+}
+
+# Wait for a background process to print a specific marker on stdout.
+# The process output is redirected to a log file which is polled.
+wait_for_log_marker() {
+    local logfile="$1"
+    local marker="$2"
+    local timeout="${3:-60}"
+    local start=$SECONDS
+    echo "  Waiting for \"$marker\" in server output (timeout: ${timeout}s)..."
+    while (( SECONDS - start < timeout )); do
+        if grep -qF "$marker" "$logfile" 2>/dev/null; then
+            echo "  Server is ready (took $(( SECONDS - start ))s)"
+            return 0
+        fi
+        sleep 1
+    done
+    echo "  ERROR: Marker not found within ${timeout}s"
+    echo "  Server output so far:"
+    cat "$logfile" 2>/dev/null || true
     return 1
 }
 
@@ -189,14 +183,18 @@ echo "=========================================="
 echo ""
 
 DOTNET_PORT=62541
+DOTNET_LOG="$(mktemp)"
 echo "Starting .NET Reference Server on port $DOTNET_PORT..."
 DOTNET_SERVER_DIR="$(dirname "$DOTNET_SERVER_PROJECT")"
 (cd "$DOTNET_SERVER_DIR" && dotnet run --project "$DOTNET_SERVER_PROJECT" --no-build \
     --framework net9.0 \
-    --configuration "${DOTNET_CONFIG:-Debug}" -- -a -c) &
+    --configuration "${DOTNET_CONFIG:-Debug}" -- -a -c) >"$DOTNET_LOG" 2>&1 &
 DOTNET_SERVER_PID=$!
 
-if ! wait_for_server "localhost:$DOTNET_PORT" 60; then
+# The .NET Reference Server opens its TCP port well before the OPC UA stack
+# is fully initialised (BadServerHalted during early requests).  Wait for the
+# "Server started" message which is printed after full initialisation.
+if ! wait_for_log_marker "$DOTNET_LOG" "Server started" 60; then
     echo "FAIL: .NET server did not start"
     RESULT=1
 else
