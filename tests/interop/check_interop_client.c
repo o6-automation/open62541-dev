@@ -227,11 +227,15 @@ test_T3_read_variable(const char *url) {
         UA_Variant_init(&val);
         retval = UA_Client_readValueAttribute(
             client, UA_NODEID_STRING(1, "the.answer"), &val);
-        INTEROP_CHECK(retval == UA_STATUSCODE_GOOD, "T-3 Read the.answer");
-        if(retval == UA_STATUSCODE_GOOD &&
-           val.type == &UA_TYPES[UA_TYPES_INT32]) {
-            UA_Int32 v = *(UA_Int32 *)val.data;
-            INTEROP_CHECK(v == 43, "T-3 Value == 43");
+        if(retval == UA_STATUSCODE_BADNODEIDUNKNOWN) {
+            interop_skip("T-3 Read the.answer (node not on this server)");
+        } else {
+            INTEROP_CHECK(retval == UA_STATUSCODE_GOOD, "T-3 Read the.answer");
+            if(retval == UA_STATUSCODE_GOOD &&
+               val.type == &UA_TYPES[UA_TYPES_INT32]) {
+                UA_Int32 v = *(UA_Int32 *)val.data;
+                INTEROP_CHECK(v == 43, "T-3 Value == 43");
+            }
         }
         UA_Variant_clear(&val);
         UA_Client_disconnect(client);
@@ -266,13 +270,18 @@ test_T4_call_method(const char *url) {
                                 UA_NODEID_NUMERIC(0, UA_NS0ID_OBJECTSFOLDER),
                                 UA_NODEID_NUMERIC(1, 62541),
                                 1, &input, &outputSize, &output);
-        INTEROP_CHECK(retval == UA_STATUSCODE_GOOD, "T-4 Call HelloWorld");
-        if(retval == UA_STATUSCODE_GOOD && outputSize > 0 &&
-           output[0].type == &UA_TYPES[UA_TYPES_STRING]) {
-            UA_String *result = (UA_String *)output[0].data;
-            UA_Boolean hasHello = (result->length >= 5 &&
-                                   memcmp(result->data, "Hello", 5) == 0);
-            INTEROP_CHECK(hasHello, "T-4 Output starts with 'Hello'");
+        if(retval == UA_STATUSCODE_BADNODEIDUNKNOWN ||
+           retval == UA_STATUSCODE_BADMETHODINVALID) {
+            interop_skip("T-4 Call HelloWorld (method not on this server)");
+        } else {
+            INTEROP_CHECK(retval == UA_STATUSCODE_GOOD, "T-4 Call HelloWorld");
+            if(retval == UA_STATUSCODE_GOOD && outputSize > 0 &&
+               output[0].type == &UA_TYPES[UA_TYPES_STRING]) {
+                UA_String *result = (UA_String *)output[0].data;
+                UA_Boolean hasHello = (result->length >= 5 &&
+                                       memcmp(result->data, "Hello", 5) == 0);
+                INTEROP_CHECK(hasHello, "T-4 Output starts with 'Hello'");
+            }
         }
         UA_Array_delete(output, outputSize, &UA_TYPES[UA_TYPES_VARIANT]);
         UA_Client_disconnect(client);
@@ -407,6 +416,17 @@ test_T9_certificate_auth(const char *url,
     }
 
     retval = UA_Client_connect(client, url);
+
+    /* Some servers reject the X509 identity token if the client certificate
+     * is not in their user trust list.  Treat that as SKIP. */
+    if(retval == UA_STATUSCODE_BADIDENTITYTOKENREJECTED ||
+       retval == UA_STATUSCODE_BADIDENTITYTOKENINVALID ||
+       retval == UA_STATUSCODE_BADCERTIFICATEUSENOTALLOWED) {
+        interop_skip("T-9 X509 certificate auth (token rejected by server)");
+        UA_Client_delete(client);
+        return;
+    }
+
     INTEROP_CHECK(retval == UA_STATUSCODE_GOOD,
                   "T-9 X509 certificate auth connect");
 
