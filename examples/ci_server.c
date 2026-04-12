@@ -66,8 +66,19 @@ addHelloWorldMethod(UA_Server *server) {
     helloAttr.displayName = UA_LOCALIZEDTEXT("en-US","Hello World");
     helloAttr.executable = true;
     helloAttr.userExecutable = true;
+
+    /* Create an InteropTests container object under ObjectsFolder.
+     * Methods must use HasComponent references which some SDKs reject
+     * directly under ObjectsFolder (Organizes-only). */
+    UA_ObjectAttributes oAttr = UA_ObjectAttributes_default;
+    oAttr.displayName = UA_LOCALIZEDTEXT("en-US", "InteropTests");
+    UA_Server_addObjectNode(server, UA_NODEID_NUMERIC(1, 1000),
+                            UA_NS0ID(OBJECTSFOLDER), UA_NS0ID(ORGANIZES),
+                            UA_QUALIFIEDNAME(1, "InteropTests"),
+                            UA_NS0ID(BASEOBJECTTYPE), oAttr, NULL, NULL);
+
     UA_Server_addMethodNode(server, UA_NODEID_NUMERIC(1,62541),
-                            UA_NS0ID(OBJECTSFOLDER), UA_NS0ID(HASCOMPONENT),
+                            UA_NODEID_NUMERIC(1, 1000), UA_NS0ID(HASCOMPONENT),
                             UA_QUALIFIEDNAME(1, "hello world"),
                             helloAttr, &helloWorldMethodCallback,
                             1, &inputArgument, 1, &outputArgument, NULL, NULL);

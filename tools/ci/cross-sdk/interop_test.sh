@@ -241,16 +241,19 @@ echo ""
 NODEOPCUA_PORT=62542
 NODEOPCUA_SERVER_DIR="$REPO_ROOT/tests/interop/node-opcua"
 NODE_PKI="$CERT_DIR/node_pki"
+NODEOPCUA_LOG="$(mktemp)"
 echo "Starting node-opcua server on port $NODEOPCUA_PORT..."
 node "$NODEOPCUA_SERVER_DIR/server.mjs" \
     "$NODEOPCUA_PORT" \
     "$CERT_DIR/server_nodeopcua.cert.pem" \
     "$CERT_DIR/server_nodeopcua.key.pem" \
-    "$NODE_PKI" &
+    "$NODE_PKI" >"$NODEOPCUA_LOG" 2>&1 &
 NODEOPCUA_SERVER_PID=$!
 
-if ! wait_for_server "localhost:$NODEOPCUA_PORT"; then
+if ! wait_for_log_marker "$NODEOPCUA_LOG" "node-opcua interop server listening" 30; then
     echo "FAIL: node-opcua server did not start"
+    echo "  Server output:"
+    cat "$NODEOPCUA_LOG" 2>/dev/null || true
     RESULT=1
 else
     echo "Running C interop client against node-opcua server..."

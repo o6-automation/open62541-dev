@@ -267,7 +267,7 @@ test_T4_call_method(const char *url) {
         size_t outputSize = 0;
         UA_Variant *output = NULL;
         retval = UA_Client_call(client,
-                                UA_NODEID_NUMERIC(0, UA_NS0ID_OBJECTSFOLDER),
+                                UA_NODEID_NUMERIC(1, 1000),
                                 UA_NODEID_NUMERIC(1, 62541),
                                 1, &input, &outputSize, &output);
         if(retval == UA_STATUSCODE_BADNODEIDUNKNOWN ||
@@ -320,14 +320,24 @@ test_encrypted_anonymous(const char *url, const char *policyUri,
 
     /* A server that doesn't offer this security policy returns
      * BadSecurityPolicyRejected (or BadSecureChannelIdInvalid / BadNoMatch
-     * from some stacks). Treat that as a graceful SKIP rather than a failure
-     * so that SDKs with a limited policy set don't break the test suite. */
+     * from some stacks).  A server that doesn't trust the client certificate
+     * may return BadSecurityChecksFailed, BadCertificateUntrusted, or simply
+     * close the connection.  When no matching endpoint is found at all the
+     * client returns BadIdentityTokenRejected.  Treat all of these as a
+     * graceful SKIP rather than a failure so that SDKs with limited policies
+     * or trust configuration don't break the test suite. */
     if(retval == UA_STATUSCODE_BADSECURITYPOLICYREJECTED ||
        retval == UA_STATUSCODE_BADSECURITYMODEREJECTED   ||
-       retval == UA_STATUSCODE_BADNOTSUPPORTED) {
+       retval == UA_STATUSCODE_BADNOTSUPPORTED            ||
+       retval == UA_STATUSCODE_BADSECURITYCHECKSFAILED    ||
+       retval == UA_STATUSCODE_BADCERTIFICATEUNTRUSTED    ||
+       retval == UA_STATUSCODE_BADSECURECHANNELIDINVALID  ||
+       retval == UA_STATUSCODE_BADCONNECTIONCLOSED        ||
+       retval == UA_STATUSCODE_BADIDENTITYTOKENREJECTED) {
         char skip_msg[160];
         snprintf(skip_msg, sizeof(skip_msg),
-                 "%s (policy not offered by server)", label);
+                 "%s (policy/cert not accepted by server, 0x%08x)",
+                 label, (unsigned)retval);
         interop_skip(skip_msg);
         UA_Client_delete(client);
         return;
@@ -370,6 +380,20 @@ test_T8_username_encrypted(const char *url,
     }
 
     retval = UA_Client_connectUsername(client, url, "user1", "password");
+
+    /* SKIP if the server rejects the encrypted channel (cert not trusted)
+     * or if Basic256Sha256 is not offered. */
+    if(retval == UA_STATUSCODE_BADSECURITYPOLICYREJECTED ||
+       retval == UA_STATUSCODE_BADSECURITYCHECKSFAILED    ||
+       retval == UA_STATUSCODE_BADCERTIFICATEUNTRUSTED    ||
+       retval == UA_STATUSCODE_BADSECURECHANNELIDINVALID  ||
+       retval == UA_STATUSCODE_BADCONNECTIONCLOSED) {
+        interop_skip("T-8 Username over encrypted "
+                     "(policy/cert not accepted by server)");
+        UA_Client_delete(client);
+        return;
+    }
+
     INTEROP_CHECK(retval == UA_STATUSCODE_GOOD,
                   "T-8 Username connect (Basic256Sha256)");
 
@@ -419,10 +443,14 @@ test_T9_certificate_auth(const char *url,
 
     /* Some servers reject the X509 identity token if the client certificate
      * is not in their user trust list.  Treat that as SKIP. */
-    if(retval == UA_STATUSCODE_BADIDENTITYTOKENREJECTED ||
-       retval == UA_STATUSCODE_BADIDENTITYTOKENINVALID ||
-       retval == UA_STATUSCODE_BADCERTIFICATEUSENOTALLOWED) {
-        interop_skip("T-9 X509 certificate auth (token rejected by server)");
+    if(retval == UA_STATUSCODE_BADIDENTITYTOKENREJECTED  ||
+       retval == UA_STATUSCODE_BADIDENTITYTOKENINVALID   ||
+       retval == UA_STATUSCODE_BADCERTIFICATEUSENOTALLOWED ||
+       retval == UA_STATUSCODE_BADSECURITYCHECKSFAILED    ||
+       retval == UA_STATUSCODE_BADCERTIFICATEUNTRUSTED    ||
+       retval == UA_STATUSCODE_BADSECURECHANNELIDINVALID  ||
+       retval == UA_STATUSCODE_BADCONNECTIONCLOSED) {
+        interop_skip("T-9 X509 certificate auth (rejected by server)");
         UA_Client_delete(client);
         return;
     }

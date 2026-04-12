@@ -47,7 +47,7 @@ if (!port || !certFile || !keyFile || !pkiDir) {
 
 const serverCertificateManager = new OPCUACertificateManager({
     rootFolder: pkiDir,
-    automaticallyAcceptUnknownCertificate: false,
+    automaticallyAcceptUnknownCertificate: true,
 });
 
 const server = new OPCUAServer({
@@ -90,6 +90,7 @@ async function buildAddressSpace(addressSpace) {
         nodeId: "ns=1;s=the.answer",
         browseName: "the.answer",
         dataType: DataType.Int32,
+        minimumSamplingInterval: 1000,
         value: {
             get() {
                 return new Variant({ dataType: DataType.Int32, value: 43 });
@@ -97,8 +98,17 @@ async function buildAddressSpace(addressSpace) {
         },
     });
 
-    // --- Method: ns=1;i=62541 HelloWorld under ObjectsFolder ---
-    const method = namespace.addMethod(addressSpace.rootFolder.objects, {
+    // --- InteropTest object (container for the method) ---
+    // Methods use HasComponent references which are not allowed directly
+    // under ObjectsFolder.  Use an intermediate object.
+    const interopObj = namespace.addObject({
+        organizedBy: addressSpace.rootFolder.objects,
+        browseName: "InteropTests",
+        nodeId: "ns=1;i=1000",
+    });
+
+    // --- Method: ns=1;i=62541 HelloWorld under InteropTests ---
+    const method = namespace.addMethod(interopObj, {
         nodeId: "ns=1;i=62541",
         browseName: "HelloWorld",
         inputArguments: [

@@ -186,9 +186,9 @@ namespace Opc.Ua.Interop.Tests
             using var session = await CreateSessionAsync(endpoint).ConfigureAwait(false);
 
             // ci_server HelloWorld method: ns=1;i=62541
-            // Parent object: ObjectsFolder (ns=0;i=85)
+            // Parent object: InteropTests (ns=1;i=1000)
             // Input: String, Output: String "Hello <input>"
-            var objectId = ObjectIds.ObjectsFolder;
+            var objectId = new NodeId(1000, 1);
             var methodId = new NodeId(62541, 1);
 
             var outputs = await session.CallAsync(

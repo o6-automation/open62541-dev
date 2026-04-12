@@ -115,6 +115,7 @@ cp "$OUTDIR/server_nodeopcua.key.pem"  "$NODE_PKI/own/private/"
 
 # Trust the C SDK client certificate so the server accepts T-9 X509 auth
 cp "$OUTDIR/client_c.cert.der" "$NODE_PKI/trusted/certs/"
+cp "$OUTDIR/client_c.cert.pem" "$NODE_PKI/trusted/certs/"
 
 echo "  node-opcua PKI trust store: $NODE_PKI"
 
