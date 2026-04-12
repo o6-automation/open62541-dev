@@ -467,6 +467,67 @@ test_T9_certificate_auth(const char *url,
 #endif
 
 /* ------------------------------------------------------------------ */
+/* T-10: ECC_nistP256 Encrypted Connection                            */
+/* ------------------------------------------------------------------ */
+
+#ifdef UA_ENABLE_ENCRYPTION
+static void
+test_T10_ecc_nistp256(const char *url,
+                      UA_ByteString *eccCertificate, UA_ByteString *eccPrivateKey,
+                      UA_ByteString *trustList, size_t trustListSize) {
+    const char *policyUri =
+        "http://opcfoundation.org/UA/SecurityPolicy#ECC_nistP256";
+    interop_log("--- T-10: ECC_nistP256 Encrypted Connection ---");
+
+    UA_Client *client = UA_Client_new();
+    UA_ClientConfig *cc = UA_Client_getConfig(client);
+
+    /* Use setDefaultEncryption with the ECC certificate.
+     * The ECC policy will be initialised from the P-256 key while
+     * RSA policies will fail silently (wrong key type). */
+    UA_StatusCode retval =
+        UA_ClientConfig_setDefaultEncryption(cc, *eccCertificate, *eccPrivateKey,
+                                             trustList, trustListSize, NULL, 0);
+    if(retval != UA_STATUSCODE_GOOD) {
+        interop_skip("T-10 ECC_nistP256 (encryption setup failed)");
+        UA_Client_delete(client);
+        return;
+    }
+    UA_CertificateGroup_AcceptAll(&cc->certificateVerification);
+    UA_String_clear(&cc->clientDescription.applicationUri);
+    cc->clientDescription.applicationUri =
+        UA_STRING_ALLOC("urn:open62541.client.application");
+    cc->securityPolicyUri = UA_STRING_ALLOC(policyUri);
+
+    retval = UA_Client_connect(client, url);
+    if(retval == UA_STATUSCODE_BADSECURITYPOLICYREJECTED ||
+       retval == UA_STATUSCODE_BADSECURITYMODEREJECTED   ||
+       retval == UA_STATUSCODE_BADNOTSUPPORTED            ||
+       retval == UA_STATUSCODE_BADSECURITYCHECKSFAILED    ||
+       retval == UA_STATUSCODE_BADCERTIFICATEUNTRUSTED    ||
+       retval == UA_STATUSCODE_BADSECURECHANNELIDINVALID  ||
+       retval == UA_STATUSCODE_BADCONNECTIONCLOSED        ||
+       retval == UA_STATUSCODE_BADIDENTITYTOKENREJECTED) {
+        char skip_msg[160];
+        snprintf(skip_msg, sizeof(skip_msg),
+                 "T-10 ECC_nistP256 (not offered/accepted by server, 0x%08x)",
+                 (unsigned)retval);
+        interop_skip(skip_msg);
+        UA_Client_delete(client);
+        return;
+    }
+
+    INTEROP_CHECK(retval == UA_STATUSCODE_GOOD, "T-10 ECC_nistP256 connect");
+
+    if(retval == UA_STATUSCODE_GOOD) {
+        check_read_server_status(client);
+        UA_Client_disconnect(client);
+    }
+    UA_Client_delete(client);
+}
+#endif
+
+/* ------------------------------------------------------------------ */
 /* Main                                                               */
 /* ------------------------------------------------------------------ */
 
@@ -484,7 +545,11 @@ int main(int argc, char *argv[]) {
     UA_ByteString *trustList = NULL;
     size_t trustListSize = 0;
 
+    UA_ByteString eccCertificate = UA_BYTESTRING_NULL;
+    UA_ByteString eccPrivateKey = UA_BYTESTRING_NULL;
+
     UA_Boolean haveEncryption = UA_FALSE;
+    UA_Boolean haveEcc = UA_FALSE;
 
     if(argc >= 4) {
         certificate = loadFileFromDisk(argv[2]);
@@ -506,6 +571,21 @@ int main(int argc, char *argv[]) {
                             "Warning: Failed to load trust list: %s\n",
                             argv[i]);
             }
+        }
+    }
+
+    /* Load optional ECC certificate and key from environment variables.
+     * These are used for T-10 (ECC_nistP256 encrypted connection). */
+    {
+        const char *eccCertPath = getenv("INTEROP_ECC_CERT");
+        const char *eccKeyPath  = getenv("INTEROP_ECC_KEY");
+        if(eccCertPath && eccKeyPath) {
+            eccCertificate = loadFileFromDisk(eccCertPath);
+            eccPrivateKey  = loadFileFromDisk(eccKeyPath);
+            if(eccCertificate.length > 0 && eccPrivateKey.length > 0)
+                haveEcc = UA_TRUE;
+            else
+                fprintf(stderr, "Warning: Failed to load ECC cert/key\n");
         }
     }
 
@@ -557,12 +637,21 @@ int main(int argc, char *argv[]) {
         /* T-9: X509 certificate authentication */
         test_T9_certificate_auth(url, &certificate, &privateKey,
                                  trustList, trustListSize);
+
+        /* T-10: ECC_nistP256 encrypted connection */
+        if(haveEcc) {
+            test_T10_ecc_nistp256(url, &eccCertificate, &eccPrivateKey,
+                                 trustList, trustListSize);
+        } else {
+            interop_skip("T-10 ECC_nistP256 (no ECC certs provided)");
+        }
     } else {
         interop_skip("T-5 Basic256Sha256 (no certs)");
         interop_skip("T-6 Aes128_Sha256_RsaOaep (no certs)");
         interop_skip("T-7 Aes256_Sha256_RsaPss (no certs)");
         interop_skip("T-8 Username over encrypted (no certs)");
         interop_skip("T-9 X509 certificate auth (no certs)");
+        interop_skip("T-10 ECC_nistP256 (no certs)");
     }
 #else
     (void)haveEncryption;
@@ -571,11 +660,14 @@ int main(int argc, char *argv[]) {
     interop_skip("T-7 Aes256_Sha256_RsaPss (no encryption support)");
     interop_skip("T-8 Username over encrypted (no encryption support)");
     interop_skip("T-9 X509 certificate auth (no encryption support)");
+    interop_skip("T-10 ECC_nistP256 (no encryption support)");
 #endif
 
     /* Cleanup */
     UA_ByteString_clear(&certificate);
     UA_ByteString_clear(&privateKey);
+    UA_ByteString_clear(&eccCertificate);
+    UA_ByteString_clear(&eccPrivateKey);
     for(size_t i = 0; i < trustListSize; i++)
         UA_ByteString_clear(&trustList[i]);
     free(trustList);

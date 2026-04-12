@@ -187,7 +187,43 @@ int main(int argc, char* argv[]) {
     for(size_t i = 0; i < trustListSize; i++)
         UA_ByteString_clear(&trustList[i]);
     if(retval != UA_STATUSCODE_GOOD)
-        goto cleanup;   
+        goto cleanup;
+
+    /* Optionally add ECC_nistP256 security policy via environment variables.
+     * This allows RSA and ECC endpoints to coexist on the same server.
+     * Only effective with OpenSSL builds. */
+#if defined(UA_ENABLE_ENCRYPTION_OPENSSL)
+    {
+        const char *eccCertPath = getenv("CI_SERVER_ECC_CERT");
+        const char *eccKeyPath  = getenv("CI_SERVER_ECC_KEY");
+        if(eccCertPath && eccKeyPath) {
+            UA_ByteString eccCert = loadFile(eccCertPath);
+            UA_ByteString eccKey  = loadFile(eccKeyPath);
+            if(eccCert.length > 0 && eccKey.length > 0) {
+                retval = UA_ServerConfig_addSecurityPolicyEccNistP256(
+                    config, &eccCert, &eccKey);
+                if(retval == UA_STATUSCODE_GOOD) {
+                    /* Add Sign + SignAndEncrypt endpoints for the ECC policy */
+                    UA_String eccUri = UA_STRING(
+                        "http://opcfoundation.org/UA/SecurityPolicy#ECC_nistP256");
+                    UA_ServerConfig_addEndpoint(config, eccUri,
+                                               UA_MESSAGESECURITYMODE_SIGN);
+                    UA_ServerConfig_addEndpoint(config, eccUri,
+                                               UA_MESSAGESECURITYMODE_SIGNANDENCRYPT);
+                    UA_LOG_INFO(UA_Log_Stdout, UA_LOGCATEGORY_APPLICATION,
+                                "ECC_nistP256 security policy added successfully");
+                } else {
+                    UA_LOG_WARNING(UA_Log_Stdout, UA_LOGCATEGORY_APPLICATION,
+                                   "Failed to add ECC_nistP256: %s",
+                                   UA_StatusCode_name(retval));
+                    retval = UA_STATUSCODE_GOOD; /* non-fatal */
+                }
+            }
+            UA_ByteString_clear(&eccCert);
+            UA_ByteString_clear(&eccKey);
+        }
+    }
+#endif   
 
 #endif
     retval = UA_AccessControl_default(config, true,

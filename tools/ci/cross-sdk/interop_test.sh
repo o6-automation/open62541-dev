@@ -141,11 +141,14 @@ echo ""
 
 C_PORT=4840
 echo "Starting C server on port $C_PORT..."
+CI_SERVER_ECC_CERT="$CERT_DIR/server_c_ecc.cert.der" \
+CI_SERVER_ECC_KEY="$CERT_DIR/server_c_ecc.key.der" \
 "$CI_SERVER" "$C_PORT" \
     "$CERT_DIR/server_c.cert.der" \
     "$CERT_DIR/server_c.key.der" \
     "$CERT_DIR/client_c.cert.der" \
-    "$CERT_DIR/client_dotnet.cert.der" &
+    "$CERT_DIR/client_dotnet.cert.der" \
+    "$CERT_DIR/client_c_ecc.cert.der" &
 C_SERVER_PID=$!
 
 if ! wait_for_server "localhost:$C_PORT"; then
@@ -153,11 +156,14 @@ if ! wait_for_server "localhost:$C_PORT"; then
     RESULT=1
 else
     echo "Running C interop client against C server (self-test)..."
-    if "$INTEROP_CLIENT" \
+    if INTEROP_ECC_CERT="$CERT_DIR/client_c_ecc.cert.der" \
+       INTEROP_ECC_KEY="$CERT_DIR/client_c_ecc.key.der" \
+       "$INTEROP_CLIENT" \
         "opc.tcp://localhost:$C_PORT" \
         "$CERT_DIR/client_c.cert.der" \
         "$CERT_DIR/client_c.key.der" \
-        "$CERT_DIR/server_c.cert.der" 2>&1; then
+        "$CERT_DIR/server_c.cert.der" \
+        "$CERT_DIR/server_c_ecc.cert.der" 2>&1; then
         echo "PASS: Scenario A - C client self-test passed"
     else
         echo "FAIL: Scenario A - C client self-test failed"
@@ -198,7 +204,8 @@ DOTNET_PORT=62541
 DOTNET_LOG="$(mktemp)"
 echo "Starting .NET Reference Server on port $DOTNET_PORT..."
 DOTNET_SERVER_DIR="$(dirname "$DOTNET_SERVER_PROJECT")"
-(cd "$DOTNET_SERVER_DIR" && dotnet run --project "$DOTNET_SERVER_PROJECT" --no-build \
+(cd "$DOTNET_SERVER_DIR" && DOTNET_ROLL_FORWARD=LatestMajor \
+    dotnet run --project "$DOTNET_SERVER_PROJECT" --no-build \
     --framework net9.0 \
     --configuration "${DOTNET_CONFIG:-Debug}" -- -a -c) >"$DOTNET_LOG" 2>&1 &
 DOTNET_SERVER_PID=$!
@@ -211,8 +218,11 @@ if ! wait_for_log_marker "$DOTNET_LOG" "Server started" 60; then
     RESULT=1
 else
     echo "Running C interop client against .NET server..."
-    # C client auto-tests all policies when certs are provided
-    if "$INTEROP_CLIENT" \
+    # C client auto-tests all policies when certs are provided.
+    # ECC certs are passed via env vars for T-10 (ECC_nistP256).
+    if INTEROP_ECC_CERT="$CERT_DIR/client_c_ecc.cert.der" \
+       INTEROP_ECC_KEY="$CERT_DIR/client_c_ecc.key.der" \
+       "$INTEROP_CLIENT" \
         "opc.tcp://localhost:$DOTNET_PORT" \
         "$CERT_DIR/client_c.cert.der" \
         "$CERT_DIR/client_c.key.der" \
@@ -257,9 +267,11 @@ if ! wait_for_log_marker "$NODEOPCUA_LOG" "node-opcua interop server listening" 
     RESULT=1
 else
     echo "Running C interop client against node-opcua server..."
-    # Policies not offered by node-opcua (e.g. Aes128/Aes256_RsaPss)
+    # Policies not offered by node-opcua (e.g. Aes128/Aes256_RsaPss/ECC)
     # are automatically SKIP-ped by the C client (BadSecurityPolicyRejected).
-    if "$INTEROP_CLIENT" \
+    if INTEROP_ECC_CERT="$CERT_DIR/client_c_ecc.cert.der" \
+       INTEROP_ECC_KEY="$CERT_DIR/client_c_ecc.key.der" \
+       "$INTEROP_CLIENT" \
         "opc.tcp://localhost:$NODEOPCUA_PORT" \
         "$CERT_DIR/client_c.cert.der" \
         "$CERT_DIR/client_c.key.der" \

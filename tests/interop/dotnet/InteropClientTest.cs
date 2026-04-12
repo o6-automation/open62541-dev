@@ -48,11 +48,23 @@ namespace Opc.Ua.Interop.Tests
                 "interop_pki_" + Guid.NewGuid().ToString("N"));
             Directory.CreateDirectory(pkiRoot);
 
-            var applicationCerts =
-                ApplicationConfigurationBuilder.CreateDefaultApplicationCertificates(
-                    "CN=InteropTestClient, O=open62541, DC=localhost",
-                    CertificateStoreType.Directory,
-                    pkiRoot);
+            /* Create RSA + ECC application certificates so we can test
+             * both RSA and ECC security policies. */
+            var applicationCerts = new CertificateIdentifierCollection
+            {
+                new CertificateIdentifier {
+                    StoreType = CertificateStoreType.Directory,
+                    StorePath = Path.Combine(pkiRoot, "own"),
+                    SubjectName = "CN=InteropTestClient, O=open62541, DC=localhost",
+                    CertificateType = ObjectTypeIds.RsaSha256ApplicationCertificateType
+                },
+                new CertificateIdentifier {
+                    StoreType = CertificateStoreType.Directory,
+                    StorePath = Path.Combine(pkiRoot, "own"),
+                    SubjectName = "CN=InteropTestClient ECC, O=open62541, DC=localhost",
+                    CertificateType = ObjectTypeIds.EccNistP256ApplicationCertificateType
+                }
+            };
 
             _config = await new ApplicationInstance(_telemetry)
             {
@@ -225,6 +237,14 @@ namespace Opc.Ua.Interop.Tests
             await ConnectWithSecurityPolicyAsync(
                 SecurityPolicies.Aes256_Sha256_RsaPss,
                 "Aes256_Sha256_RsaPss").ConfigureAwait(false);
+        }
+
+        [Test, Order(13)]
+        public async Task ConnectWithSecurityEccNistP256()
+        {
+            await ConnectWithSecurityPolicyAsync(
+                SecurityPolicies.ECC_nistP256,
+                "ECC_nistP256").ConfigureAwait(false);
         }
 
         [Test, Order(20)]

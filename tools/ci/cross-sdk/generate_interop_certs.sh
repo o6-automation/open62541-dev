@@ -38,6 +38,32 @@ generate_rsa_cert() {
     echo "  Generated: ${name} (PEM + DER)"
 }
 
+# --- Helper: create a self-signed ECC (P-256) cert + key ---
+# Args: <name> <CN> <ApplicationUri> <outdir>
+generate_ecc_cert() {
+    local name="$1" cn="$2" uri="$3" dir="$4"
+    local keyfile="$dir/${name}.key.pem"
+    local certfile="$dir/${name}.cert.pem"
+
+    # Generate EC P-256 key + self-signed cert (PEM)
+    openssl ecparam -genkey -name prime256v1 -noout -out "$keyfile" 2>/dev/null
+    openssl req -x509 -new -key "$keyfile" -sha256 -nodes \
+        -out "$certfile" \
+        -days 365 \
+        -subj "/C=DE/O=open62541/CN=${cn}" \
+        -addext "subjectAltName=URI:${uri},DNS:localhost,IP:127.0.0.1" \
+        -addext "basicConstraints=critical,CA:TRUE" \
+        -addext "keyUsage=critical,digitalSignature,nonRepudiation,keyAgreement,keyCertSign" \
+        -addext "extendedKeyUsage=serverAuth,clientAuth" \
+        2>/dev/null
+
+    # Convert to DER (for C SDK)
+    openssl x509 -in "$certfile" -outform DER -out "$dir/${name}.cert.der"
+    openssl pkcs8 -topk8 -nocrypt -in "$keyfile" -outform DER -out "$dir/${name}.key.der" 2>/dev/null
+
+    echo "  Generated: ${name} (ECC P-256 PEM + DER)"
+}
+
 echo "=== Generating interop test certificates ==="
 echo "Output directory: $OUTDIR"
 
@@ -71,6 +97,19 @@ generate_rsa_cert "server_nodeopcua" \
     "urn:localhost:node-opcua:interop" \
     "$OUTDIR"
 
+# --- ECC (P-256) certificates for ECC security policy interop ---
+# The C SDK (OpenSSL build) supports ECC_nistP256.
+# The .NET SDK supports ECC_nistP256 and ECC_nistP384.
+generate_ecc_cert "server_c_ecc" \
+    "open62541 CI Server ECC" \
+    "urn:open62541.unconfigured.application" \
+    "$OUTDIR"
+
+generate_ecc_cert "client_c_ecc" \
+    "open62541 CI Client ECC" \
+    "urn:open62541.client.application" \
+    "$OUTDIR"
+
 # --- Set up trust directories ---
 echo ""
 echo "=== Setting up trust stores ==="
@@ -91,9 +130,11 @@ cp "$OUTDIR/server_dotnet.cert.der" "$DOTNET_PKI/own/certs/"
 cp "$OUTDIR/server_dotnet.cert.pem" "$DOTNET_PKI/own/certs/"
 cp "$OUTDIR/server_dotnet.key.pem"  "$DOTNET_PKI/own/private/"
 
-# Trust the C SDK certificates
+# Trust the C SDK certificates (RSA + ECC)
 cp "$OUTDIR/server_c.cert.der" "$DOTNET_PKI/trusted/certs/"
 cp "$OUTDIR/client_c.cert.der" "$DOTNET_PKI/trusted/certs/"
+cp "$OUTDIR/server_c_ecc.cert.der" "$DOTNET_PKI/trusted/certs/"
+cp "$OUTDIR/client_c_ecc.cert.der" "$DOTNET_PKI/trusted/certs/"
 
 # Trust the .NET SDK's own certs (self-trust)
 cp "$OUTDIR/server_dotnet.cert.der" "$DOTNET_PKI/trusted/certs/"
