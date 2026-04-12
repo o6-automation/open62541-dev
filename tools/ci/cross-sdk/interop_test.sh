@@ -31,24 +31,39 @@ C_SERVER_PID=""
 DOTNET_SERVER_PID=""
 NODEOPCUA_SERVER_PID=""
 
+# Send SIGTERM, wait up to 5 s, then SIGKILL.  Also kills child processes
+# (handles the subshell + dotnet-run process tree).
+stop_server() {
+    local pid="$1"
+    local label="${2:-server}"
+    if [[ -z "$pid" ]] || ! kill -0 "$pid" 2>/dev/null; then
+        return 0
+    fi
+    echo "  Stopping $label (PID $pid)"
+    # Kill child processes first (e.g. dotnet exec spawned by dotnet run)
+    pkill -P "$pid" 2>/dev/null || true
+    kill "$pid" 2>/dev/null || true
+    # Wait up to 5 s for graceful shutdown
+    local i
+    for i in 1 2 3 4 5; do
+        kill -0 "$pid" 2>/dev/null || break
+        sleep 1
+    done
+    # Force-kill if still alive
+    if kill -0 "$pid" 2>/dev/null; then
+        echo "  Force-killing $label (PID $pid)"
+        pkill -9 -P "$pid" 2>/dev/null || true
+        kill -9 "$pid" 2>/dev/null || true
+    fi
+    wait "$pid" 2>/dev/null || true
+}
+
 cleanup() {
     echo ""
     echo "=== Cleaning up ==="
-    if [[ -n "$C_SERVER_PID" ]] && kill -0 "$C_SERVER_PID" 2>/dev/null; then
-        echo "  Stopping C server (PID $C_SERVER_PID)"
-        kill "$C_SERVER_PID" 2>/dev/null || true
-        wait "$C_SERVER_PID" 2>/dev/null || true
-    fi
-    if [[ -n "$DOTNET_SERVER_PID" ]] && kill -0 "$DOTNET_SERVER_PID" 2>/dev/null; then
-        echo "  Stopping .NET server (PID $DOTNET_SERVER_PID)"
-        kill "$DOTNET_SERVER_PID" 2>/dev/null || true
-        wait "$DOTNET_SERVER_PID" 2>/dev/null || true
-    fi
-    if [[ -n "$NODEOPCUA_SERVER_PID" ]] && kill -0 "$NODEOPCUA_SERVER_PID" 2>/dev/null; then
-        echo "  Stopping node-opcua server (PID $NODEOPCUA_SERVER_PID)"
-        kill "$NODEOPCUA_SERVER_PID" 2>/dev/null || true
-        wait "$NODEOPCUA_SERVER_PID" 2>/dev/null || true
-    fi
+    stop_server "$C_SERVER_PID" "C server"
+    stop_server "$DOTNET_SERVER_PID" ".NET server"
+    stop_server "$NODEOPCUA_SERVER_PID" "node-opcua server"
 }
 trap cleanup EXIT
 
@@ -166,10 +181,7 @@ else
 fi
 
 # Stop C server
-if [[ -n "$C_SERVER_PID" ]] && kill -0 "$C_SERVER_PID" 2>/dev/null; then
-    kill "$C_SERVER_PID" 2>/dev/null || true
-    wait "$C_SERVER_PID" 2>/dev/null || true
-fi
+stop_server "$C_SERVER_PID" "C server"
 C_SERVER_PID=""
 
 # ============================================================
@@ -213,10 +225,7 @@ else
 fi
 
 # Stop .NET server
-if [[ -n "$DOTNET_SERVER_PID" ]] && kill -0 "$DOTNET_SERVER_PID" 2>/dev/null; then
-    kill "$DOTNET_SERVER_PID" 2>/dev/null || true
-    wait "$DOTNET_SERVER_PID" 2>/dev/null || true
-fi
+stop_server "$DOTNET_SERVER_PID" ".NET server"
 DOTNET_SERVER_PID=""
 
 # ============================================================
@@ -260,10 +269,7 @@ else
 fi
 
 # Stop node-opcua server
-if [[ -n "$NODEOPCUA_SERVER_PID" ]] && kill -0 "$NODEOPCUA_SERVER_PID" 2>/dev/null; then
-    kill "$NODEOPCUA_SERVER_PID" 2>/dev/null || true
-    wait "$NODEOPCUA_SERVER_PID" 2>/dev/null || true
-fi
+stop_server "$NODEOPCUA_SERVER_PID" "node-opcua server"
 NODEOPCUA_SERVER_PID=""
 
 # ============================================================
