@@ -9,6 +9,10 @@
 #include <open62541/server.h>
 #include <open62541/server_config_default.h>
 
+#if defined(UA_ENABLE_ENCRYPTION_MBEDTLS)
+#include <mbedtls/version.h>
+#endif
+
 #include <stdlib.h>
 
 #include "common.h"
@@ -191,8 +195,9 @@ int main(int argc, char* argv[]) {
 
     /* Optionally add ECC_nistP256 security policy via environment variables.
      * This allows RSA and ECC endpoints to coexist on the same server.
-     * Only effective with OpenSSL builds. */
-#if defined(UA_ENABLE_ENCRYPTION_OPENSSL)
+     * Effective with OpenSSL or mbedTLS 3.x builds. */
+#if defined(UA_ENABLE_ENCRYPTION_OPENSSL) || \
+    (defined(UA_ENABLE_ENCRYPTION_MBEDTLS) && MBEDTLS_VERSION_NUMBER >= 0x03000000)
     {
         const char *eccCertPath = getenv("CI_SERVER_ECC_CERT");
         const char *eccKeyPath  = getenv("CI_SERVER_ECC_KEY");
