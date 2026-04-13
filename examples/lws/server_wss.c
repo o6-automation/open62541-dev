@@ -77,6 +77,22 @@ helloCallback(UA_Server *server,
     return UA_STATUSCODE_GOOD;
 }
 
+static UA_StatusCode
+scaleRangeCallback(UA_Server *server,
+                   const UA_NodeId *sessionId, void *sessionHandle,
+                   const UA_NodeId *methodId, void *methodContext,
+                   const UA_NodeId *objectId, void *objectContext,
+                   size_t inputSize, const UA_Variant *input,
+                   size_t outputSize, UA_Variant *output) {
+    UA_Range *range = (UA_Range *)input[0].data;
+    UA_Double factor = *(UA_Double *)input[1].data;
+    UA_Range result;
+    result.low = range->low * factor;
+    result.high = range->high * factor;
+    UA_Variant_setScalarCopy(output, &result, &UA_TYPES[UA_TYPES_RANGE]);
+    return UA_STATUSCODE_GOOD;
+}
+
 /* ── Populate address space with test data ────────────────────── */
 
 static void
@@ -221,6 +237,42 @@ addTestNodes(UA_Server *server) {
                                 UA_QUALIFIEDNAME(1, "Hello"),
                                 mAttr, &helloCallback,
                                 1, &inputArg, 1, &outputArg,
+                                NULL, NULL);
+    }
+
+    /* ScaleRange(Range range, Double factor) → Range */
+    {
+        UA_Argument inputArgs[2];
+        UA_Argument_init(&inputArgs[0]);
+        inputArgs[0].name = UA_STRING("range");
+        inputArgs[0].dataType = UA_TYPES[UA_TYPES_RANGE].typeId;
+        inputArgs[0].valueRank = UA_VALUERANK_SCALAR;
+        inputArgs[0].description = UA_LOCALIZEDTEXT("en-US", "Input range");
+
+        UA_Argument_init(&inputArgs[1]);
+        inputArgs[1].name = UA_STRING("factor");
+        inputArgs[1].dataType = UA_TYPES[UA_TYPES_DOUBLE].typeId;
+        inputArgs[1].valueRank = UA_VALUERANK_SCALAR;
+        inputArgs[1].description = UA_LOCALIZEDTEXT("en-US", "Scale factor");
+
+        UA_Argument outputArg;
+        UA_Argument_init(&outputArg);
+        outputArg.name = UA_STRING("result");
+        outputArg.dataType = UA_TYPES[UA_TYPES_RANGE].typeId;
+        outputArg.valueRank = UA_VALUERANK_SCALAR;
+        outputArg.description = UA_LOCALIZEDTEXT("en-US", "Scaled range");
+
+        UA_MethodAttributes mAttr = UA_MethodAttributes_default;
+        mAttr.displayName = UA_LOCALIZEDTEXT("en-US", "ScaleRange");
+        mAttr.executable = true;
+        mAttr.userExecutable = true;
+
+        UA_Server_addMethodNode(server, UA_NODEID_STRING(1, "ScaleRange"),
+                                methodsFolderId,
+                                UA_NODEID_NUMERIC(0, UA_NS0ID_HASCOMPONENT),
+                                UA_QUALIFIEDNAME(1, "ScaleRange"),
+                                mAttr, &scaleRangeCallback,
+                                2, inputArgs, 1, &outputArg,
                                 NULL, NULL);
     }
 }
