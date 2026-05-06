@@ -415,7 +415,10 @@ START_TEST(read_samplingIntervalDiagnosticsArray) {
     /* SamplingIntervalDiagnosticsArray - may not exist in all builds */
     UA_StatusCode res = readNodeValue(
         UA_NODEID_NUMERIC(0, UA_NS0ID_SERVER_SERVERDIAGNOSTICS_SAMPLINGINTERVALDIAGNOSTICSARRAY), &out);
-    (void)res;
+    if(res == UA_STATUSCODE_GOOD) {
+        ck_assert(out.type == &UA_TYPES[UA_TYPES_SAMPLINGINTERVALDIAGNOSTICSDATATYPE]);
+        ck_assert_uint_eq(out.arrayLength, 0);
+    }
     UA_Variant_clear(&out);
 } END_TEST
 
@@ -437,6 +440,8 @@ START_TEST(read_sessionSecurityDiagnosticsArray) {
     UA_StatusCode res = readNodeValue(
         UA_NODEID_NUMERIC(0, 3708), &out);
     ck_assert_uint_eq(res, UA_STATUSCODE_GOOD);
+    ck_assert(out.type == &UA_TYPES[UA_TYPES_SESSIONSECURITYDIAGNOSTICSDATATYPE]);
+    ck_assert_uint_eq(out.arrayLength, 0);
     UA_Variant_clear(&out);
 } END_TEST
 
