@@ -486,6 +486,12 @@ serverAsyncReadCallback(UA_Server *s, void *asyncOpContext,
     serverReadResultReceived = true;
 }
 
+static void
+serverAsyncReadNoopCallback(UA_Server *s, void *asyncOpContext,
+                            const UA_DataValue *result) {
+    (void)s; (void)asyncOpContext; (void)result;
+}
+
 START_TEST(Async_server_read) {
     /* Use the server-side async read API directly */
     running = false;
@@ -598,6 +604,64 @@ START_TEST(Async_read_timeout_server) {
     UA_Client_delete(client);
 } END_TEST
 
+START_TEST(Async_setResult_badnotfound) {
+    UA_DataValue dv;
+    UA_DataValue_init(&dv);
+    UA_StatusCode retval = UA_Server_setAsyncReadResult(server, &dv);
+    ck_assert_uint_eq(retval, UA_STATUSCODE_BADNOTFOUND);
+
+    UA_DataValue value;
+    UA_DataValue_init(&value);
+    UA_UInt32 v = 1;
+    UA_Variant_setScalar(&value.value, &v, &UA_TYPES[UA_TYPES_UINT32]);
+    value.hasValue = true;
+    retval = UA_Server_setAsyncWriteResult(server, &value, UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(retval, UA_STATUSCODE_BADNOTFOUND);
+
+#ifdef UA_ENABLE_METHODCALLS
+    UA_Variant output;
+    UA_Variant_init(&output);
+    UA_Int32 outVal = 42;
+    UA_Variant_setScalar(&output, &outVal, &UA_TYPES[UA_TYPES_INT32]);
+    retval = UA_Server_setAsyncCallMethodResult(server, &output, UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(retval, UA_STATUSCODE_BADNOTFOUND);
+#endif
+} END_TEST
+
+START_TEST(Async_queue_limit_read_direct) {
+    running = false;
+    THREAD_JOIN(server_thread);
+
+    UA_ServerConfig *config = UA_Server_getConfig(server);
+    const UA_UInt32 oldLimit = config->maxAsyncOperationQueueSize;
+    config->maxAsyncOperationQueueSize = 1;
+
+    UA_ReadValueId rvid;
+    UA_ReadValueId_init(&rvid);
+    rvid.nodeId = UA_NODEID_STRING(1, "asyncVar");
+    rvid.attributeId = UA_ATTRIBUTEID_VALUE;
+
+    UA_StatusCode retval =
+        UA_Server_read_async(server, &rvid, UA_TIMESTAMPSTORETURN_BOTH,
+                             serverAsyncReadNoopCallback, NULL, 5000);
+    ck_assert_uint_eq(retval, UA_STATUSCODE_GOOD);
+
+    retval =
+        UA_Server_read_async(server, &rvid, UA_TIMESTAMPSTORETURN_BOTH,
+                             serverAsyncReadNoopCallback, NULL, 5000);
+    ck_assert_uint_eq(retval, UA_STATUSCODE_BADTOOMANYOPERATIONS);
+
+    config->maxAsyncOperationQueueSize = oldLimit;
+
+    /* Let the first queued async op complete and be cleaned up before teardown. */
+    UA_fakeSleep(1000);
+    UA_Server_run_iterate(server, false);
+    UA_Server_run_iterate(server, false);
+
+    running = true;
+    THREAD_CREATE(server_thread, serverloop);
+} END_TEST
+
 START_TEST(Async_sync_method_call) {
     /* Call a synchronous method via the async path - it should complete immediately */
     UA_Client *client = UA_Client_newForUnitTest();
@@ -656,6 +720,8 @@ static Suite* method_async_suite(void) {
     tcase_add_test(tc_manager, Async_server_read);
     tcase_add_test(tc_manager, Async_server_write);
     tcase_add_test(tc_manager, Async_read_timeout_server);
+    tcase_add_test(tc_manager, Async_setResult_badnotfound);
+    tcase_add_test(tc_manager, Async_queue_limit_read_direct);
     tcase_add_test(tc_manager, Async_sync_method_call);
     tcase_add_test(tc_manager, Async_read_sync_variable);
     suite_add_tcase(s, tc_manager);

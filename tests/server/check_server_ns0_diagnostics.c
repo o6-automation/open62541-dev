@@ -404,6 +404,8 @@ START_TEST(read_subscriptionDiagnosticsArray) {
     UA_StatusCode res = readNodeValue(
         UA_NODEID_NUMERIC(0, UA_NS0ID_SERVER_SERVERDIAGNOSTICS_SUBSCRIPTIONDIAGNOSTICSARRAY), &out);
     ck_assert_uint_eq(res, UA_STATUSCODE_GOOD);
+    ck_assert(out.type == &UA_TYPES[UA_TYPES_SUBSCRIPTIONDIAGNOSTICSDATATYPE]);
+    ck_assert_uint_eq(out.arrayLength, 0);
     UA_Variant_clear(&out);
 } END_TEST
 
@@ -424,6 +426,8 @@ START_TEST(read_sessionDiagnosticsArray) {
     UA_StatusCode res = readNodeValue(
         UA_NODEID_NUMERIC(0, 3707), &out);
     ck_assert_uint_eq(res, UA_STATUSCODE_GOOD);
+    ck_assert(out.type == &UA_TYPES[UA_TYPES_SESSIONDIAGNOSTICSDATATYPE]);
+    ck_assert_uint_eq(out.arrayLength, 0);
     UA_Variant_clear(&out);
 } END_TEST
 
