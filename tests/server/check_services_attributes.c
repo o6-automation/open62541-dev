@@ -24,6 +24,8 @@ static UA_Server *server = NULL;
 /* Custom enum DataType descriptors for EnumDefinition tests */
 #define TEST_ENUM_VALUES_NODEID  50000
 #define TEST_ENUM_STRINGS_NODEID 50001
+#define TEST_ENUM_BOTH_NODEID    50004  /* has both EnumValues and EnumStrings */
+#define TEST_ENUM_NONE_NODEID    50005  /* has neither property */
 
 static UA_DataType TestEnumWithValues = {
 #ifdef UA_ENABLE_TYPEDESCRIPTION
@@ -55,7 +57,37 @@ static UA_DataType TestEnumWithStrings = {
     NULL    /* members */
 };
 
-static UA_DataType testEnumTypes[2];
+static UA_DataType TestEnumBoth = {
+#ifdef UA_ENABLE_TYPEDESCRIPTION
+    "TestEnumBoth",
+#endif
+    {1, UA_NODEIDTYPE_NUMERIC, {TEST_ENUM_BOTH_NODEID}},
+    {0, UA_NODEIDTYPE_NUMERIC, {0}},
+    {0, UA_NODEIDTYPE_NUMERIC, {0}},
+    sizeof(UA_Int32),
+    UA_DATATYPEKIND_ENUM,
+    true,
+    true,
+    0,
+    NULL
+};
+
+static UA_DataType TestEnumNone = {
+#ifdef UA_ENABLE_TYPEDESCRIPTION
+    "TestEnumNone",
+#endif
+    {1, UA_NODEIDTYPE_NUMERIC, {TEST_ENUM_NONE_NODEID}},
+    {0, UA_NODEIDTYPE_NUMERIC, {0}},
+    {0, UA_NODEIDTYPE_NUMERIC, {0}},
+    sizeof(UA_Int32),
+    UA_DATATYPEKIND_ENUM,
+    true,
+    true,
+    0,
+    NULL
+};
+
+static UA_DataType testEnumTypes[4];
 static UA_DataTypeArray testEnumTypesArray;
 
 static UA_StatusCode
@@ -208,9 +240,11 @@ static void setup(void) {
     /* Register custom enum types so UA_findDataTypeWithCustom finds them */
     testEnumTypes[0] = TestEnumWithValues;
     testEnumTypes[1] = TestEnumWithStrings;
+    testEnumTypes[2] = TestEnumBoth;
+    testEnumTypes[3] = TestEnumNone;
     testEnumTypesArray.next = (UA_DataTypeArray*)(uintptr_t)
         UA_Server_getConfig(server)->customDataTypes;
-    testEnumTypesArray.typesSize = 2;
+    testEnumTypesArray.typesSize = 4;
     testEnumTypesArray.types = testEnumTypes;
     testEnumTypesArray.cleanup = UA_FALSE;
     UA_Server_getConfig(server)->customDataTypes = &testEnumTypesArray;
@@ -293,6 +327,79 @@ static void setup(void) {
         retval = UA_Server_writeValue(server, UA_NODEID_NUMERIC(1, 50003), v);
         ck_assert_int_eq(retval, UA_STATUSCODE_GOOD);
     }
+
+    /* DataType node: TestEnumBoth (has both EnumValues and EnumStrings;
+     * EnumValues should win) */
+    enumAttr.displayName = UA_LOCALIZEDTEXT("en-US", "TestEnumBoth");
+    retval = UA_Server_addDataTypeNode(
+        server, UA_NODEID_NUMERIC(1, TEST_ENUM_BOTH_NODEID),
+        UA_NODEID_NUMERIC(0, UA_NS0ID_ENUMERATION),
+        UA_NODEID_NUMERIC(0, UA_NS0ID_HASSUBTYPE),
+        UA_QUALIFIEDNAME(1, "TestEnumBoth"),
+        enumAttr, NULL, NULL);
+    ck_assert_int_eq(retval, UA_STATUSCODE_GOOD);
+
+    {
+        UA_VariableAttributes evAttr = UA_VariableAttributes_default;
+        evAttr.displayName = UA_LOCALIZEDTEXT("en-US", "EnumValues");
+        evAttr.accessLevel = UA_ACCESSLEVELMASK_READ;
+        retval = UA_Server_addVariableNode(
+            server, UA_NODEID_NUMERIC(1, 50006),
+            UA_NODEID_NUMERIC(1, TEST_ENUM_BOTH_NODEID),
+            UA_NODEID_NUMERIC(0, UA_NS0ID_HASPROPERTY),
+            UA_QUALIFIEDNAME(0, "EnumValues"),
+            UA_NODEID_NUMERIC(0, UA_NS0ID_PROPERTYTYPE),
+            evAttr, NULL, NULL);
+        ck_assert_int_eq(retval, UA_STATUSCODE_GOOD);
+
+        UA_EnumValueType ev[2];
+        UA_EnumValueType_init(&ev[0]);
+        ev[0].value = 10;
+        ev[0].displayName = UA_LOCALIZEDTEXT("en-US", "First");
+        UA_EnumValueType_init(&ev[1]);
+        ev[1].value = 20;
+        ev[1].displayName = UA_LOCALIZEDTEXT("en-US", "Second");
+
+        UA_Variant v;
+        UA_Variant_setArray(&v, ev, 2, &UA_TYPES[UA_TYPES_ENUMVALUETYPE]);
+        retval = UA_Server_writeValue(server, UA_NODEID_NUMERIC(1, 50006), v);
+        ck_assert_int_eq(retval, UA_STATUSCODE_GOOD);
+    }
+
+    {
+        UA_VariableAttributes esAttr = UA_VariableAttributes_default;
+        esAttr.displayName = UA_LOCALIZEDTEXT("en-US", "EnumStrings");
+        esAttr.accessLevel = UA_ACCESSLEVELMASK_READ;
+        retval = UA_Server_addVariableNode(
+            server, UA_NODEID_NUMERIC(1, 50007),
+            UA_NODEID_NUMERIC(1, TEST_ENUM_BOTH_NODEID),
+            UA_NODEID_NUMERIC(0, UA_NS0ID_HASPROPERTY),
+            UA_QUALIFIEDNAME(0, "EnumStrings"),
+            UA_NODEID_NUMERIC(0, UA_NS0ID_PROPERTYTYPE),
+            esAttr, NULL, NULL);
+        ck_assert_int_eq(retval, UA_STATUSCODE_GOOD);
+
+        UA_LocalizedText es[3];
+        es[0] = UA_LOCALIZEDTEXT("en-US", "A");
+        es[1] = UA_LOCALIZEDTEXT("en-US", "B");
+        es[2] = UA_LOCALIZEDTEXT("en-US", "C");
+
+        UA_Variant v;
+        UA_Variant_setArray(&v, es, 3, &UA_TYPES[UA_TYPES_LOCALIZEDTEXT]);
+        retval = UA_Server_writeValue(server, UA_NODEID_NUMERIC(1, 50007), v);
+        ck_assert_int_eq(retval, UA_STATUSCODE_GOOD);
+    }
+
+    /* DataType node: TestEnumNone (no EnumValues or EnumStrings property;
+     * reading DataTypeDefinition must return BadAttributeIdInvalid) */
+    enumAttr.displayName = UA_LOCALIZEDTEXT("en-US", "TestEnumNone");
+    retval = UA_Server_addDataTypeNode(
+        server, UA_NODEID_NUMERIC(1, TEST_ENUM_NONE_NODEID),
+        UA_NODEID_NUMERIC(0, UA_NS0ID_ENUMERATION),
+        UA_NODEID_NUMERIC(0, UA_NS0ID_HASSUBTYPE),
+        UA_QUALIFIEDNAME(1, "TestEnumNone"),
+        enumAttr, NULL, NULL);
+    ck_assert_int_eq(retval, UA_STATUSCODE_GOOD);
 }
 
 static UA_VariableNode* makeCompareSequence(void) {
@@ -873,6 +980,49 @@ START_TEST(ReadSingleAttributeEnumDefinitionFromEnumStrings) {
 #else
     ck_assert_int_eq(UA_STATUSCODE_BADATTRIBUTEIDINVALID, resp.status);
 #endif
+    UA_DataValue_clear(&resp);
+} END_TEST
+
+/* EnumValues wins over EnumStrings when both properties are present */
+START_TEST(ReadSingleAttributeEnumDefinitionEnumValuesWins) {
+    UA_ReadValueId rvi;
+    UA_ReadValueId_init(&rvi);
+    rvi.nodeId = UA_NODEID_NUMERIC(1, TEST_ENUM_BOTH_NODEID);
+    rvi.attributeId = UA_ATTRIBUTEID_DATATYPEDEFINITION;
+
+    UA_DataValue resp = UA_Server_read(server, &rvi,
+                                       UA_TIMESTAMPSTORETURN_NEITHER);
+
+#ifdef UA_ENABLE_TYPEDESCRIPTION
+    ck_assert_int_eq(UA_STATUSCODE_GOOD, resp.status);
+    ck_assert(resp.hasValue);
+    ck_assert(resp.value.type == &UA_TYPES[UA_TYPES_EXTENSIONOBJECT]);
+
+    UA_ExtensionObject *eo = (UA_ExtensionObject *)resp.value.data;
+    ck_assert_ptr_eq(eo->content.decoded.type, &UA_TYPES[UA_TYPES_ENUMDEFINITION]);
+
+    UA_EnumDefinition *def = (UA_EnumDefinition *)eo->content.decoded.data;
+    /* EnumValues yields 2 fields; EnumStrings would yield 3. */
+    ck_assert_uint_eq(def->fieldsSize, 2);
+    ck_assert_int_eq(def->fields[0].value, 10);
+    ck_assert_int_eq(def->fields[1].value, 20);
+#else
+    ck_assert_int_eq(UA_STATUSCODE_BADATTRIBUTEIDINVALID, resp.status);
+#endif
+    UA_DataValue_clear(&resp);
+} END_TEST
+
+/* No EnumValues, no EnumStrings -> BadAttributeIdInvalid */
+START_TEST(ReadSingleAttributeEnumDefinitionNoneProps) {
+    UA_ReadValueId rvi;
+    UA_ReadValueId_init(&rvi);
+    rvi.nodeId = UA_NODEID_NUMERIC(1, TEST_ENUM_NONE_NODEID);
+    rvi.attributeId = UA_ATTRIBUTEID_DATATYPEDEFINITION;
+
+    UA_DataValue resp = UA_Server_read(server, &rvi,
+                                       UA_TIMESTAMPSTORETURN_NEITHER);
+
+    ck_assert_int_eq(UA_STATUSCODE_BADATTRIBUTEIDINVALID, resp.status);
     UA_DataValue_clear(&resp);
 } END_TEST
 
@@ -1477,6 +1627,8 @@ static Suite * testSuite_services_attributes(void) {
     tcase_add_test(tc_readSingleAttributes, ReadSingleAttributeDataTypeDefinitionWithoutTimestamp);
     tcase_add_test(tc_readSingleAttributes, ReadSingleAttributeEnumDefinitionFromEnumValues);
     tcase_add_test(tc_readSingleAttributes, ReadSingleAttributeEnumDefinitionFromEnumStrings);
+    tcase_add_test(tc_readSingleAttributes, ReadSingleAttributeEnumDefinitionEnumValuesWins);
+    tcase_add_test(tc_readSingleAttributes, ReadSingleAttributeEnumDefinitionNoneProps);
     tcase_add_test(tc_readSingleAttributes, ReadSingleAttributeValueWithExternalSource);
 
     suite_add_tcase(s, tc_readSingleAttributes);

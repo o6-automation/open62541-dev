@@ -299,10 +299,9 @@ resolveProperty(UA_Server *server, const UA_NodeId dataTypeId,
     bd.nodeId          = dataTypeId;
     bd.browseDirection = UA_BROWSEDIRECTION_FORWARD;
     bd.referenceTypeId = UA_NODEID_NUMERIC(0, UA_NS0ID_HASPROPERTY);
-    bd.includeSubtypes = true;
+    bd.includeSubtypes = false;
     bd.nodeClassMask   = 0;
-    bd.resultMask      = UA_BROWSERESULTMASK_BROWSENAME |
-                         UA_BROWSERESULTMASK_REFERENCETYPEID;
+    bd.resultMask      = UA_BROWSERESULTMASK_BROWSENAME;
 
     UA_BrowseResult resp = UA_Server_browse(server, 0, &bd);
     if(resp.statusCode != UA_STATUSCODE_GOOD) {
