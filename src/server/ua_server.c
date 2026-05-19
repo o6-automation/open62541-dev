@@ -229,7 +229,7 @@ UA_GDSTransaction_getCertificateGroup(UA_GDSTransaction *transaction,
     certGroup->getTrustList((UA_CertificateGroup*)(uintptr_t)certGroup, &trustList);
 
     /* Set up the parameters */
-    static UA_THREAD_LOCAL UA_KeyValuePair params[1] = {
+    UA_KeyValuePair params[1] = {
         {{0, UA_STRING_STATIC("max-trust-listsize")}, {0}}
     };
     UA_KeyValueMap paramsMap = {1, params};
