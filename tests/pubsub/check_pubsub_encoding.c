@@ -75,6 +75,56 @@ START_TEST(UA_PubSub_EnDecode_ShallWorkOn1DS1ValueVariantKeyFrame) {
 }
 END_TEST
 
+START_TEST(UA_PubSub_EnDecode_ShallWorkOnPicoSeconds) {
+    /* A DataSetMessage that requests the PicoSeconds field (with a timestamp,
+     * as required by the UADP encoding) must round-trip the picoSecondsIncluded
+     * flag and the picoSeconds value. */
+    UA_NetworkMessage m;
+    memset(&m, 0, sizeof(UA_NetworkMessage));
+    m.version = 1;
+    m.networkMessageType = UA_NETWORKMESSAGE_DATASET;
+    UA_DataSetMessage dmkf;
+    memset(&dmkf, 0, sizeof(UA_DataSetMessage));
+    dmkf.header.dataSetMessageValid = true;
+    dmkf.header.fieldEncoding = UA_FIELDENCODING_VARIANT;
+    dmkf.header.dataSetMessageType = UA_DATASETMESSAGE_DATAKEYFRAME;
+    dmkf.header.timestampEnabled = true;
+    dmkf.header.timestamp = UA_DateTime_now();
+    dmkf.header.picoSecondsIncluded = true;
+    dmkf.header.picoSeconds = 2500;
+    dmkf.fieldCount = 1;
+    dmkf.data.keyFrameFields =
+        (UA_DataValue*)UA_Array_new(dmkf.fieldCount, &UA_TYPES[UA_TYPES_DATAVALUE]);
+    UA_DataValue_init(&dmkf.data.keyFrameFields[0]);
+
+    UA_Int32 iv = 27;
+    UA_Variant_setScalarCopy(&dmkf.data.keyFrameFields[0].value, &iv, &UA_TYPES[UA_TYPES_INT32]);
+    dmkf.data.keyFrameFields[0].hasValue = true;
+
+    m.payload.dataSetMessages = &dmkf;
+    m.messageCount = 1;
+
+    UA_ByteString buffer;
+    size_t msgSize = UA_NetworkMessage_calcSizeBinary(&m, NULL);
+    UA_StatusCode rv = UA_ByteString_allocBuffer(&buffer, msgSize);
+    ck_assert_int_eq(rv, UA_STATUSCODE_GOOD);
+
+    rv = UA_NetworkMessage_encodeBinary(&m, &buffer, NULL);
+    ck_assert_int_eq(rv, UA_STATUSCODE_GOOD);
+
+    UA_NetworkMessage m2;
+    rv = UA_NetworkMessage_decodeBinary(&buffer, &m2, NULL, NULL);
+    ck_assert_int_eq(rv, UA_STATUSCODE_GOOD);
+    ck_assert(m2.payload.dataSetMessages[0].header.picoSecondsIncluded == true);
+    ck_assert_uint_eq(m2.payload.dataSetMessages[0].header.picoSeconds, 2500);
+
+    UA_DataValue_clear(&dmkf.data.keyFrameFields[0]);
+    UA_NetworkMessage_clear(&m2);
+    UA_ByteString_clear(&buffer);
+    UA_Array_delete(dmkf.data.keyFrameFields, dmkf.fieldCount, &UA_TYPES[UA_TYPES_DATAVALUE]);
+}
+END_TEST
+
 START_TEST(UA_PubSub_EnDecode_ShallWorkOn1DS1ValueDataValueKeyFrame) {
     UA_NetworkMessage m;
     memset(&m, 0, sizeof(UA_NetworkMessage));
@@ -1264,6 +1314,7 @@ int main(void) {
 
     TCase *tc_ende1 = tcase_create("encode_decode1DS");
     tcase_add_test(tc_ende1, UA_PubSub_EnDecode_ShallWorkOn1DS1ValueVariantKeyFrame);
+    tcase_add_test(tc_ende1, UA_PubSub_EnDecode_ShallWorkOnPicoSeconds);
     tcase_add_test(tc_ende1, UA_PubSub_EnDecode_ShallWorkOn1DS1ValueDataValueKeyFrame);
     tcase_add_test(tc_ende1, UA_PubSub_EnDecode_ShallWorkOn1DS2ValuesVariantKeyFrame);
     tcase_add_test(tc_ende1, UA_PubSub_EnDecode_ShallWorkOn1DS2ValuesDataValueKeyFrame);

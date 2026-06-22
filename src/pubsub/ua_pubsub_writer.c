@@ -617,10 +617,15 @@ UA_DataSetWriter_generateDataSetMessage(UA_PubSubManager *psm,
             dataSetMessage->header.timestamp = el->dateTime_now(el);
         }
 
-        /* TODO: Picoseconds resolution not supported atm */
+        /* The PicoSeconds field complements the Timestamp with sub-100ns
+         * resolution (OPC UA Part 14). When the content mask requests it, emit
+         * the field as configured. The UA_DateTime clock only provides 100ns
+         * resolution, so the fractional part is 0 (a valid "no sub-100ns
+         * component" encoding) until a higher-resolution clock is available. */
         if((u64)dsm->dataSetMessageContentMask &
            (u64)UA_UADPDATASETMESSAGECONTENTMASK_PICOSECONDS) {
-            dataSetMessage->header.picoSecondsIncluded = false;
+            dataSetMessage->header.picoSecondsIncluded = true;
+            dataSetMessage->header.picoSeconds = 0;
         }
 
         /* TODO: Statuscode not supported yet */

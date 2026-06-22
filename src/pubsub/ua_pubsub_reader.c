@@ -1003,9 +1003,14 @@ UA_DataSetReader_generateDataSetMessage(UA_Server *server,
         dsm->header.timestamp = UA_DateTime_now();
     }
 
+    /* Enable the PicoSeconds field when requested so it is encoded/decoded
+     * consistently with the writer. The fractional part stays 0 until a
+     * sub-100ns clock source is available (see ua_pubsub_writer.c). */
     if((u64)dsrMessageDataType->dataSetMessageContentMask &
-       (u64)UA_UADPDATASETMESSAGECONTENTMASK_PICOSECONDS)
-        dsm->header.picoSecondsIncluded = false;
+       (u64)UA_UADPDATASETMESSAGECONTENTMASK_PICOSECONDS) {
+        dsm->header.picoSecondsIncluded = true;
+        dsm->header.picoSeconds = 0;
+    }
 
     if((u64)dsrMessageDataType->dataSetMessageContentMask &
        (u64)UA_UADPDATASETMESSAGECONTENTMASK_STATUS)
