@@ -443,6 +443,80 @@ scaleRangeMethodCallback(UA_Server *server,
     return UA_STATUSCODE_GOOD;
 }
 
+/* ScaleArray(Values: Double[], Factor: Double) → Double[]
+ * Multiplies every element of a 1-D array by a scalar factor and
+ * returns a new array of the same length. Demonstrates one-
+ * dimensional array input/output. */
+static UA_StatusCode
+scaleArrayMethodCallback(UA_Server *server,
+                         const UA_NodeId *sessionId, void *sessionHandle,
+                         const UA_NodeId *methodId, void *methodContext,
+                         const UA_NodeId *objectId, void *objectContext,
+                         size_t inputSize, const UA_Variant *input,
+                         size_t outputSize, UA_Variant *output) {
+    if (inputSize < 2 || !UA_Variant_hasArrayType(&input[0], &UA_TYPES[UA_TYPES_DOUBLE]))
+        return UA_STATUSCODE_BADINVALIDARGUMENT;
+    UA_Double *src = (UA_Double *)input[0].data;
+    size_t n = input[0].arrayLength;
+    UA_Double factor = *(UA_Double *)input[1].data;
+
+    UA_Double *dst = (UA_Double *)UA_Array_new(n, &UA_TYPES[UA_TYPES_DOUBLE]);
+    if (!dst) return UA_STATUSCODE_BADOUTOFMEMORY;
+    for (size_t i = 0; i < n; i++) dst[i] = src[i] * factor;
+
+    UA_Variant_setArray(output, dst, n, &UA_TYPES[UA_TYPES_DOUBLE]);
+    output->storageType = UA_VARIANT_DATA; /* take ownership */
+    UA_LOG_INFO(UA_Log_Stdout, UA_LOGCATEGORY_APPLICATION,
+                "ScaleArray(len=%zu, factor=%f)", n, factor);
+    return UA_STATUSCODE_GOOD;
+}
+
+/* TransposeMatrix(Matrix: Double[N,M]) → Double[M,N]
+ * Transposes a 2-D matrix supplied as an OPC UA multi-dimensional array.
+ * Demonstrates multi-dimensional array input/output (arrayDimensions). */
+static UA_StatusCode
+transposeMatrixMethodCallback(UA_Server *server,
+                              const UA_NodeId *sessionId, void *sessionHandle,
+                              const UA_NodeId *methodId, void *methodContext,
+                              const UA_NodeId *objectId, void *objectContext,
+                              size_t inputSize, const UA_Variant *input,
+                              size_t outputSize, UA_Variant *output) {
+    if (inputSize < 1 || !UA_Variant_hasArrayType(&input[0], &UA_TYPES[UA_TYPES_DOUBLE]))
+        return UA_STATUSCODE_BADINVALIDARGUMENT;
+    if (input[0].arrayDimensionsSize != 2)
+        return UA_STATUSCODE_BADINVALIDARGUMENT;
+
+    UA_UInt32 rows = input[0].arrayDimensions[0];
+    UA_UInt32 cols = input[0].arrayDimensions[1];
+    if ((size_t)rows * (size_t)cols != input[0].arrayLength)
+        return UA_STATUSCODE_BADINVALIDARGUMENT;
+
+    UA_Double *src = (UA_Double *)input[0].data;
+    size_t total = (size_t)rows * (size_t)cols;
+    UA_Double *dst = (UA_Double *)UA_Array_new(total, &UA_TYPES[UA_TYPES_DOUBLE]);
+    if (!dst) return UA_STATUSCODE_BADOUTOFMEMORY;
+
+    /* Transpose: dst[c,r] = src[r,c]   (row-major) */
+    for (UA_UInt32 r = 0; r < rows; r++) {
+        for (UA_UInt32 c = 0; c < cols; c++) {
+            dst[(size_t)c * rows + r] = src[(size_t)r * cols + c];
+        }
+    }
+
+    UA_Variant_setArray(output, dst, total, &UA_TYPES[UA_TYPES_DOUBLE]);
+    output->storageType = UA_VARIANT_DATA;
+    UA_UInt32 *dims = (UA_UInt32 *)UA_Array_new(2, &UA_TYPES[UA_TYPES_UINT32]);
+    if (dims) {
+        dims[0] = cols;
+        dims[1] = rows;
+        output->arrayDimensions = dims;
+        output->arrayDimensionsSize = 2;
+    }
+    UA_LOG_INFO(UA_Log_Stdout, UA_LOGCATEGORY_APPLICATION,
+                "TransposeMatrix(%ux%u) -> %ux%u", rows, cols, cols, rows);
+    return UA_STATUSCODE_GOOD;
+}
+
 static void
 addMethods(UA_Server *server) {
     UA_NodeId folder = addFolder(server, UA_NS0ID(OBJECTSFOLDER), "Methods", 13000);
@@ -543,11 +617,110 @@ addMethods(UA_Server *server) {
                                 attr, &scaleRangeMethodCallback,
                                 2, inputs, 1, &output, NULL, NULL);
     }
+
+    /* ScaleArray(Values: Double[], Factor: Double) → Double[] */
+    {
+        UA_Argument inputs[2];
+        UA_Argument_init(&inputs[0]);
+        inputs[0].name = UA_STRING("Values");
+        inputs[0].description = UA_LOCALIZEDTEXT("en-US",
+            "1-D array of doubles to be multiplied element-wise");
+        inputs[0].dataType = UA_TYPES[UA_TYPES_DOUBLE].typeId;
+        inputs[0].valueRank = UA_VALUERANK_ONE_DIMENSION;
+
+        UA_Argument_init(&inputs[1]);
+        inputs[1].name = UA_STRING("Factor");
+        inputs[1].description = UA_LOCALIZEDTEXT("en-US", "Scalar multiplier");
+        inputs[1].dataType = UA_TYPES[UA_TYPES_DOUBLE].typeId;
+        inputs[1].valueRank = UA_VALUERANK_SCALAR;
+
+        UA_Argument output;
+        UA_Argument_init(&output);
+        output.name = UA_STRING("Scaled");
+        output.description = UA_LOCALIZEDTEXT("en-US", "Element-wise scaled array");
+        output.dataType = UA_TYPES[UA_TYPES_DOUBLE].typeId;
+        output.valueRank = UA_VALUERANK_ONE_DIMENSION;
+
+        UA_MethodAttributes attr = UA_MethodAttributes_default;
+        attr.displayName = UA_LOCALIZEDTEXT("en-US", "ScaleArray");
+        attr.description = UA_LOCALIZEDTEXT("en-US",
+            "Consumes a 1-D Double array and returns a new array with each "
+            "value multiplied by Factor");
+        attr.executable = true;
+        attr.userExecutable = true;
+        UA_Server_addMethodNode(server, UA_NODEID_NUMERIC(1, 13004), folder,
+                                UA_NS0ID(HASCOMPONENT),
+                                UA_QUALIFIEDNAME(1, "ScaleArray"),
+                                attr, &scaleArrayMethodCallback,
+                                2, inputs, 1, &output, NULL, NULL);
+    }
+
+    /* TransposeMatrix(Matrix: Double[N,M]) → Double[M,N] */
+    {
+        UA_Argument input;
+        UA_Argument_init(&input);
+        input.name = UA_STRING("Matrix");
+        input.description = UA_LOCALIZEDTEXT("en-US",
+            "Multi-dimensional Double array (matrix) to transpose");
+        input.dataType = UA_TYPES[UA_TYPES_DOUBLE].typeId;
+        input.valueRank = 2; /* exactly 2 dimensions */
+        UA_UInt32 inDims[2] = {0, 0}; /* any size accepted */
+        input.arrayDimensions = inDims;
+        input.arrayDimensionsSize = 2;
+
+        UA_Argument output;
+        UA_Argument_init(&output);
+        output.name = UA_STRING("Transposed");
+        output.description = UA_LOCALIZEDTEXT("en-US", "Transposed matrix");
+        output.dataType = UA_TYPES[UA_TYPES_DOUBLE].typeId;
+        output.valueRank = 2;
+        UA_UInt32 outDims[2] = {0, 0};
+        output.arrayDimensions = outDims;
+        output.arrayDimensionsSize = 2;
+
+        UA_MethodAttributes attr = UA_MethodAttributes_default;
+        attr.displayName = UA_LOCALIZEDTEXT("en-US", "TransposeMatrix");
+        attr.description = UA_LOCALIZEDTEXT("en-US",
+            "Consumes a 2-D Double matrix (rows x cols) and returns its "
+            "transpose (cols x rows). Demonstrates multi-dimensional array "
+            "input and output.");
+        attr.executable = true;
+        attr.userExecutable = true;
+        UA_Server_addMethodNode(server, UA_NODEID_NUMERIC(1, 13005), folder,
+                                UA_NS0ID(HASCOMPONENT),
+                                UA_QUALIFIEDNAME(1, "TransposeMatrix"),
+                                attr, &transposeMatrixMethodCallback,
+                                1, &input, 1, &output, NULL, NULL);
+    }
 }
 
 int main(int argc, char *argv[]) {
     signal(SIGINT, stopHandler);
     signal(SIGTERM, stopHandler);
+
+    /* ---------------------------------------------------------
+     * Parse optional port overrides: --tcp-port N  --ws-port N
+     * Must come before cert/key args. Filter them out before
+     * the original argc/argv processing below.
+     * --------------------------------------------------------- */
+    UA_UInt16 tcpPort = 4840;
+    UA_UInt16 wsPort  = 4843;
+    /* Build a filtered argv without the port flags */
+    int   fargc = 0;
+    char *fargv[16];
+    for(int i = 0; i < argc && i < 15; i++) {
+        if(strcmp(argv[i], "--tcp-port") == 0 && i + 1 < argc) {
+            tcpPort = (UA_UInt16)atoi(argv[++i]);
+        } else if(strcmp(argv[i], "--ws-port") == 0 && i + 1 < argc) {
+            wsPort = (UA_UInt16)atoi(argv[++i]);
+        } else {
+            fargv[fargc++] = argv[i];
+        }
+    }
+    fargv[fargc] = NULL;
+    /* Replace argc/argv with the filtered version for cert/key handling */
+    argc = fargc;
+    argv = fargv;
 
     /* ---------------------------------------------------------
      * Certificate & private key: load from CLI or auto-generate
@@ -720,27 +893,36 @@ int main(int argc, char *argv[]) {
         config->wssCertificate = loadFile(argv[1]);
         config->wssPrivateKey = loadFile(argv[2]);
 
+        char tcpUrl[64], wsUrl[64], wssUrl[64];
+        snprintf(tcpUrl, sizeof(tcpUrl), "opc.tcp://localhost:%u", (unsigned)tcpPort);
+        snprintf(wsUrl,  sizeof(wsUrl),  "opc.ws://localhost:%u",  (unsigned)wsPort);
+        snprintf(wssUrl, sizeof(wssUrl), "opc.wss://localhost:%u", (unsigned)(wsPort + 1));
         UA_String serverUrls[3];
-        serverUrls[0] = UA_STRING("opc.tcp://localhost:4840");
-        serverUrls[1] = UA_STRING("opc.ws://localhost:4843");
-        serverUrls[2] = UA_STRING("opc.wss://localhost:4844");
+        serverUrls[0] = UA_STRING(tcpUrl);
+        serverUrls[1] = UA_STRING(wsUrl);
+        serverUrls[2] = UA_STRING(wssUrl);
         UA_Array_copy(serverUrls, 3,
                       (void **)&config->serverUrls, &UA_TYPES[UA_TYPES_STRING]);
         config->serverUrlsSize = 3;
         UA_LOG_INFO(UA_Log_Stdout, UA_LOGCATEGORY_APPLICATION,
-                    "Transports: opc.tcp://:4840, opc.ws://:4843, opc.wss://:4844");
+                    "Transports: opc.tcp://:%u, opc.ws://:%u, opc.wss://:%u",
+                    (unsigned)tcpPort, (unsigned)wsPort, (unsigned)(wsPort + 1));
     } else {
         UA_LOG_INFO(UA_Log_Stdout, UA_LOGCATEGORY_APPLICATION,
                     "No PEM files for WSS transport. Usage: %s [cert.pem key.pem]",
                     argv[0]);
+        char tcpUrl[64], wsUrl[64];
+        snprintf(tcpUrl, sizeof(tcpUrl), "opc.tcp://localhost:%u", (unsigned)tcpPort);
+        snprintf(wsUrl,  sizeof(wsUrl),  "opc.ws://localhost:%u",  (unsigned)wsPort);
         UA_String serverUrls[2];
-        serverUrls[0] = UA_STRING("opc.tcp://localhost:4840");
-        serverUrls[1] = UA_STRING("opc.ws://localhost:4843");
+        serverUrls[0] = UA_STRING(tcpUrl);
+        serverUrls[1] = UA_STRING(wsUrl);
         UA_Array_copy(serverUrls, 2,
                       (void **)&config->serverUrls, &UA_TYPES[UA_TYPES_STRING]);
         config->serverUrlsSize = 2;
         UA_LOG_INFO(UA_Log_Stdout, UA_LOGCATEGORY_APPLICATION,
-                    "Transports: opc.tcp://:4840, opc.ws://:4843");
+                    "Transports: opc.tcp://:%u, opc.ws://:%u",
+                    (unsigned)tcpPort, (unsigned)wsPort);
     }
 
     /* Done with OPC UA application-layer certificate */
