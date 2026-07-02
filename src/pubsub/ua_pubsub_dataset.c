@@ -665,10 +665,10 @@ UA_SubscribedDataSetConfig_clear(UA_SubscribedDataSetConfig *sdsConfig) {
     UA_TargetVariablesDataType_clear(&sdsConfig->subscribedDataSet.target);
 }
 
-static UA_StatusCode
-addSubscribedDataSet(UA_PubSubManager *psm,
-                     const UA_SubscribedDataSetConfig *sdsConfig,
-                     UA_NodeId *sdsIdentifier) {
+UA_StatusCode
+UA_SubscribedDataSet_create(UA_PubSubManager *psm,
+                            const UA_SubscribedDataSetConfig *sdsConfig,
+                            UA_NodeId *sdsIdentifier) {
     if(!psm)
         return UA_STATUSCODE_BADINTERNALERROR;
 
@@ -861,7 +861,7 @@ UA_Server_addSubscribedDataSet(UA_Server *server,
     if(!server || !sdsConfig)
         return UA_STATUSCODE_BADINVALIDARGUMENT;
     lockServer(server);
-    UA_StatusCode res = addSubscribedDataSet(getPSM(server), sdsConfig, sdsIdentifier);
+    UA_StatusCode res = UA_SubscribedDataSet_create(getPSM(server), sdsConfig, sdsIdentifier);
     unlockServer(server);
     return res;
 }
