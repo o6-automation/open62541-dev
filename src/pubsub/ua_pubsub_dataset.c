@@ -29,6 +29,15 @@ UA_PublishedDataSetConfig_copy(const UA_PublishedDataSetConfig *src,
     UA_StatusCode res = UA_STATUSCODE_GOOD;
     memcpy(dst, src, sizeof(UA_PublishedDataSetConfig));
     res |= UA_String_copy(&src->name, &dst->name);
+    dst->dataSetFolder = NULL;
+    dst->dataSetFolderSize = 0;
+    res |= UA_Array_copy(src->dataSetFolder, src->dataSetFolderSize,
+                         (void**)&dst->dataSetFolder, &UA_TYPES[UA_TYPES_STRING]);
+    if(res == UA_STATUSCODE_GOOD)
+        dst->dataSetFolderSize = src->dataSetFolderSize;
+    dst->extensionFields.map = NULL;
+    dst->extensionFields.mapSize = 0;
+    res |= UA_KeyValueMap_copy(&src->extensionFields, &dst->extensionFields);
     switch(src->publishedDataSetType) {
         case UA_PUBSUB_DATASET_PUBLISHEDITEMS:
             //no additional items
@@ -93,6 +102,11 @@ void
 UA_PublishedDataSetConfig_clear(UA_PublishedDataSetConfig *pdsConfig) {
     //delete pds config
     UA_String_clear(&pdsConfig->name);
+    UA_Array_delete(pdsConfig->dataSetFolder, pdsConfig->dataSetFolderSize,
+                    &UA_TYPES[UA_TYPES_STRING]);
+    pdsConfig->dataSetFolder = NULL;
+    pdsConfig->dataSetFolderSize = 0;
+    UA_KeyValueMap_clear(&pdsConfig->extensionFields);
     switch (pdsConfig->publishedDataSetType){
         case UA_PUBSUB_DATASET_PUBLISHEDITEMS:
             //no additional items
@@ -649,6 +663,12 @@ UA_SubscribedDataSetConfig_copy(const UA_SubscribedDataSetConfig *src,
     memcpy(dst, src, sizeof(UA_SubscribedDataSetConfig));
     res = UA_DataSetMetaDataType_copy(&src->dataSetMetaData, &dst->dataSetMetaData);
     res |= UA_String_copy(&src->name, &dst->name);
+    dst->dataSetFolder = NULL;
+    dst->dataSetFolderSize = 0;
+    res |= UA_Array_copy(src->dataSetFolder, src->dataSetFolderSize,
+                         (void**)&dst->dataSetFolder, &UA_TYPES[UA_TYPES_STRING]);
+    if(res == UA_STATUSCODE_GOOD)
+        dst->dataSetFolderSize = src->dataSetFolderSize;
     if(src->subscribedDataSetType == UA_PUBSUB_SDS_TARGET) {
         res |= UA_TargetVariablesDataType_copy(&src->subscribedDataSet.target,
                                                &dst->subscribedDataSet.target);
@@ -662,6 +682,10 @@ void
 UA_SubscribedDataSetConfig_clear(UA_SubscribedDataSetConfig *sdsConfig) {
     UA_String_clear(&sdsConfig->name);
     UA_DataSetMetaDataType_clear(&sdsConfig->dataSetMetaData);
+    UA_Array_delete(sdsConfig->dataSetFolder, sdsConfig->dataSetFolderSize,
+                    &UA_TYPES[UA_TYPES_STRING]);
+    sdsConfig->dataSetFolder = NULL;
+    sdsConfig->dataSetFolderSize = 0;
     UA_TargetVariablesDataType_clear(&sdsConfig->subscribedDataSet.target);
 }
 

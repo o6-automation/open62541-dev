@@ -145,10 +145,21 @@ Bidirectional mapping between Part 14 DataTypes and internal `UA_*Config`:
    Note: top-level `enabled` in the export mirrors the PubSubManager
    lifecycle, which is STARTED right after `UA_Server_run_startup` — so
    exports from a running server always have `enabled=true` at the root.
-3. **M2 gap closure**: extend the internal config structs for the `TODO
-   Part14` fields (plan §1.4) incl. `_copy`/`_clear` updates in the component
-   files, then wire them in both converter directions and extend
-   `check_pubsub_config2.c` round-trip asserts accordingly.
+3. ~~M2 gap closure~~ DONE 2026-07-03: internal config structs extended
+   (public header `server_pubsub.h`) — WG maxNetworkMessageSize/
+   headerLayoutUri/localeIds/securityKeyServices; RG messageSettings/
+   maxNetworkMessageSize/securityKeyServices; DSR keyFrameCount/
+   headerLayoutUri/securityMode/securityGroupId/securityKeyServices/
+   dataSetReaderProperties; PDS dataSetFolder/extensionFields; SSDS
+   dataSetFolder. All are **storage-only** (documented in the header):
+   the runtime does not enforce maxNetworkMessageSize, publish extension
+   fields, or evaluate reader security fields yet. `_copy`/`_clear` updated
+   in ua_pubsub_writergroup.c/ua_pubsub_readergroup.c/ua_pubsub_reader.c/
+   ua_pubsub_dataset.c; both converter directions wired; round-trip asserts
+   extended in `check_pubsub_config2.c`. Remaining known mapping loss:
+   PDS DataSetMetaData description/dataSetClassId (metadata is rebuilt from
+   field configs — see `TODO Part14` in ua_pubsub_config_map.c);
+   SecurityGroups export (SKS) still TODO in ua_pubsub_config.c.
 4. **M3 (Phase B)**: incremental engine `ua_pubsub_config_update.c` —
    `UA_Server_updatePubSubConfig2(server, cfg, refs, requireCompleteUpdate,
    &result)` implementing the CloseAndUpdate element ops (plan §3 Phase B has

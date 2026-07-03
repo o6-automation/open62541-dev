@@ -21,6 +21,15 @@
 >   `UA_DataSetReaderConfig_fromDataType`; export emitted an empty DSW
 >   `dataSetName` for API-built configs (now falls back to the connected PDS
 >   name).
+> * **M2 gap closure (§1.4) — DONE (2026-07-03)**: internal config structs
+>   extended for the previously dropped Part 14 fields (storage-only, runtime
+>   enforcement TODO): WG maxNetworkMessageSize/headerLayoutUri/localeIds/
+>   securityKeyServices, RG messageSettings/maxNetworkMessageSize/
+>   securityKeyServices, DSR keyFrameCount/headerLayoutUri/securityMode/
+>   securityGroupId/securityKeyServices/dataSetReaderProperties, PDS
+>   dataSetFolder/extensionFields, SSDS dataSetFolder. Converters wired both
+>   directions, round-trip test extended. Still lossy: PDS metadata
+>   description/dataSetClassId; SecurityGroups (SKS) export.
 > * **Milestones 3-5 (Phases B, C, remaining tests §4.1/4.4-4.8) — not
 >   started.**
 

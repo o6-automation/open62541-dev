@@ -457,6 +457,13 @@ typedef struct {
         UA_PublishedEventTemplateConfig eventTemplate;
     } config;
 
+    /* Folder path and static extension fields from the
+     * UA_PublishedDataSetDataType. Stored for the Part 14 configuration
+     * model; extension fields are not published yet. */
+    size_t dataSetFolderSize;
+    UA_String *dataSetFolder;
+    UA_KeyValueMap extensionFields;
+
     void *context; /* Context Configuration (PublishedDataSet has no state
                     * machine) */
 } UA_PublishedDataSetConfig;
@@ -574,6 +581,19 @@ typedef struct {
     UA_KeyValueMap groupProperties;
     UA_PubSubEncodingType encodingMimeType;
 
+    /* The maximum size of a NetworkMessage in bytes (via the
+     * UA_WriterGroupDataType). 0 means "not configured". Currently only
+     * stored for the Part 14 configuration model; the message generation
+     * does not enforce it. */
+    UA_UInt32 maxNetworkMessageSize;
+
+    /* Header layout (fixed message layouts, Part 14 A.3) and LocaleIds for
+     * localized text fields (via the UA_WriterGroupDataType). Stored for the
+     * configuration model. */
+    UA_String headerLayoutUri;
+    size_t localeIdsSize;
+    UA_String *localeIds;
+
     /* non std. config parameter. maximum count of embedded DataSetMessage in
      * one NetworkMessage */
     UA_UInt16 maxEncapsulatedDataSetMessageCount;
@@ -585,6 +605,12 @@ typedef struct {
     UA_MessageSecurityMode securityMode; /* via the UA_WriterGroupDataType */
     UA_PubSubSecurityPolicy *securityPolicy;
     UA_String securityGroupId;
+
+    /* SecurityKeyServices (via the UA_WriterGroupDataType): endpoints of the
+     * key servers to contact for the SecurityGroup. Stored for the
+     * configuration model. */
+    size_t securityKeyServicesSize;
+    UA_EndpointDescription *securityKeyServices;
 } UA_WriterGroupConfig;
 
 void UA_EXPORT
@@ -743,6 +769,11 @@ typedef struct {
     } subscribedDataSet;
     UA_DataSetMetaDataType dataSetMetaData;
 
+    /* Folder path from the UA_StandaloneSubscribedDataSetDataType. Stored
+     * for the Part 14 configuration model. */
+    size_t dataSetFolderSize;
+    UA_String *dataSetFolder;
+
     void *context; /* Context Configuration (SubscribedDataSet has no state
                     * machine) */
 } UA_SubscribedDataSetConfig;
@@ -788,6 +819,18 @@ typedef struct {
         /* TODO: UA_SubscribedDataSetMirrorDataType subscribedDataSetMirror */
         UA_TargetVariablesDataType target;
     } subscribedDataSet;
+
+    /* The following fields from the UA_DataSetReaderDataType are stored for
+     * the Part 14 configuration model. The message processing does not
+     * evaluate them yet. */
+    UA_UInt32 keyFrameCount;
+    UA_String headerLayoutUri;
+    UA_MessageSecurityMode securityMode;
+    UA_String securityGroupId;
+    size_t securityKeyServicesSize;
+    UA_EndpointDescription *securityKeyServices;
+    UA_KeyValueMap dataSetReaderProperties;
+
     /* non std. fields */
     UA_String linkedStandaloneSubscribedDataSetName;
 } UA_DataSetReaderConfig;
@@ -861,6 +904,12 @@ typedef struct {
     UA_KeyValueMap groupProperties;
     UA_PubSubEncodingType encodingMimeType;
     UA_ExtensionObject transportSettings;
+    UA_ExtensionObject messageSettings;
+
+    /* The maximum size of a NetworkMessage in bytes (via the
+     * UA_ReaderGroupDataType). 0 means "not configured". Stored for the
+     * Part 14 configuration model. */
+    UA_UInt32 maxNetworkMessageSize;
 
     /* Messages are decrypted if a SecurityPolicy is configured and the
      * securityMode set accordingly. The symmetric key is a runtime information
@@ -868,6 +917,11 @@ typedef struct {
     UA_MessageSecurityMode securityMode;
     UA_PubSubSecurityPolicy *securityPolicy;
     UA_String securityGroupId;
+
+    /* SecurityKeyServices (via the UA_ReaderGroupDataType). Stored for the
+     * configuration model. */
+    size_t securityKeyServicesSize;
+    UA_EndpointDescription *securityKeyServices;
 } UA_ReaderGroupConfig;
 
 void UA_EXPORT

@@ -74,6 +74,12 @@ UA_WriterGroupConfig_fromDataType(const UA_WriterGroupDataType *src,
     dst->priority = src->priority;
     dst->securityMode = src->securityMode;
     dst->securityGroupId = src->securityGroupId;
+    dst->securityKeyServices = src->securityKeyServices;
+    dst->securityKeyServicesSize = src->securityKeyServicesSize;
+    dst->maxNetworkMessageSize = src->maxNetworkMessageSize;
+    dst->headerLayoutUri = src->headerLayoutUri;
+    dst->localeIds = src->localeIds;
+    dst->localeIdsSize = src->localeIdsSize;
     dst->transportSettings = src->transportSettings;
     dst->messageSettings = src->messageSettings;
     dst->groupProperties.map = src->groupProperties;
@@ -95,9 +101,6 @@ UA_WriterGroupConfig_fromDataType(const UA_WriterGroupDataType *src,
         return UA_STATUSCODE_BADNOTIMPLEMENTED;
 #endif
     }
-
-    /* TODO Part14: maxNetworkMessageSize, localeIds, headerLayoutUri,
-     * securityKeyServices have no counterpart in UA_WriterGroupConfig yet */
 
     return UA_STATUSCODE_GOOD;
 }
@@ -130,16 +133,17 @@ UA_ReaderGroupConfig_fromDataType(const UA_ReaderGroupDataType *src,
     dst->enabled = src->enabled;
     dst->securityMode = src->securityMode;
     dst->securityGroupId = src->securityGroupId;
+    dst->securityKeyServices = src->securityKeyServices;
+    dst->securityKeyServicesSize = src->securityKeyServicesSize;
+    dst->maxNetworkMessageSize = src->maxNetworkMessageSize;
     dst->transportSettings = src->transportSettings;
+    dst->messageSettings = src->messageSettings;
     dst->groupProperties.map = src->groupProperties;
     dst->groupProperties.mapSize = src->groupPropertiesSize;
 
     /* The message encoding is detected from the transport profile of the
      * parent connection. Default to UADP here. */
     dst->encodingMimeType = UA_PUBSUB_ENCODING_UADP;
-
-    /* TODO Part14: maxNetworkMessageSize, messageSettings,
-     * securityKeyServices have no counterpart in UA_ReaderGroupConfig yet */
 
     return UA_STATUSCODE_GOOD;
 }
@@ -158,6 +162,14 @@ UA_DataSetReaderConfig_fromDataType(const UA_DataSetReaderDataType *src,
     dst->messageReceiveTimeout = src->messageReceiveTimeout;
     dst->messageSettings = src->messageSettings;
     dst->transportSettings = src->transportSettings;
+    dst->keyFrameCount = src->keyFrameCount;
+    dst->headerLayoutUri = src->headerLayoutUri;
+    dst->securityMode = src->securityMode;
+    dst->securityGroupId = src->securityGroupId;
+    dst->securityKeyServices = src->securityKeyServices;
+    dst->securityKeyServicesSize = src->securityKeyServicesSize;
+    dst->dataSetReaderProperties.map = src->dataSetReaderProperties;
+    dst->dataSetReaderProperties.mapSize = src->dataSetReaderPropertiesSize;
 
     /* The SubscribedDataSet is either an inline TargetVariablesDataType or a
      * reference to a StandaloneSubscribedDataSet (by name). A
@@ -182,10 +194,6 @@ UA_DataSetReaderConfig_fromDataType(const UA_DataSetReaderDataType *src,
         }
     }
 
-    /* TODO Part14: keyFrameCount, headerLayoutUri, securityMode,
-     * securityGroupId, securityKeyServices, dataSetReaderProperties have no
-     * counterpart in UA_DataSetReaderConfig yet */
-
     /* The PublisherId allocates for String ids -- clear with _clearView. An
      * empty Variant leaves the default (Byte 0). */
     if(!UA_Variant_isEmpty(&src->publisherId))
@@ -206,6 +214,10 @@ UA_PublishedDataSetConfig_fromDataType(const UA_PublishedDataSetDataType *src,
     memset(dst, 0, sizeof(UA_PublishedDataSetConfig));
 
     dst->name = src->name;
+    dst->dataSetFolder = src->dataSetFolder;
+    dst->dataSetFolderSize = src->dataSetFolderSize;
+    dst->extensionFields.map = src->extensionFields;
+    dst->extensionFields.mapSize = src->extensionFieldsSize;
 
     /* Only PublishedDataItems are supported so far */
     if(src->dataSetSource.encoding != UA_EXTENSIONOBJECT_DECODED)
@@ -226,8 +238,9 @@ UA_PublishedDataSetConfig_fromDataType(const UA_PublishedDataSetDataType *src,
     if(pdi->publishedDataSize != src->dataSetMetaData.fieldsSize)
         return UA_STATUSCODE_BADINVALIDARGUMENT;
 
-    /* TODO Part14: dataSetFolder, extensionFields and parts of the
-     * DataSetMetaData (description, dataSetClassId) are not preserved yet */
+    /* TODO Part14: parts of the DataSetMetaData (description, dataSetClassId)
+     * are not preserved yet -- the PDS rebuilds its metadata from the field
+     * configs */
 
     return UA_STATUSCODE_GOOD;
 }
@@ -270,6 +283,8 @@ UA_SubscribedDataSetConfig_fromDataType(const UA_StandaloneSubscribedDataSetData
 
     dst->name = src->name;
     dst->dataSetMetaData = src->dataSetMetaData;
+    dst->dataSetFolder = src->dataSetFolder;
+    dst->dataSetFolderSize = src->dataSetFolderSize;
 
     const UA_ExtensionObject *sds = &src->subscribedDataSet;
     if(sds->encoding == UA_EXTENSIONOBJECT_DECODED &&
@@ -284,8 +299,6 @@ UA_SubscribedDataSetConfig_fromDataType(const UA_StandaloneSubscribedDataSetData
     } else {
         return UA_STATUSCODE_BADINVALIDARGUMENT;
     }
-
-    /* TODO Part14: dataSetFolder is not preserved yet */
 
     return UA_STATUSCODE_GOOD;
 }
@@ -343,9 +356,11 @@ UA_WriterGroupConfig_toDataType(const UA_WriterGroupConfig *src,
     dst->keepAliveTime = src->keepAliveTime;
     dst->priority = src->priority;
     dst->securityMode = src->securityMode;
+    dst->maxNetworkMessageSize = src->maxNetworkMessageSize;
 
     UA_StatusCode res = UA_String_copy(&src->name, &dst->name);
     res |= UA_String_copy(&src->securityGroupId, &dst->securityGroupId);
+    res |= UA_String_copy(&src->headerLayoutUri, &dst->headerLayoutUri);
     res |= UA_ExtensionObject_copy(&src->transportSettings, &dst->transportSettings);
     res |= UA_ExtensionObject_copy(&src->messageSettings, &dst->messageSettings);
     res |= UA_Array_copy(src->groupProperties.map, src->groupProperties.mapSize,
@@ -353,6 +368,15 @@ UA_WriterGroupConfig_toDataType(const UA_WriterGroupConfig *src,
                          &UA_TYPES[UA_TYPES_KEYVALUEPAIR]);
     if(res == UA_STATUSCODE_GOOD)
         dst->groupPropertiesSize = src->groupProperties.mapSize;
+    res |= UA_Array_copy(src->localeIds, src->localeIdsSize,
+                         (void**)&dst->localeIds, &UA_TYPES[UA_TYPES_STRING]);
+    if(res == UA_STATUSCODE_GOOD)
+        dst->localeIdsSize = src->localeIdsSize;
+    res |= UA_Array_copy(src->securityKeyServices, src->securityKeyServicesSize,
+                         (void**)&dst->securityKeyServices,
+                         &UA_TYPES[UA_TYPES_ENDPOINTDESCRIPTION]);
+    if(res == UA_STATUSCODE_GOOD)
+        dst->securityKeyServicesSize = src->securityKeyServicesSize;
 
     if(res != UA_STATUSCODE_GOOD)
         UA_WriterGroupDataType_clear(dst);
@@ -390,15 +414,22 @@ UA_ReaderGroupConfig_toDataType(const UA_ReaderGroupConfig *src,
     UA_ReaderGroupDataType_init(dst);
 
     dst->securityMode = src->securityMode;
+    dst->maxNetworkMessageSize = src->maxNetworkMessageSize;
 
     UA_StatusCode res = UA_String_copy(&src->name, &dst->name);
     res |= UA_String_copy(&src->securityGroupId, &dst->securityGroupId);
     res |= UA_ExtensionObject_copy(&src->transportSettings, &dst->transportSettings);
+    res |= UA_ExtensionObject_copy(&src->messageSettings, &dst->messageSettings);
     res |= UA_Array_copy(src->groupProperties.map, src->groupProperties.mapSize,
                          (void**)&dst->groupProperties,
                          &UA_TYPES[UA_TYPES_KEYVALUEPAIR]);
     if(res == UA_STATUSCODE_GOOD)
         dst->groupPropertiesSize = src->groupProperties.mapSize;
+    res |= UA_Array_copy(src->securityKeyServices, src->securityKeyServicesSize,
+                         (void**)&dst->securityKeyServices,
+                         &UA_TYPES[UA_TYPES_ENDPOINTDESCRIPTION]);
+    if(res == UA_STATUSCODE_GOOD)
+        dst->securityKeyServicesSize = src->securityKeyServicesSize;
 
     if(res != UA_STATUSCODE_GOOD)
         UA_ReaderGroupDataType_clear(dst);
@@ -414,11 +445,26 @@ UA_DataSetReaderConfig_toDataType(const UA_DataSetReaderConfig *src,
     dst->dataSetWriterId = src->dataSetWriterId;
     dst->dataSetFieldContentMask = src->dataSetFieldContentMask;
     dst->messageReceiveTimeout = src->messageReceiveTimeout;
+    dst->keyFrameCount = src->keyFrameCount;
+    dst->securityMode = src->securityMode;
 
     UA_StatusCode res = UA_String_copy(&src->name, &dst->name);
     res |= UA_DataSetMetaDataType_copy(&src->dataSetMetaData, &dst->dataSetMetaData);
     res |= UA_ExtensionObject_copy(&src->messageSettings, &dst->messageSettings);
     res |= UA_ExtensionObject_copy(&src->transportSettings, &dst->transportSettings);
+    res |= UA_String_copy(&src->headerLayoutUri, &dst->headerLayoutUri);
+    res |= UA_String_copy(&src->securityGroupId, &dst->securityGroupId);
+    res |= UA_Array_copy(src->securityKeyServices, src->securityKeyServicesSize,
+                         (void**)&dst->securityKeyServices,
+                         &UA_TYPES[UA_TYPES_ENDPOINTDESCRIPTION]);
+    if(res == UA_STATUSCODE_GOOD)
+        dst->securityKeyServicesSize = src->securityKeyServicesSize;
+    res |= UA_Array_copy(src->dataSetReaderProperties.map,
+                         src->dataSetReaderProperties.mapSize,
+                         (void**)&dst->dataSetReaderProperties,
+                         &UA_TYPES[UA_TYPES_KEYVALUEPAIR]);
+    if(res == UA_STATUSCODE_GOOD)
+        dst->dataSetReaderPropertiesSize = src->dataSetReaderProperties.mapSize;
 
     UA_Variant pubIdVar;
     UA_PublisherId_toVariant(&src->publisherId, &pubIdVar);
@@ -466,6 +512,16 @@ UA_PublishedDataSet_toDataType(const UA_PublishedDataSet *pds,
 
     UA_StatusCode res = UA_String_copy(&pds->config.name, &dst->name);
     res |= UA_DataSetMetaDataType_copy(&pds->dataSetMetaData, &dst->dataSetMetaData);
+    res |= UA_Array_copy(pds->config.dataSetFolder, pds->config.dataSetFolderSize,
+                         (void**)&dst->dataSetFolder, &UA_TYPES[UA_TYPES_STRING]);
+    if(res == UA_STATUSCODE_GOOD)
+        dst->dataSetFolderSize = pds->config.dataSetFolderSize;
+    res |= UA_Array_copy(pds->config.extensionFields.map,
+                         pds->config.extensionFields.mapSize,
+                         (void**)&dst->extensionFields,
+                         &UA_TYPES[UA_TYPES_KEYVALUEPAIR]);
+    if(res == UA_STATUSCODE_GOOD)
+        dst->extensionFieldsSize = pds->config.extensionFields.mapSize;
 
     UA_PublishedDataItemsDataType *pdi = UA_PublishedDataItemsDataType_new();
     if(!pdi) {
@@ -506,6 +562,10 @@ UA_SubscribedDataSetConfig_toDataType(const UA_SubscribedDataSetConfig *src,
 
     UA_StatusCode res = UA_String_copy(&src->name, &dst->name);
     res |= UA_DataSetMetaDataType_copy(&src->dataSetMetaData, &dst->dataSetMetaData);
+    res |= UA_Array_copy(src->dataSetFolder, src->dataSetFolderSize,
+                         (void**)&dst->dataSetFolder, &UA_TYPES[UA_TYPES_STRING]);
+    if(res == UA_STATUSCODE_GOOD)
+        dst->dataSetFolderSize = src->dataSetFolderSize;
 
     UA_TargetVariablesDataType *tvs = UA_TargetVariablesDataType_new();
     if(!tvs) {

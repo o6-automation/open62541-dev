@@ -141,11 +141,23 @@ static void
 buildFullConfig(UA_Server *srv, UA_NodeId *connId) {
     addVariables(srv);
 
-    /* PublishedDataSet with two fields */
+    /* PublishedDataSet with two fields, a folder path and an extension
+     * field */
     UA_PublishedDataSetConfig pdsConfig;
     memset(&pdsConfig, 0, sizeof(pdsConfig));
     pdsConfig.name = UA_STRING(PDS_NAME);
     pdsConfig.publishedDataSetType = UA_PUBSUB_DATASET_PUBLISHEDITEMS;
+    UA_String pdsFolder[2] = {UA_STRING_STATIC("Fixtures"),
+                              UA_STRING_STATIC("Config2")};
+    pdsConfig.dataSetFolder = pdsFolder;
+    pdsConfig.dataSetFolderSize = 2;
+    UA_KeyValuePair pdsExtension;
+    pdsExtension.key = UA_QUALIFIEDNAME(0, "ExtensionField1");
+    UA_UInt32 extensionValue = 7;
+    UA_Variant_setScalar(&pdsExtension.value, &extensionValue,
+                         &UA_TYPES[UA_TYPES_UINT32]);
+    pdsConfig.extensionFields.map = &pdsExtension;
+    pdsConfig.extensionFields.mapSize = 1;
     UA_NodeId pdsId;
     UA_AddPublishedDataSetResult pdsRes =
         UA_Server_addPublishedDataSet(srv, &pdsConfig, &pdsId);
@@ -192,6 +204,11 @@ buildFullConfig(UA_Server *srv, UA_NodeId *connId) {
     wgConfig.keepAliveTime = 5000.0;
     wgConfig.priority = 10;
     wgConfig.encodingMimeType = UA_PUBSUB_ENCODING_UADP;
+    wgConfig.maxNetworkMessageSize = 1400;
+    wgConfig.headerLayoutUri = UA_STRING("http://opcfoundation.org/UA/PubSub-Layouts/UADP-Cyclic-Fixed");
+    UA_String wgLocales[1] = {UA_STRING_STATIC("en-US")};
+    wgConfig.localeIds = wgLocales;
+    wgConfig.localeIdsSize = 1;
     UA_UadpWriterGroupMessageDataType wgMessage;
     UA_UadpWriterGroupMessageDataType_init(&wgMessage);
     wgMessage.networkMessageContentMask =
@@ -222,6 +239,7 @@ buildFullConfig(UA_Server *srv, UA_NodeId *connId) {
     UA_ReaderGroupConfig rgConfig;
     memset(&rgConfig, 0, sizeof(rgConfig));
     rgConfig.name = UA_STRING(RG_NAME);
+    rgConfig.maxNetworkMessageSize = 1400;
     UA_NodeId rgId;
     res = UA_Server_addReaderGroup(srv, *connId, &rgConfig, &rgId);
     ck_assert_int_eq(res, UA_STATUSCODE_GOOD);
@@ -235,6 +253,15 @@ buildFullConfig(UA_Server *srv, UA_NodeId *connId) {
     dsrConfig.writerGroupId = WG_ID;
     dsrConfig.dataSetWriterId = DSW_ID;
     dsrConfig.messageReceiveTimeout = 400.0;
+    dsrConfig.keyFrameCount = 10;
+    dsrConfig.headerLayoutUri = UA_STRING("http://opcfoundation.org/UA/PubSub-Layouts/UADP-Cyclic-Fixed");
+    UA_KeyValuePair dsrProperty;
+    dsrProperty.key = UA_QUALIFIEDNAME(0, "ReaderProp1");
+    UA_UInt32 dsrPropertyValue = 11;
+    UA_Variant_setScalar(&dsrProperty.value, &dsrPropertyValue,
+                         &UA_TYPES[UA_TYPES_UINT32]);
+    dsrConfig.dataSetReaderProperties.map = &dsrProperty;
+    dsrConfig.dataSetReaderProperties.mapSize = 1;
     fillMetaData2Fields(&dsrConfig.dataSetMetaData);
     UA_FieldTargetDataType targets[2];
     UA_FieldTargetDataType_init(&targets[0]);
@@ -258,6 +285,9 @@ buildFullConfig(UA_Server *srv, UA_NodeId *connId) {
     memset(&ssdsConfig, 0, sizeof(ssdsConfig));
     ssdsConfig.name = UA_STRING(SSDS_NAME);
     ssdsConfig.subscribedDataSetType = UA_PUBSUB_SDS_TARGET;
+    UA_String ssdsFolder[1] = {UA_STRING_STATIC("Config2")};
+    ssdsConfig.dataSetFolder = ssdsFolder;
+    ssdsConfig.dataSetFolderSize = 1;
     UA_DataSetMetaDataType *md = &ssdsConfig.dataSetMetaData;
     UA_DataSetMetaDataType_init(md);
     md->name = UA_STRING(SSDS_NAME);
@@ -321,6 +351,14 @@ compareConfig2(const UA_PubSubConfiguration2DataType *a,
         }
         ck_assert(UA_order(&pa->dataSetSource, &pb->dataSetSource,
                            &UA_TYPES[UA_TYPES_EXTENSIONOBJECT]) == UA_ORDER_EQ);
+        ck_assert_uint_eq(pa->dataSetFolderSize, pb->dataSetFolderSize);
+        for(size_t j = 0; j < pa->dataSetFolderSize; j++)
+            ck_assert(UA_String_equal(&pa->dataSetFolder[j], &pb->dataSetFolder[j]));
+        ck_assert_uint_eq(pa->extensionFieldsSize, pb->extensionFieldsSize);
+        for(size_t j = 0; j < pa->extensionFieldsSize; j++) {
+            ck_assert(UA_order(&pa->extensionFields[j], &pb->extensionFields[j],
+                               &UA_TYPES[UA_TYPES_KEYVALUEPAIR]) == UA_ORDER_EQ);
+        }
     }
 
     for(size_t i = 0; i < a->connectionsSize; i++) {
@@ -346,6 +384,11 @@ compareConfig2(const UA_PubSubConfiguration2DataType *a,
             ck_assert_uint_eq(wa->priority, wb->priority);
             ck_assert(UA_order(&wa->messageSettings, &wb->messageSettings,
                                &UA_TYPES[UA_TYPES_EXTENSIONOBJECT]) == UA_ORDER_EQ);
+            ck_assert_uint_eq(wa->maxNetworkMessageSize, wb->maxNetworkMessageSize);
+            ck_assert(UA_String_equal(&wa->headerLayoutUri, &wb->headerLayoutUri));
+            ck_assert_uint_eq(wa->localeIdsSize, wb->localeIdsSize);
+            for(size_t k = 0; k < wa->localeIdsSize; k++)
+                ck_assert(UA_String_equal(&wa->localeIds[k], &wb->localeIds[k]));
 
             ck_assert_uint_eq(wa->dataSetWritersSize, wb->dataSetWritersSize);
             for(size_t k = 0; k < wa->dataSetWritersSize; k++) {
@@ -367,6 +410,7 @@ compareConfig2(const UA_PubSubConfiguration2DataType *a,
             const UA_ReaderGroupDataType *rb = &cb->readerGroups[j];
             ck_assert(UA_String_equal(&ra->name, &rb->name));
             ck_assert(ra->enabled == rb->enabled);
+            ck_assert_uint_eq(ra->maxNetworkMessageSize, rb->maxNetworkMessageSize);
 
             ck_assert_uint_eq(ra->dataSetReadersSize, rb->dataSetReadersSize);
             for(size_t k = 0; k < ra->dataSetReadersSize; k++) {
@@ -383,6 +427,17 @@ compareConfig2(const UA_PubSubConfiguration2DataType *a,
                                   db->dataSetMetaData.fieldsSize);
                 ck_assert(UA_order(&da->subscribedDataSet, &db->subscribedDataSet,
                                    &UA_TYPES[UA_TYPES_EXTENSIONOBJECT]) == UA_ORDER_EQ);
+                ck_assert_uint_eq(da->keyFrameCount, db->keyFrameCount);
+                ck_assert(UA_String_equal(&da->headerLayoutUri, &db->headerLayoutUri));
+                ck_assert_int_eq((int)da->securityMode, (int)db->securityMode);
+                ck_assert(UA_String_equal(&da->securityGroupId, &db->securityGroupId));
+                ck_assert_uint_eq(da->dataSetReaderPropertiesSize,
+                                  db->dataSetReaderPropertiesSize);
+                for(size_t m = 0; m < da->dataSetReaderPropertiesSize; m++) {
+                    ck_assert(UA_order(&da->dataSetReaderProperties[m],
+                                       &db->dataSetReaderProperties[m],
+                                       &UA_TYPES[UA_TYPES_KEYVALUEPAIR]) == UA_ORDER_EQ);
+                }
             }
         }
     }
@@ -395,6 +450,9 @@ compareConfig2(const UA_PubSubConfiguration2DataType *a,
                           sb->dataSetMetaData.fieldsSize);
         ck_assert(UA_order(&sa->subscribedDataSet, &sb->subscribedDataSet,
                            &UA_TYPES[UA_TYPES_EXTENSIONOBJECT]) == UA_ORDER_EQ);
+        ck_assert_uint_eq(sa->dataSetFolderSize, sb->dataSetFolderSize);
+        for(size_t j = 0; j < sa->dataSetFolderSize; j++)
+            ck_assert(UA_String_equal(&sa->dataSetFolder[j], &sb->dataSetFolder[j]));
     }
 }
 

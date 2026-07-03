@@ -44,6 +44,14 @@ UA_ReaderGroupConfig_copy(const UA_ReaderGroupConfig *src,
     res |= UA_KeyValueMap_copy(&src->groupProperties, &dst->groupProperties);
     res |= UA_String_copy(&src->securityGroupId, &dst->securityGroupId);
     res |= UA_ExtensionObject_copy(&src->transportSettings, &dst->transportSettings);
+    res |= UA_ExtensionObject_copy(&src->messageSettings, &dst->messageSettings);
+    dst->securityKeyServices = NULL;
+    dst->securityKeyServicesSize = 0;
+    res |= UA_Array_copy(src->securityKeyServices, src->securityKeyServicesSize,
+                         (void**)&dst->securityKeyServices,
+                         &UA_TYPES[UA_TYPES_ENDPOINTDESCRIPTION]);
+    if(res == UA_STATUSCODE_GOOD)
+        dst->securityKeyServicesSize = src->securityKeyServicesSize;
     if(res != UA_STATUSCODE_GOOD)
         UA_ReaderGroupConfig_clear(dst);
     return res;
@@ -55,6 +63,12 @@ UA_ReaderGroupConfig_clear(UA_ReaderGroupConfig *readerGroupConfig) {
     UA_KeyValueMap_clear(&readerGroupConfig->groupProperties);
     UA_String_clear(&readerGroupConfig->securityGroupId);
     UA_ExtensionObject_clear(&readerGroupConfig->transportSettings);
+    UA_ExtensionObject_clear(&readerGroupConfig->messageSettings);
+    UA_Array_delete(readerGroupConfig->securityKeyServices,
+                    readerGroupConfig->securityKeyServicesSize,
+                    &UA_TYPES[UA_TYPES_ENDPOINTDESCRIPTION]);
+    readerGroupConfig->securityKeyServices = NULL;
+    readerGroupConfig->securityKeyServicesSize = 0;
 }
 
 

@@ -340,6 +340,20 @@ UA_WriterGroupConfig_copy(const UA_WriterGroupConfig *src,
     res |= UA_ExtensionObject_copy(&src->messageSettings, &dst->messageSettings);
     res |= UA_KeyValueMap_copy(&src->groupProperties, &dst->groupProperties);
     res |= UA_String_copy(&src->securityGroupId, &dst->securityGroupId);
+    res |= UA_String_copy(&src->headerLayoutUri, &dst->headerLayoutUri);
+    dst->localeIds = NULL;
+    dst->localeIdsSize = 0;
+    res |= UA_Array_copy(src->localeIds, src->localeIdsSize,
+                         (void**)&dst->localeIds, &UA_TYPES[UA_TYPES_STRING]);
+    if(res == UA_STATUSCODE_GOOD)
+        dst->localeIdsSize = src->localeIdsSize;
+    dst->securityKeyServices = NULL;
+    dst->securityKeyServicesSize = 0;
+    res |= UA_Array_copy(src->securityKeyServices, src->securityKeyServicesSize,
+                         (void**)&dst->securityKeyServices,
+                         &UA_TYPES[UA_TYPES_ENDPOINTDESCRIPTION]);
+    if(res == UA_STATUSCODE_GOOD)
+        dst->securityKeyServicesSize = src->securityKeyServicesSize;
     if(res != UA_STATUSCODE_GOOD)
         UA_WriterGroupConfig_clear(dst);
     return res;
@@ -407,6 +421,13 @@ UA_WriterGroupConfig_clear(UA_WriterGroupConfig *writerGroupConfig) {
     UA_ExtensionObject_clear(&writerGroupConfig->messageSettings);
     UA_KeyValueMap_clear(&writerGroupConfig->groupProperties);
     UA_String_clear(&writerGroupConfig->securityGroupId);
+    UA_String_clear(&writerGroupConfig->headerLayoutUri);
+    UA_Array_delete(writerGroupConfig->localeIds,
+                    writerGroupConfig->localeIdsSize,
+                    &UA_TYPES[UA_TYPES_STRING]);
+    UA_Array_delete(writerGroupConfig->securityKeyServices,
+                    writerGroupConfig->securityKeyServicesSize,
+                    &UA_TYPES[UA_TYPES_ENDPOINTDESCRIPTION]);
     memset(writerGroupConfig, 0, sizeof(UA_WriterGroupConfig));
 }
 
