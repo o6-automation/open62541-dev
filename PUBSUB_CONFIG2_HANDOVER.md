@@ -24,12 +24,20 @@ cmake --build build-config2 -j $(nproc)
 cd build-config2 && ctest -R pubsub --output-on-failure
 ```
 
-Verified green (2026-07-02): `check_pubsub_configuration` (legacy .bin loading
-through the NEW converter path), `check_pubsub_informationmodel`,
-`check_pubsub_informationmodel_methods`, `check_pubsub_publish`,
-`check_pubsub_subscribe`, `check_pubsub_custom_state_machine`,
-`check_pubsub_get_state`, `check_pubsub_pds`. A full `ctest -R pubsub` sweep
-was started but not finished — run it first.
+Full `ctest -R pubsub` sweep (2026-07-03): 18/21 green including the new
+`check_pubsub_config2`. The 3 failures are **pre-existing environment
+failures** (verified identical on the committed tree without the working-tree
+changes): `check_pubsub_subscribe_msgrcvtimeout` (loopback multicast timing,
+WSL), `check_pubsub_connection_ethernet` (no raw ethernet interface),
+`check_pubsub_informationmodel_methods` (env/timing: ReserveIds id-sequence
+and state-reading asserts). Do not chase these on this machine.
+
+Gating verified (2026-07-03): library builds with
+`UA_ENABLE_PUBSUB_FILE_CONFIG=OFF` and with `UA_ENABLE_JSON_ENCODING=OFF`
+(+`UA_ENABLE_SUBSCRIPTIONS_EVENTS=OFF`, which unconditionally requires JSON —
+unrelated to pubsub). Note: this machine lacks `libcrypt`, so the full test
+suite build fails at link for `check_server_password` — build tests with
+`make -k` or per-target.
 
 ## What was changed (all committed on this branch)
 
@@ -121,17 +129,26 @@ Bidirectional mapping between Part 14 DataTypes and internal `UA_*Config`:
 
 ## Immediate next steps (in order)
 
-1. **Full regression**: `ctest -R pubsub` in `build-config2`; also build a
-   non-FILE_CONFIG and a MINIMAL-NS0 configuration to catch gating issues.
-2. **M2 test**: new `tests/pubsub/check_pubsub_config2.c` (register in
-   `tests/CMakeLists.txt` under `UA_ENABLE_PUBSUB_FILE_CONFIG`): build config
-   via C API on server A → `UA_Server_writePubSubConfigurationToByteString` →
-   load into server B → compare (counts/names/fields/enabled). Then the
-   fixture-based suites from plan §4 (4.1–4.3). Watch out in the round-trip
-   compare: `configurationVersion` differs by design.
+1. ~~Full regression~~ DONE 2026-07-03 (see above).
+2. ~~M2 test~~ DONE 2026-07-03: `tests/pubsub/check_pubsub_config2.c`
+   (registered under `UA_ENABLE_PUBSUB_FILE_CONFIG`). Tests: getPubSubConfig2
+   snapshot, export→load→export round trip A→B with deep compare
+   (`compareConfig2`, excludes `configurationVersion` by design), mixed
+   enabled flags (disabled connection stays disabled — covers the
+   `pubSubInitialSetupMode` fix), namespace remapping (unknown ns auto-added
+   at a different index, published-variable NodeId remapped), invalid body
+   (garbage + wrong body type ⇒ `BADTYPEMISMATCH`, nothing created).
+   Fixed on the way: DSR `publisherId` missing in
+   `UA_DataSetReaderConfig_fromDataType` (empty Variant tolerated ⇒ Byte 0);
+   DSW export `dataSetName` fallback to connected PDS name (API-built configs
+   have it empty; empty means heartbeat on load).
+   Note: top-level `enabled` in the export mirrors the PubSubManager
+   lifecycle, which is STARTED right after `UA_Server_run_startup` — so
+   exports from a running server always have `enabled=true` at the root.
 3. **M2 gap closure**: extend the internal config structs for the `TODO
    Part14` fields (plan §1.4) incl. `_copy`/`_clear` updates in the component
-   files, then wire them in both converter directions.
+   files, then wire them in both converter directions and extend
+   `check_pubsub_config2.c` round-trip asserts accordingly.
 4. **M3 (Phase B)**: incremental engine `ua_pubsub_config_update.c` —
    `UA_Server_updatePubSubConfig2(server, cfg, refs, requireCompleteUpdate,
    &result)` implementing the CloseAndUpdate element ops (plan §3 Phase B has

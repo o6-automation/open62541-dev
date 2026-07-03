@@ -186,6 +186,11 @@ UA_DataSetReaderConfig_fromDataType(const UA_DataSetReaderDataType *src,
      * securityGroupId, securityKeyServices, dataSetReaderProperties have no
      * counterpart in UA_DataSetReaderConfig yet */
 
+    /* The PublisherId allocates for String ids -- clear with _clearView. An
+     * empty Variant leaves the default (Byte 0). */
+    if(!UA_Variant_isEmpty(&src->publisherId))
+        return UA_PublisherId_fromVariant(&dst->publisherId, &src->publisherId);
+
     return UA_STATUSCODE_GOOD;
 }
 

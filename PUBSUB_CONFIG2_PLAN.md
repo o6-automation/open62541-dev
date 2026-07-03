@@ -9,13 +9,20 @@
 >   standalone SubscribedDataSets in the load path, initial-setup-mode fix in
 >   `UA_PubSubManager_setState` (respect `config.enabled`). All existing
 >   pubsub tests pass (`build-config2` with `UA_ENABLE_PUBSUB_FILE_CONFIG=ON`).
-> * **Milestone 2 (Phase A2/A5/A6) — code complete, compiles, NOT yet
->   test-covered**: reverse converters (Config→DataType), Config2 export with
->   namespaces array + enabled flags from live state, manager metadata
+> * **Milestone 2 (Phase A2/A5/A6) — DONE, test-covered (2026-07-03)**:
+>   reverse converters (Config→DataType), Config2 export with namespaces array
+>   + enabled flags from live state, manager metadata
 >   (configurationVersion/configurationProperties/defaultSecurityKeyServices),
 >   new API `UA_Server_getPubSubConfig2`,
 >   `UA_Server_writePubSubConfigurationToByteString` now emits Config2.
-> * **Milestones 3-5 (Phases B, C, tests) — not started.**
+>   Covered by `tests/pubsub/check_pubsub_config2.c` (export/import round trip,
+>   namespace remapping, mixed enabled flags, invalid body). Two bugs found by
+>   the test and fixed: DSR `publisherId` was not mapped in
+>   `UA_DataSetReaderConfig_fromDataType`; export emitted an empty DSW
+>   `dataSetName` for API-built configs (now falls back to the connected PDS
+>   name).
+> * **Milestones 3-5 (Phases B, C, remaining tests §4.1/4.4-4.8) — not
+>   started.**
 
 Branch: `feat_pubsub_config2` — target: open62541 1.5 / master
 Reference: OPC 10000-14 v1.05.06 (`OPC-10000-14-v1.05.06.md` in the repo root)

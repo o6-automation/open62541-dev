@@ -668,6 +668,20 @@ generateWriterGroupDataType(const UA_WriterGroup *wg,
             return res;
         }
         dst->dataSetWriters[i].enabled = UA_PubSubState_isEnabled(dsw->head.state);
+
+        /* The dataSetName in the config is optional when the writer was
+         * created via the API with the PublishedDataSet NodeId. The file
+         * format links writer and PDS by name (an empty name means a
+         * heartbeat writer). Fall back to the name of the connected PDS. */
+        if(UA_String_isEmpty(&dst->dataSetWriters[i].dataSetName) &&
+           dsw->connectedDataSet) {
+            res = UA_String_copy(&dsw->connectedDataSet->config.name,
+                                 &dst->dataSetWriters[i].dataSetName);
+            if(res != UA_STATUSCODE_GOOD) {
+                UA_WriterGroupDataType_clear(dst);
+                return res;
+            }
+        }
         i++;
     }
 

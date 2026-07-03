@@ -515,6 +515,7 @@ if(UA_ENABLE_PUBSUB)
     endif()
     if(UA_ENABLE_PUBSUB_FILE_CONFIG)
         ua_add_test(pubsub/check_pubsub_configuration.c)
+        ua_add_test(pubsub/check_pubsub_config2.c)
     endif()
 endif()
 
