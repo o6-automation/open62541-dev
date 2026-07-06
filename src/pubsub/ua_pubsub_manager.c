@@ -821,6 +821,11 @@ UA_PubSubManager_clear(UA_PubSubManager *psm) {
     psm->defaultSecurityKeyServices = NULL;
     psm->defaultSecurityKeyServicesSize = 0;
 
+#ifdef UA_ENABLE_PUBSUB_FILE_CONFIG
+    /* Discard the open file handles of the PubSubConfiguration object */
+    UA_PubSubManager_clearConfigFileContexts(psm);
+#endif
+
 #ifdef UA_ENABLE_PUBSUB_SKS
     /* Remove the SecurityGroups */
     UA_SecurityGroup *tmpSG1, *tmpSG2;

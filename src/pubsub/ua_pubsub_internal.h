@@ -714,6 +714,20 @@ UA_SubscribedDataSetConfig_toDataType(const UA_SubscribedDataSetConfig *src,
 /* PubSub Manager */
 /******************/
 
+#ifdef UA_ENABLE_PUBSUB_FILE_CONFIG
+/* Open file handle on the PubSubConfiguration FileType object. One handle
+ * per Open call, bound to the session. */
+typedef struct UA_PubSubFileContext {
+    LIST_ENTRY(UA_PubSubFileContext) listEntry;
+    UA_UInt32 fileHandle;
+    UA_NodeId sessionId;
+    UA_Byte openFileMode;
+    UA_UInt64 currentPos;
+    UA_ByteString file;        /* Snapshot generated at open (read modes) */
+    UA_ByteString dataToWrite; /* Buffered writes, applied by CloseAndUpdate */
+} UA_PubSubFileContext;
+#endif
+
 typedef enum {
     UA_WRITER_GROUP = 0,
     UA_DATA_SET_WRITER = 1,
@@ -756,6 +770,14 @@ struct UA_PubSubManager {
     UA_KeyValueMap configurationProperties;
     size_t defaultSecurityKeyServicesSize;
     UA_EndpointDescription *defaultSecurityKeyServices;
+
+#ifdef UA_ENABLE_PUBSUB_FILE_CONFIG
+    /* Open file handles of the PubSubConfiguration FileType object */
+    LIST_HEAD(, UA_PubSubFileContext) configFileHandles;
+    UA_UInt16 configFileOpenCount;
+    UA_Boolean configFileWriterActive;
+    UA_UInt64 configFileCheckCallbackId; /* session-cleanup callback */
+#endif
 
     /* During the initial activation of the PubSub subsystem (e.g. when loading a configuration file), special behaviour
      * is required within the PubSub state machine transitions. This global flag can be set to indicate that the
@@ -812,6 +834,42 @@ UA_PubSubManager_generateUniqueGuid(UA_PubSubManager *psm);
 UA_UInt32
 UA_PubSubConfigurationVersionTimeDifference(UA_DateTime now);
 
+#ifdef UA_ENABLE_PUBSUB_FILE_CONFIG
+
+/* Encode the current configuration as an ExtensionObject-wrapped
+ * UABinaryFileDataType blob (lock held) */
+UA_StatusCode
+UA_PubSubManager_encodeConfig2Blob(UA_PubSubManager *psm, UA_ByteString *buf);
+
+/* Decode a configuration file blob. The returned cfg is a borrowing view
+ * into eo -- the caller clears eo after use. Namespace indices in the body
+ * are remapped to the server NamespaceArray. */
+UA_StatusCode
+UA_PubSubManager_decodeConfig2Blob(UA_PubSubManager *psm, const UA_ByteString *buf,
+                                   UA_ExtensionObject *eo,
+                                   UA_PubSubConfiguration2DataType *cfg);
+
+/* CloseAndUpdate element operations (lock held). Same semantics as the
+ * public UA_Server_updatePubSubConfig2. */
+UA_StatusCode
+UA_PubSubManager_updateConfig2(UA_PubSubManager *psm,
+                               const UA_PubSubConfiguration2DataType *cfg,
+                               size_t refsSize,
+                               const UA_PubSubConfigurationRefDataType *refs,
+                               UA_Boolean requireCompleteUpdate,
+                               UA_PubSubConfigUpdateResult *result);
+
+/* Close a single open file handle of the PubSubConfiguration object */
+void
+UA_PubSubManager_removeConfigFileContext(UA_PubSubManager *psm,
+                                         UA_PubSubFileContext *ctx);
+
+/* Discard all open file handles of the PubSubConfiguration object */
+void
+UA_PubSubManager_clearConfigFileContexts(UA_PubSubManager *psm);
+
+#endif /* UA_ENABLE_PUBSUB_FILE_CONFIG */
+
 /************************************/
 /* Information Model Representation */
 /************************************/
@@ -824,6 +882,13 @@ initPubSubNS0(UA_Server *server);
 #ifdef UA_ENABLE_PUBSUB_SKS
 UA_StatusCode
 initPubSubNS0_SKS(UA_Server *server);
+#endif
+
+#ifdef UA_ENABLE_PUBSUB_FILE_CONFIG
+/* Method callbacks and properties of the PubSubConfiguration FileType
+ * object (Part 14 9.1.3.7) */
+UA_StatusCode
+initPubSubConfig2FileType(UA_Server *server);
 #endif
 
 UA_StatusCode

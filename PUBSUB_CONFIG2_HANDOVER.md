@@ -182,14 +182,30 @@ Bidirectional mapping between Part 14 DataTypes and internal `UA_*Config`:
      rollback of apply-phase failures with requireCompleteUpdate.
    * Tests: `tests/pubsub/check_pubsub_config2_incremental.c` — note the
      multicast validate-connect works on 4801 in this environment.
-5. **M4 (Phase C)**: FileType front-end — un-comment/extend nodes in
-   `tools/schema/Opc.Ua.NodeSet2.PubSubMinimal.xml` (PubSubConfigurationType
-   i=25482, instance children i=25452..25479 of the PubSubConfiguration object
-   i=25451 — currently everything except ReserveIds i=25474 is commented out),
-   per-session file handles modeled on the GDS TrustList implementation in
-   `src/server/ua_server_ns0_gds.c` (`UA_FileContext`/`UA_FileInfo`/
-   `checkSessionActive`), method callbacks wired in `initPubSubNS0()`
-   (`ua_pubsub_ns0.c` ≈ line 2348, next to the existing ReserveIds binding).
+5. ~~M4 (Phase C)~~ DONE 2026-07-06. Facts for follow-up work:
+   * Nodeset: instance nodes extracted from the official UA-Nodeset
+     `latest` branch (raw.githubusercontent.com/OPCFoundation/UA-Nodeset/
+     latest/Schema/Opc.Ua.NodeSet2.xml — the repo has no local copy;
+     RolePermissions stripped, style matched). PubSubConfigurationType
+     i=25482 is subtyped to BaseObjectType i=58 in the REDUCED nodeset
+     (FileType i=11575 not present there) — documented deviation.
+   * `ua_pubsub_ns0_config2.c` (gated INFORMATIONMODEL && FILE_CONFIG)
+     implements the 7 method callbacks; the file-handle bookkeeping
+     (`UA_PubSubFileContext`, remove/clear) lives in ua_pubsub_config.c so
+     `UA_PubSubManager_clear` works without the information model.
+   * Internal helpers: `UA_PubSubManager_encodeConfig2Blob` /
+     `_decodeConfig2Blob` (decode gives a borrowing view + namespace remap;
+     clear the ExtensionObject afterwards) / `_updateConfig2` (the engine,
+     lock held).
+   * Session cleanup: repeated callback (10s) closes handles of ended
+     sessions; removed automatically when no handles remain.
+   * Not implemented (plan M5): LastModifiedTime property (C4), access
+     control gating beyond executable permissions (C5), the
+     `UA_ENABLE_PUBSUB_FILE_CONFIG_LEGACY_METHODS` deprecation option (C6),
+     Phase D/E (CI variants, examples, doc section), tests §4.1/4.6-4.8.
+   * Tests: `check_pubsub_config2_filetype.c` uses `UA_Server_call` — all
+     handles belong to the admin session, so the session-cleanup path is
+     not covered by it.
 
 ## Facts that save you time
 

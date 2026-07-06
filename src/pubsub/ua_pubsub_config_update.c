@@ -1323,12 +1323,13 @@ applyTopLevelFields(UA_PubSubManager *psm,
 /* Entry point */
 /***************/
 
-static UA_StatusCode
-updatePubSubConfig2(UA_PubSubManager *psm,
-                    const UA_PubSubConfiguration2DataType *cfg,
-                    size_t refsSize, const UA_PubSubConfigurationRefDataType *refs,
-                    UA_Boolean requireCompleteUpdate,
-                    UA_PubSubConfigUpdateResult *result) {
+UA_StatusCode
+UA_PubSubManager_updateConfig2(UA_PubSubManager *psm,
+                               const UA_PubSubConfiguration2DataType *cfg,
+                               size_t refsSize,
+                               const UA_PubSubConfigurationRefDataType *refs,
+                               UA_Boolean requireCompleteUpdate,
+                               UA_PubSubConfigUpdateResult *result) {
     UA_LOCK_ASSERT(&psm->sc.server->serviceMutex);
 
     /* Allocate the result arrays. The configurationValues array is
@@ -1506,8 +1507,8 @@ UA_Server_updatePubSubConfig2(UA_Server *server,
         unlockServer(server);
         return UA_STATUSCODE_BADINTERNALERROR;
     }
-    UA_StatusCode res = updatePubSubConfig2(psm, config, refsSize, refs,
-                                            requireCompleteUpdate, result);
+    UA_StatusCode res = UA_PubSubManager_updateConfig2(psm, config, refsSize, refs,
+                                                       requireCompleteUpdate, result);
     unlockServer(server);
     return res;
 }

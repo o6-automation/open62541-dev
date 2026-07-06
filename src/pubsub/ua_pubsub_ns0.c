@@ -2371,6 +2371,12 @@ initPubSubNS0(UA_Server *server) {
         retVal |= setMethodNode_callback(server, UA_NS0ID(PUBSUBSTATUSTYPE_DISABLE), disablePubSubObjectAction);
 
 #ifdef UA_ENABLE_PUBSUB_FILE_CONFIG
+        /* FileType methods of the PubSubConfiguration object (Part 14
+         * 9.1.3.7) */
+        retVal |= initPubSubConfig2FileType(server);
+#endif
+
+#ifdef UA_ENABLE_PUBSUB_FILE_CONFIG
         /* Adds method node to server. This method is used to load binary files for
          * PubSub configuration and delete / replace old PubSub configurations. */
         UA_Argument inputArgument;

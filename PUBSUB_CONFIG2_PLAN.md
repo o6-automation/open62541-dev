@@ -46,8 +46,28 @@
 >   modify ⇒ `Bad_NotImplemented` (remove+add instead); ReserveIds session
 >   reservations not consulted by the C API (no session context).
 >   Tests: `tests/pubsub/check_pubsub_config2_incremental.c` (10 cases).
-> * **Milestones 4-5 (Phase C FileType front-end, remaining tests
->   §4.1/4.4/4.6-4.8) — not started.**
+> * **Milestone 4 (Phase C, FileType front-end) — DONE, test-covered
+>   (2026-07-06)**: `tools/schema/Opc.Ua.NodeSet2.PubSubMinimal.xml` now
+>   contains the full PubSubConfiguration instance (Size/Writable/
+>   UserWritable/OpenCount, Open/Close/Read/Write/GetPosition/SetPosition/
+>   CloseAndUpdate + argument nodes, HasTypeDefinition →
+>   PubSubConfigurationType i=25482; the type node is subtyped to
+>   BaseObjectType in the REDUCED nodeset since FileType is absent there —
+>   documented deviation, FULL NS0 is correct). Method callbacks in
+>   `src/pubsub/ua_pubsub_ns0_config2.c`: modes Read/Read+Write/
+>   Write+EraseExisting, parallel readers, exclusive writer, buffered
+>   writes, plain Close discards, CloseAndUpdate → decode blob (namespace
+>   remap) → incremental engine → 4 output args. Per-session handles with
+>   periodic cleanup (GDS pattern), OpenCount/Size/Writable properties
+>   maintained. File-handle bookkeeping in ua_pubsub_config.c (works
+>   without the information model), cleanup wired into
+>   UA_PubSubManager_clear. Tests:
+>   `tests/pubsub/check_pubsub_config2_filetype.c` (5 cases via the call
+>   service, incl. the full Open(write)→Write→CloseAndUpdate client
+>   sequence).
+> * **Milestone 5 (remaining tests §4.1/4.6-4.8, Phase D/E examples/docs/CI,
+>   C4 LastModifiedTime, C5 access control, C6 legacy-method deprecation
+>   option) — not started.**
 
 Branch: `feat_pubsub_config2` — target: open62541 1.5 / master
 Reference: OPC 10000-14 v1.05.06 (`OPC-10000-14-v1.05.06.md` in the repo root)

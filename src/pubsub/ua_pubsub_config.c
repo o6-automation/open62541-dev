@@ -912,6 +912,55 @@ encodePubSubConfiguration2(UA_PubSubManager *psm,
 }
 
 UA_StatusCode
+UA_PubSubManager_encodeConfig2Blob(UA_PubSubManager *psm, UA_ByteString *buf) {
+    UA_LOCK_ASSERT(&psm->sc.server->serviceMutex);
+
+    UA_PubSubConfiguration2DataType config;
+    UA_StatusCode res = generatePubSubConfiguration2DataType(psm, &config);
+    if(res != UA_STATUSCODE_GOOD) {
+        UA_LOG_ERROR(psm->logging, UA_LOGCATEGORY_PUBSUB,
+                     "Retrieving the PubSub configuration failed");
+        return res;
+    }
+
+    res = encodePubSubConfiguration2(psm, &config, buf);
+    UA_PubSubConfiguration2DataType_clear(&config);
+    return res;
+}
+
+UA_StatusCode
+UA_PubSubManager_decodeConfig2Blob(UA_PubSubManager *psm, const UA_ByteString *buf,
+                                   UA_ExtensionObject *eo,
+                                   UA_PubSubConfiguration2DataType *cfg) {
+    UA_LOCK_ASSERT(&psm->sc.server->serviceMutex);
+
+    size_t offset = 0;
+    UA_StatusCode res = UA_ExtensionObject_decodeBinary(buf, &offset, eo);
+    if(res != UA_STATUSCODE_GOOD) {
+        UA_LOG_ERROR(psm->logging, UA_LOGCATEGORY_PUBSUB,
+                     "PubSub configuration file: Decoding failed");
+        return UA_STATUSCODE_BADTYPEMISMATCH;
+    }
+
+    UA_String *namespaces = NULL;
+    size_t namespacesSize = 0;
+    res = extractPubSubConfig2FromExtensionObject(psm, eo, cfg,
+                                                  &namespaces, &namespacesSize);
+    if(res != UA_STATUSCODE_GOOD) {
+        UA_ExtensionObject_clear(eo);
+        UA_ExtensionObject_init(eo);
+        return res;
+    }
+
+    res = remapNamespaces(psm, cfg, namespaces, namespacesSize);
+    if(res != UA_STATUSCODE_GOOD) {
+        UA_ExtensionObject_clear(eo);
+        UA_ExtensionObject_init(eo);
+    }
+    return res;
+}
+
+UA_StatusCode
 UA_Server_writePubSubConfigurationToByteString(UA_Server *server,
                                                UA_ByteString *buffer) {
     if(server == NULL || buffer == NULL)
@@ -925,19 +974,38 @@ UA_Server_writePubSubConfigurationToByteString(UA_Server *server,
         return UA_STATUSCODE_BADINTERNALERROR;
     }
 
-    UA_PubSubConfiguration2DataType config;
-    UA_StatusCode res = generatePubSubConfiguration2DataType(psm, &config);
-    if(res != UA_STATUSCODE_GOOD) {
-        UA_LOG_ERROR(psm->logging, UA_LOGCATEGORY_PUBSUB,
-                     "Retrieving the PubSub configuration failed");
-        unlockServer(server);
-        return res;
-    }
-
-    res = encodePubSubConfiguration2(psm, &config, buffer);
-    UA_PubSubConfiguration2DataType_clear(&config);
+    UA_StatusCode res = UA_PubSubManager_encodeConfig2Blob(psm, buffer);
     unlockServer(server);
     return res;
+}
+
+/* File handles of the PubSubConfiguration FileType object. The method
+ * callbacks live in ua_pubsub_ns0_config2.c (information model only), the
+ * bookkeeping is here so that the manager cleanup works without the
+ * information model. */
+
+void
+UA_PubSubManager_removeConfigFileContext(UA_PubSubManager *psm,
+                                         UA_PubSubFileContext *ctx) {
+    LIST_REMOVE(ctx, listEntry);
+    psm->configFileOpenCount--;
+    if(ctx->openFileMode &
+       (UA_Byte)(UA_OPENFILEMODE_WRITE | UA_OPENFILEMODE_ERASEEXISTING))
+        psm->configFileWriterActive = false;
+    UA_ByteString_clear(&ctx->file);
+    UA_ByteString_clear(&ctx->dataToWrite);
+    UA_free(ctx);
+}
+
+void
+UA_PubSubManager_clearConfigFileContexts(UA_PubSubManager *psm) {
+    UA_PubSubFileContext *ctx, *tmp;
+    LIST_FOREACH_SAFE(ctx, &psm->configFileHandles, listEntry, tmp)
+        UA_PubSubManager_removeConfigFileContext(psm, ctx);
+    if(psm->configFileCheckCallbackId != 0) {
+        removeCallback(psm->sc.server, psm->configFileCheckCallbackId);
+        psm->configFileCheckCallbackId = 0;
+    }
 }
 
 UA_StatusCode
