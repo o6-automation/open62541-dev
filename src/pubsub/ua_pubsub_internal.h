@@ -269,6 +269,11 @@ UA_PubSubConnection_create(UA_PubSubManager *psm,
 UA_StatusCode
 UA_PubSubConnection_delete(UA_PubSubManager *psm, UA_PubSubConnection *c);
 
+/* The connection must be disabled */
+UA_StatusCode
+UA_PubSubConnection_updateConfig(UA_PubSubManager *psm, UA_PubSubConnection *c,
+                                 const UA_PubSubConnectionConfig *config);
+
 UA_StatusCode
 UA_PubSubConnection_setPubSubState(UA_PubSubManager *psm, UA_PubSubConnection *c,
                                    UA_PubSubState targetState);
@@ -326,6 +331,11 @@ UA_DataSetWriter_create(UA_PubSubManager *psm,
 UA_StatusCode
 UA_DataSetWriter_remove(UA_PubSubManager *psm, UA_DataSetWriter *dsw);
 
+/* The writer must be disabled */
+UA_StatusCode
+UA_DataSetWriter_updateConfig(UA_PubSubManager *psm, UA_DataSetWriter *dsw,
+                              const UA_DataSetWriterConfig *config);
+
 /**********************************************/
 /*               WriterGroup                  */
 /**********************************************/
@@ -364,6 +374,11 @@ UA_WriterGroup_create(UA_PubSubManager *psm, const UA_NodeId connection,
 
 UA_StatusCode
 UA_WriterGroup_remove(UA_PubSubManager *psm, UA_WriterGroup *wg);
+
+/* The group must be disabled */
+UA_StatusCode
+UA_WriterGroup_updateConfig(UA_PubSubManager *psm, UA_WriterGroup *wg,
+                            const UA_WriterGroupConfig *config);
 
 /* Exposed so we can change the publish interval without having to stop */
 UA_StatusCode
@@ -469,6 +484,11 @@ UA_DataSetReader_create(UA_PubSubManager *psm, UA_NodeId readerGroupIdentifier,
 UA_StatusCode
 UA_DataSetReader_remove(UA_PubSubManager *psm, UA_DataSetReader *dsr);
 
+/* The reader must be disabled */
+UA_StatusCode
+UA_DataSetReader_updateConfig(UA_PubSubManager *psm, UA_DataSetReader *dsr,
+                              const UA_DataSetReaderConfig *config);
+
 UA_StatusCode
 DataSetReader_createTargetVariables(UA_PubSubManager *psm, UA_DataSetReader *dsr,
                                     size_t targetsSize, const UA_FieldTargetDataType *targets);
@@ -515,6 +535,11 @@ UA_ReaderGroup_create(UA_PubSubManager *psm, UA_NodeId connectionId,
 
 UA_StatusCode
 UA_ReaderGroup_remove(UA_PubSubManager *psm, UA_ReaderGroup *rg);
+
+/* The group must be disabled */
+UA_StatusCode
+UA_ReaderGroup_updateConfig(UA_PubSubManager *psm, UA_ReaderGroup *rg,
+                            const UA_ReaderGroupConfig *config);
 
 UA_StatusCode
 UA_ReaderGroup_connect(UA_PubSubManager *psm, UA_ReaderGroup *rg,
@@ -767,6 +792,11 @@ UA_PubSubManager_reserveIds(UA_PubSubManager *psm, UA_NodeId sessionId,
                             UA_UInt16 numRegDataSetWriterIds,
                             UA_String transportProfileUri, UA_UInt16 **writerGroupIds,
                             UA_UInt16 **dataSetWriterIds);
+
+/* Checks the current configuration and the reservations */
+UA_Boolean
+UA_ReserveId_isFree(UA_PubSubManager *psm, UA_UInt16 id,
+                    UA_String transportProfileUri, UA_ReserveIdType reserveIdType);
 
 void
 UA_PubSubManager_freeIds(UA_PubSubManager *psm);

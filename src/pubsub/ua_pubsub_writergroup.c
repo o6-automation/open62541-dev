@@ -1535,32 +1535,20 @@ UA_Server_setWriterGroupEncryptionKeys(UA_Server *server, const UA_NodeId writer
 }
 
 UA_StatusCode
-UA_Server_updateWriterGroupConfig(UA_Server *server, const UA_NodeId wgId,
-                                  const UA_WriterGroupConfig *config) {
-    if(!server || !config)
-        return UA_STATUSCODE_BADINVALIDARGUMENT;
-
-    lockServer(server);
-    UA_PubSubManager *psm = getPSM(server);
-    UA_WriterGroup *wg = UA_WriterGroup_find(psm, wgId);
-    if(!wg) {
-        unlockServer(server);
-        return UA_STATUSCODE_BADNOTFOUND;
-    }
+UA_WriterGroup_updateConfig(UA_PubSubManager *psm, UA_WriterGroup *wg,
+                            const UA_WriterGroupConfig *config) {
+    UA_LOCK_ASSERT(&psm->sc.server->serviceMutex);
 
     if(UA_PubSubState_isEnabled(wg->head.state)) {
         UA_LOG_ERROR_PUBSUB(psm->logging, wg,
                             "The WriterGroup must be disabled to update the config");
-        unlockServer(server);
         return UA_STATUSCODE_BADINTERNALERROR;
     }
 
     /* Validate the new configuration */
     UA_StatusCode res = validateWriterGroupConfig(psm, &wg->head, config);
-    if(res != UA_STATUSCODE_GOOD) {
-        unlockServer(server);
+    if(res != UA_STATUSCODE_GOOD)
         return res;
-    }
 
     /* Store the old configuration */
     UA_WriterGroupConfig oldConfig = wg->config;
@@ -1601,12 +1589,29 @@ UA_Server_updateWriterGroupConfig(UA_Server *server, const UA_NodeId wgId,
 
     /* Clean up and return */
     UA_WriterGroupConfig_clear(&oldConfig);
-    unlockServer(server);
     return UA_STATUSCODE_GOOD;
 
  errout:
     UA_WriterGroupConfig_clear(&wg->config);
     wg->config = oldConfig; /* Restore the old config */
+    return res;
+}
+
+UA_StatusCode
+UA_Server_updateWriterGroupConfig(UA_Server *server, const UA_NodeId wgId,
+                                  const UA_WriterGroupConfig *config) {
+    if(!server || !config)
+        return UA_STATUSCODE_BADINVALIDARGUMENT;
+
+    lockServer(server);
+    UA_PubSubManager *psm = getPSM(server);
+    UA_WriterGroup *wg = UA_WriterGroup_find(psm, wgId);
+    if(!wg) {
+        unlockServer(server);
+        return UA_STATUSCODE_BADNOTFOUND;
+    }
+
+    UA_StatusCode res = UA_WriterGroup_updateConfig(psm, wg, config);
     unlockServer(server);
     return res;
 }

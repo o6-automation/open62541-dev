@@ -179,7 +179,7 @@ UA_ReserveId_new(UA_UInt16 id, UA_String transportProfileUri,
     return reserveId;
 }
 
-static UA_Boolean
+UA_Boolean
 UA_ReserveId_isFree(UA_PubSubManager *psm, UA_UInt16 id, UA_String transportProfileUri,
                     UA_ReserveIdType reserveIdType) {
     /* Is the id already in use? */

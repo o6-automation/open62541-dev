@@ -160,11 +160,28 @@ Bidirectional mapping between Part 14 DataTypes and internal `UA_*Config`:
    PDS DataSetMetaData description/dataSetClassId (metadata is rebuilt from
    field configs — see `TODO Part14` in ua_pubsub_config_map.c);
    SecurityGroups export (SKS) still TODO in ua_pubsub_config.c.
-4. **M3 (Phase B)**: incremental engine `ua_pubsub_config_update.c` —
-   `UA_Server_updatePubSubConfig2(server, cfg, refs, requireCompleteUpdate,
-   &result)` implementing the CloseAndUpdate element ops (plan §3 Phase B has
-   the full op semantics; removes first; per-ref status codes from Part 14
-   9.1.3.7.6). Testable without NS0.
+4. ~~M3 (Phase B)~~ DONE 2026-07-06: `src/pubsub/ua_pubsub_config_update.c`
+   with `UA_Server_updatePubSubConfig2` + `UA_PubSubConfigUpdateResult`
+   (public API in server_pubsub.h under FILE_CONFIG). Facts for follow-up
+   work:
+   * Public `UA_Server_update*Config` functions were refactored into
+     internal `UA_PubSubConnection_updateConfig` / `UA_WriterGroup_...` /
+     `UA_ReaderGroup_...` / `UA_DataSetWriter_...` / `UA_DataSetReader_...`
+     (psm + component pointer, lock held) — use these from NS0 callbacks.
+   * Writer/reader add/remove/update require the parent group DISABLED —
+     the engine wraps those ops with disable/restore of the group (children
+     of a disabled parent are PAUSED, which still counts as "enabled", so
+     the component itself is disabled for modify).
+   * The converters (`_fromDataType`) now accept DECODED **and**
+     DECODED_NODELETE ExtensionObjects and tolerate an empty PublisherId
+     variant (default Byte 0) — needed for in-code update files.
+   * `UA_ReserveId_isFree` is exposed internally for the id auto-assignment
+     (range 0x8000+, per transport profile, respects session reservations).
+   * Unsupported (documented in the file header): SecurityGroup/PushTarget
+     refs (`Bad_ResourceUnavailable`), PDS/SSDS modify (`Bad_NotImplemented`),
+     rollback of apply-phase failures with requireCompleteUpdate.
+   * Tests: `tests/pubsub/check_pubsub_config2_incremental.c` — note the
+     multicast validate-connect works on 4801 in this environment.
 5. **M4 (Phase C)**: FileType front-end — un-comment/extend nodes in
    `tools/schema/Opc.Ua.NodeSet2.PubSubMinimal.xml` (PubSubConfigurationType
    i=25482, instance children i=25452..25479 of the PubSubConfiguration object

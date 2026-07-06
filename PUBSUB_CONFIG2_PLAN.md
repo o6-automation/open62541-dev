@@ -30,8 +30,24 @@
 >   dataSetFolder/extensionFields, SSDS dataSetFolder. Converters wired both
 >   directions, round-trip test extended. Still lossy: PDS metadata
 >   description/dataSetClassId; SecurityGroups (SKS) export.
-> * **Milestones 3-5 (Phases B, C, remaining tests §4.1/4.4-4.8) — not
->   started.**
+> * **Milestone 3 (Phase B, incremental engine) — DONE, test-covered
+>   (2026-07-06)**: `src/pubsub/ua_pubsub_config_update.c` implements
+>   `UA_Server_updatePubSubConfig2` with the CloseAndUpdate element
+>   operations (add/match/add|match/modify/remove, removes first, mask/index
+>   validation, per-element status codes per 9.1.3.7.6, auto-assignment of
+>   names/WriterGroupIds/DataSetWriterIds/default PublisherId with
+>   ConfigurationValues output, ConfigurationObjects NodeIds, top-level
+>   DefaultSecurityKeyServices replace + ConfigurationProperties merge,
+>   configurationVersion bump). requireCompleteUpdate uses a shadow-state
+>   validation pass (B3); apply-phase failures are best-effort (no rollback,
+>   documented). Public update functions refactored into internal
+>   `UA_*_updateConfig(psm, comp, config)` for reuse (B2). Limitations:
+>   SecurityGroup/PushTarget refs ⇒ `Bad_ResourceUnavailable`; PDS/SSDS
+>   modify ⇒ `Bad_NotImplemented` (remove+add instead); ReserveIds session
+>   reservations not consulted by the C API (no session context).
+>   Tests: `tests/pubsub/check_pubsub_config2_incremental.c` (10 cases).
+> * **Milestones 4-5 (Phase C FileType front-end, remaining tests
+>   §4.1/4.4/4.6-4.8) — not started.**
 
 Branch: `feat_pubsub_config2` — target: open62541 1.5 / master
 Reference: OPC 10000-14 v1.05.06 (`OPC-10000-14-v1.05.06.md` in the repo root)

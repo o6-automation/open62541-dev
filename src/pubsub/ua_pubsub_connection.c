@@ -923,27 +923,14 @@ UA_Server_processPubSubConnectionReceive(UA_Server *server,
 }
 
 UA_StatusCode
-UA_Server_updatePubSubConnectionConfig(UA_Server *server,
-                                       const UA_NodeId connectionId,
-                                       const UA_PubSubConnectionConfig *config) {
-    if(!server || !config)
-        return UA_STATUSCODE_BADINVALIDARGUMENT;
-
-    lockServer(server);
-
-    /* Find the connection */
-    UA_PubSubManager *psm = getPSM(server);
-    UA_PubSubConnection *c = UA_PubSubConnection_find(psm, connectionId);
-    if(!c) {
-        unlockServer(server);
-        return UA_STATUSCODE_BADNOTFOUND;
-    }
+UA_PubSubConnection_updateConfig(UA_PubSubManager *psm, UA_PubSubConnection *c,
+                                 const UA_PubSubConnectionConfig *config) {
+    UA_LOCK_ASSERT(&psm->sc.server->serviceMutex);
 
     /* Verify the connection is disabled */
     if(UA_PubSubState_isEnabled(c->head.state)) {
         UA_LOG_ERROR_PUBSUB(psm->logging, c,
                             "The PubSubConnection must be disabled to update the config");
-        unlockServer(server);
         return UA_STATUSCODE_BADINTERNALERROR;
     }
 
@@ -964,13 +951,33 @@ UA_Server_updatePubSubConnectionConfig(UA_Server *server,
     }
 
     UA_PubSubConnectionConfig_clear(&oldConfig);
-    unlockServer(server);
     return UA_STATUSCODE_GOOD;
 
  errout:
     /* Restore the old config */
     UA_PubSubConnectionConfig_clear(&c->config);
     c->config = oldConfig;
+    return res;
+}
+
+UA_StatusCode
+UA_Server_updatePubSubConnectionConfig(UA_Server *server,
+                                       const UA_NodeId connectionId,
+                                       const UA_PubSubConnectionConfig *config) {
+    if(!server || !config)
+        return UA_STATUSCODE_BADINVALIDARGUMENT;
+
+    lockServer(server);
+
+    /* Find the connection */
+    UA_PubSubManager *psm = getPSM(server);
+    UA_PubSubConnection *c = UA_PubSubConnection_find(psm, connectionId);
+    if(!c) {
+        unlockServer(server);
+        return UA_STATUSCODE_BADNOTFOUND;
+    }
+
+    UA_StatusCode res = UA_PubSubConnection_updateConfig(psm, c, config);
     unlockServer(server);
     return res;
 }

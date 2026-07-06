@@ -805,23 +805,13 @@ UA_Server_setDataSetReaderTargetVariables(UA_Server *server, const UA_NodeId dsr
 }
 
 UA_StatusCode
-UA_Server_updateDataSetReaderConfig(UA_Server *server, const UA_NodeId dsrId,
-                                    const UA_DataSetReaderConfig *config) {
-    if(!server || !config)
-        return UA_STATUSCODE_BADINVALIDARGUMENT;
-
-    lockServer(server);
-    UA_PubSubManager *psm = getPSM(server);
-    UA_DataSetReader *dsr = UA_DataSetReader_find(psm, dsrId);
-    if(!dsr) {
-        unlockServer(server);
-        return UA_STATUSCODE_BADNOTFOUND;
-    }
+UA_DataSetReader_updateConfig(UA_PubSubManager *psm, UA_DataSetReader *dsr,
+                              const UA_DataSetReaderConfig *config) {
+    UA_LOCK_ASSERT(&psm->sc.server->serviceMutex);
 
     if(UA_PubSubState_isEnabled(dsr->head.state)) {
         UA_LOG_ERROR_PUBSUB(psm->logging, dsr,
                             "The DataSetReader must be disabled to update the config");
-        unlockServer(server);
         return UA_STATUSCODE_BADINTERNALERROR;
     }
 
@@ -849,13 +839,30 @@ UA_Server_updateDataSetReaderConfig(UA_Server *server, const UA_NodeId dsrId,
 
     /* Clean up and return */
     UA_DataSetReaderConfig_clear(&oldConfig);
-    unlockServer(server);
     return UA_STATUSCODE_GOOD;
 
     /* Fall back to the old config */
  errout:
     UA_DataSetReaderConfig_clear(&dsr->config);
     dsr->config = oldConfig;
+    return retVal;
+}
+
+UA_StatusCode
+UA_Server_updateDataSetReaderConfig(UA_Server *server, const UA_NodeId dsrId,
+                                    const UA_DataSetReaderConfig *config) {
+    if(!server || !config)
+        return UA_STATUSCODE_BADINVALIDARGUMENT;
+
+    lockServer(server);
+    UA_PubSubManager *psm = getPSM(server);
+    UA_DataSetReader *dsr = UA_DataSetReader_find(psm, dsrId);
+    if(!dsr) {
+        unlockServer(server);
+        return UA_STATUSCODE_BADNOTFOUND;
+    }
+
+    UA_StatusCode retVal = UA_DataSetReader_updateConfig(psm, dsr, config);
     unlockServer(server);
     return retVal;
 }

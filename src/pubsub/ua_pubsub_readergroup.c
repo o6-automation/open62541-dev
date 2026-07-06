@@ -1155,24 +1155,13 @@ UA_Server_setReaderGroupEncryptionKeys(UA_Server *server,
 }
 
 UA_StatusCode
-UA_Server_updateReaderGroupConfig(UA_Server *server, const UA_NodeId rgId,
-                                  const UA_ReaderGroupConfig *config) {
-    if(!server || !config)
-        return UA_STATUSCODE_BADINVALIDARGUMENT;
-
-    lockServer(server);
-
-    UA_PubSubManager *psm = getPSM(server);
-    UA_ReaderGroup *rg = UA_ReaderGroup_find(getPSM(server), rgId);
-    if(!rg) {
-        unlockServer(server);
-        return UA_STATUSCODE_BADNOTFOUND;
-    }
+UA_ReaderGroup_updateConfig(UA_PubSubManager *psm, UA_ReaderGroup *rg,
+                            const UA_ReaderGroupConfig *config) {
+    UA_LOCK_ASSERT(&psm->sc.server->serviceMutex);
 
     if(UA_PubSubState_isEnabled(rg->head.state)) {
         UA_LOG_ERROR_PUBSUB(psm->logging, rg,
                             "The ReaderGroup must be disabled to update the config");
-        unlockServer(server);
         return UA_STATUSCODE_BADINTERNALERROR;
     }
 
@@ -1182,7 +1171,7 @@ UA_Server_updateReaderGroupConfig(UA_Server *server, const UA_NodeId rgId,
     /* Deep copy of the config */
     UA_StatusCode retval = UA_ReaderGroupConfig_copy(config, &rg->config);
     if(retval != UA_STATUSCODE_GOOD) {
-        unlockServer(server);
+        rg->config = oldConfig;
         return retval;
     }
 
@@ -1216,12 +1205,30 @@ UA_Server_updateReaderGroupConfig(UA_Server *server, const UA_NodeId rgId,
 
     /* Clean up and return */
     UA_ReaderGroupConfig_clear(&oldConfig);
-    unlockServer(server);
     return UA_STATUSCODE_GOOD;
 
  errout:
     UA_ReaderGroupConfig_clear(&rg->config);
     rg->config = oldConfig;
+    return retval;
+}
+
+UA_StatusCode
+UA_Server_updateReaderGroupConfig(UA_Server *server, const UA_NodeId rgId,
+                                  const UA_ReaderGroupConfig *config) {
+    if(!server || !config)
+        return UA_STATUSCODE_BADINVALIDARGUMENT;
+
+    lockServer(server);
+
+    UA_PubSubManager *psm = getPSM(server);
+    UA_ReaderGroup *rg = UA_ReaderGroup_find(psm, rgId);
+    if(!rg) {
+        unlockServer(server);
+        return UA_STATUSCODE_BADNOTFOUND;
+    }
+
+    UA_StatusCode retval = UA_ReaderGroup_updateConfig(psm, rg, config);
     unlockServer(server);
     return retval;
 }

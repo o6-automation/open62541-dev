@@ -993,6 +993,54 @@ UA_Server_writePubSubConfigurationToByteString(UA_Server *server,
 UA_EXPORT UA_StatusCode
 UA_Server_getPubSubConfig2(UA_Server *server,
                            UA_PubSubConfiguration2DataType *config);
+
+/* Result of an incremental configuration update. Matches the output
+ * arguments of the Part 14 CloseAndUpdate method (9.1.3.7.6). Clean up with
+ * UA_PubSubConfigUpdateResult_clear. */
+typedef struct {
+    UA_Boolean changesApplied;
+
+    /* Per-reference status codes, 1:1 with the input references */
+    size_t referencesResultsSize;
+    UA_StatusCode *referencesResults;
+
+    /* Assigned names and identifiers for Add/Match operations where the
+     * element provided an empty name or null identifier */
+    size_t configurationValuesSize;
+    UA_PubSubConfigurationValueDataType *configurationValues;
+
+    /* NodeIds of the affected components, 1:1 with the input references
+     * (null NodeId when the operation did not produce/find a component) */
+    size_t configurationObjectsSize;
+    UA_NodeId *configurationObjects;
+} UA_PubSubConfigUpdateResult;
+
+UA_EXPORT void
+UA_PubSubConfigUpdateResult_clear(UA_PubSubConfigUpdateResult *result);
+
+/* Apply an incremental update to the running PubSub configuration with the
+ * semantics of the Part 14 CloseAndUpdate method (9.1.3.7.6). The config is
+ * the decoded file content, the references select the elements to
+ * add/match/modify/remove. Remove operations are processed first. Top-level
+ * fields: Enabled and DataSetClasses are ignored, DefaultSecurityKeyServices
+ * replaces the existing entries if non-empty, ConfigurationProperties are
+ * merged (null value deletes the key), the ConfigurationVersion input is
+ * ignored and set to the current time when changes were applied.
+ *
+ * With requireCompleteUpdate all references are validated first and nothing
+ * is applied if any validation fails. Note that validation cannot cover
+ * every runtime condition -- errors in the apply phase are reported in the
+ * result but already-applied operations are not rolled back.
+ *
+ * The method returns GOOD when the update was processed -- per-element
+ * failures are reported in result->referencesResults. */
+UA_EXPORT UA_StatusCode
+UA_Server_updatePubSubConfig2(UA_Server *server,
+                              const UA_PubSubConfiguration2DataType *config,
+                              size_t refsSize,
+                              const UA_PubSubConfigurationRefDataType *refs,
+                              UA_Boolean requireCompleteUpdate,
+                              UA_PubSubConfigUpdateResult *result);
 #endif
 
 /* Legacy API */

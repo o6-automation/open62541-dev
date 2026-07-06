@@ -27,6 +27,15 @@
  * structures are marked with "TODO Part14" below. They are dropped with a
  * debug log until the internal structures are extended. */
 
+/* ExtensionObjects decoded from a file have the DECODED encoding. Structures
+ * built in code (e.g. for UA_Server_updatePubSubConfig2) often reference
+ * external memory with DECODED_NODELETE. Both hold a decoded value. */
+static UA_Boolean
+eoDecoded(const UA_ExtensionObject *eo) {
+    return (eo->encoding == UA_EXTENSIONOBJECT_DECODED ||
+            eo->encoding == UA_EXTENSIONOBJECT_DECODED_NODELETE);
+}
+
 UA_StatusCode
 UA_PubSubConnectionConfig_fromDataType(const UA_PubSubConnectionDataType *src,
                                        UA_PubSubConnectionConfig *dst) {
@@ -40,19 +49,24 @@ UA_PubSubConnectionConfig_fromDataType(const UA_PubSubConnectionDataType *src,
 
     /* The address is stored as a Variant internally. It can only be mapped if
      * the ExtensionObject is decoded. */
-    if(src->address.encoding != UA_EXTENSIONOBJECT_DECODED)
+    if(!eoDecoded(&src->address))
         return UA_STATUSCODE_BADINVALIDARGUMENT;
     UA_Variant_setScalar(&dst->address, src->address.content.decoded.data,
                          src->address.content.decoded.type);
 
     /* Optional TransportSettings */
-    if(src->transportSettings.encoding == UA_EXTENSIONOBJECT_DECODED) {
+    if(eoDecoded(&src->transportSettings)) {
         UA_Variant_setScalar(&dst->connectionTransportSettings,
                              src->transportSettings.content.decoded.data,
                              src->transportSettings.content.decoded.type);
     }
 
-    return UA_PublisherId_fromVariant(&dst->publisherId, &src->publisherId);
+    /* An empty PublisherId variant leaves the default (Byte 0). The caller
+     * assigns the server default where required. */
+    if(!UA_Variant_isEmpty(&src->publisherId))
+        return UA_PublisherId_fromVariant(&dst->publisherId, &src->publisherId);
+
+    return UA_STATUSCODE_GOOD;
 }
 
 void
@@ -92,7 +106,7 @@ UA_WriterGroupConfig_fromDataType(const UA_WriterGroupDataType *src,
     /* The encoding is defined by the type of the MessageSettings. If no
      * MessageSettings are given, UADP is the default. */
     dst->encodingMimeType = UA_PUBSUB_ENCODING_UADP;
-    if(src->messageSettings.encoding == UA_EXTENSIONOBJECT_DECODED &&
+    if(eoDecoded(&src->messageSettings) &&
        src->messageSettings.content.decoded.type ==
            &UA_TYPES[UA_TYPES_JSONWRITERGROUPMESSAGEDATATYPE]) {
 #ifdef UA_ENABLE_JSON_ENCODING
@@ -175,7 +189,7 @@ UA_DataSetReaderConfig_fromDataType(const UA_DataSetReaderDataType *src,
      * reference to a StandaloneSubscribedDataSet (by name). A
      * SubscribedDataSetMirror is not supported. */
     const UA_ExtensionObject *sds = &src->subscribedDataSet;
-    if(sds->encoding == UA_EXTENSIONOBJECT_DECODED) {
+    if(eoDecoded(sds)) {
         if(sds->content.decoded.type == &UA_TYPES[UA_TYPES_TARGETVARIABLESDATATYPE]) {
             dst->subscribedDataSetType = UA_PUBSUB_SDS_TARGET;
             dst->subscribedDataSet.target =
@@ -220,7 +234,7 @@ UA_PublishedDataSetConfig_fromDataType(const UA_PublishedDataSetDataType *src,
     dst->extensionFields.mapSize = src->extensionFieldsSize;
 
     /* Only PublishedDataItems are supported so far */
-    if(src->dataSetSource.encoding != UA_EXTENSIONOBJECT_DECODED)
+    if(!eoDecoded(&src->dataSetSource))
         return UA_STATUSCODE_BADINVALIDARGUMENT;
     const UA_DataType *sourceType = src->dataSetSource.content.decoded.type;
     if(sourceType == &UA_TYPES[UA_TYPES_PUBLISHEDDATAITEMSDATATYPE]) {
@@ -250,7 +264,7 @@ UA_DataSetFieldConfig_fromDataType(const UA_PublishedDataSetDataType *src,
                                    size_t fieldIndex, UA_DataSetFieldConfig *dst) {
     memset(dst, 0, sizeof(UA_DataSetFieldConfig));
 
-    if(src->dataSetSource.encoding != UA_EXTENSIONOBJECT_DECODED ||
+    if(!eoDecoded(&src->dataSetSource) ||
        src->dataSetSource.content.decoded.type !=
            &UA_TYPES[UA_TYPES_PUBLISHEDDATAITEMSDATATYPE])
         return UA_STATUSCODE_BADINVALIDARGUMENT;
@@ -287,12 +301,12 @@ UA_SubscribedDataSetConfig_fromDataType(const UA_StandaloneSubscribedDataSetData
     dst->dataSetFolderSize = src->dataSetFolderSize;
 
     const UA_ExtensionObject *sds = &src->subscribedDataSet;
-    if(sds->encoding == UA_EXTENSIONOBJECT_DECODED &&
+    if(eoDecoded(sds) &&
        sds->content.decoded.type == &UA_TYPES[UA_TYPES_TARGETVARIABLESDATATYPE]) {
         dst->subscribedDataSetType = UA_PUBSUB_SDS_TARGET;
         dst->subscribedDataSet.target =
             *(UA_TargetVariablesDataType*)sds->content.decoded.data;
-    } else if(sds->encoding == UA_EXTENSIONOBJECT_DECODED &&
+    } else if(eoDecoded(sds) &&
               sds->content.decoded.type ==
                   &UA_TYPES[UA_TYPES_SUBSCRIBEDDATASETMIRRORDATATYPE]) {
         return UA_STATUSCODE_BADNOTIMPLEMENTED;
