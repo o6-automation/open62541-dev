@@ -2257,7 +2257,14 @@ subscribedDataSetTypeDestructor(UA_Server *server,
 /*         PubSub configurator       */
 /*************************************/
 
-#ifdef UA_ENABLE_PUBSUB_FILE_CONFIG
+#if defined(UA_ENABLE_PUBSUB_FILE_CONFIG) && \
+    defined(UA_ENABLE_PUBSUB_FILE_CONFIG_LEGACY_METHODS)
+
+/* DEPRECATED: The vendor-defined method nodes "PubSub configuration" and
+ * "Delete PubSub config" predate the standard PubSubConfiguration FileType
+ * object (Part 14 9.1.3.7). They remain available behind
+ * UA_ENABLE_PUBSUB_FILE_CONFIG_LEGACY_METHODS for one release and will be
+ * removed afterwards. */
 
 /* Callback function that will be executed when the method "PubSub configurator
  * (replace config)" is called. */
@@ -2376,8 +2383,11 @@ initPubSubNS0(UA_Server *server) {
         retVal |= initPubSubConfig2FileType(server);
 #endif
 
-#ifdef UA_ENABLE_PUBSUB_FILE_CONFIG
-        /* Adds method node to server. This method is used to load binary files for
+#if defined(UA_ENABLE_PUBSUB_FILE_CONFIG) && \
+    defined(UA_ENABLE_PUBSUB_FILE_CONFIG_LEGACY_METHODS)
+        /* DEPRECATED (see above): vendor-defined methods, superseded by the
+         * PubSubConfiguration FileType object.
+         * Adds method node to server. This method is used to load binary files for
          * PubSub configuration and delete / replace old PubSub configurations. */
         UA_Argument inputArgument;
         UA_Argument_init(&inputArgument);

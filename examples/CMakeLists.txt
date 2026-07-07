@@ -225,6 +225,9 @@ if(UA_ENABLE_PUBSUB)
 
     if(UA_ENABLE_PUBSUB_FILE_CONFIG)
         add_example(server_pubsub_file_configuration pubsub/server_pubsub_file_configuration.c)
+        if(UA_ENABLE_PUBSUB_INFORMATIONMODEL)
+            add_example(client_pubsub_config2_update pubsub/client_pubsub_config2_update.c)
+        endif()
     endif()
 
     add_example(server_pubsub_subscribe_custom_monitoring

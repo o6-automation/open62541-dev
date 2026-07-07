@@ -67,6 +67,13 @@ updateSizeVariable(UA_Server *server, UA_UInt64 size) {
         &size, &UA_TYPES[UA_TYPES_UINT64]);
 }
 
+static void
+updateLastModifiedTimeVariable(UA_Server *server, UA_DateTime when) {
+    writeFileNs0Variable(server,
+        UA_NS0ID_PUBLISHSUBSCRIBE_PUBSUBCONFIGURATION_LASTMODIFIEDTIME,
+        &when, &UA_TYPES[UA_TYPES_UTCTIME]);
+}
+
 /* Close the file handles of sessions that no longer exist */
 static void
 checkFileSessionsActive(UA_Server *server, void *data) {
@@ -433,11 +440,14 @@ closeAndUpdatePubSubConfigAction(UA_Server *server,
     res |= UA_Variant_setArrayCopy(&output[3], result.configurationObjects,
                                    result.configurationObjectsSize,
                                    &UA_TYPES[UA_TYPES_NODEID]);
+    UA_Boolean changesApplied = result.changesApplied;
     UA_PubSubConfigUpdateResult_clear(&result);
 
     /* The file handle is closed on success */
     UA_PubSubManager_removeConfigFileContext(psm, ctx);
     updateOpenCountVariable(server, psm);
+    if(changesApplied)
+        updateLastModifiedTimeVariable(server, UA_DateTime_now());
     return res;
 }
 
@@ -479,6 +489,7 @@ initPubSubConfig2FileType(UA_Server *server) {
         UA_NS0ID_PUBLISHSUBSCRIBE_PUBSUBCONFIGURATION_OPENCOUNT,
         &openCount, &UA_TYPES[UA_TYPES_UINT16]);
     updateSizeVariable(server, 0);
+    updateLastModifiedTimeVariable(server, 0); /* No modification yet */
 
     return retVal;
 }

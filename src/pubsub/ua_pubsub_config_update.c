@@ -522,7 +522,17 @@ applyRemove(UA_PubSubManager *psm, UA_ConfigUpdateOp *op, UA_NodeId *objId) {
         if(!c)
             return UA_STATUSCODE_BADNOMATCH;
         *objId = c->head.identifier;
-        return UA_PubSubConnection_delete(psm, c);
+        /* Disable before the delete so that open channels are shut down
+         * (same as UA_Server_removePubSubConnection) */
+        UA_PubSubConnection_setPubSubState(psm, c, UA_PUBSUBSTATE_DISABLED);
+        res = UA_PubSubConnection_delete(psm, c);
+        /* When channels are still open the deletion is deferred until they
+         * are closed in the next EventLoop iterations. The connection is
+         * already unusable (deleteFlag), so report success. The connection
+         * is not freed when the delete returns non-good. */
+        if(res == UA_STATUSCODE_BADINTERNALERROR && c->deleteFlag)
+            res = UA_STATUSCODE_GOOD;
+        return res;
     }
     case UA_PUBSUBCONFIGURATIONREFMASK_REFERENCEWRITERGROUP: {
         UA_PubSubConnection *c = findConnectionByName(psm, op->fileConn->name);

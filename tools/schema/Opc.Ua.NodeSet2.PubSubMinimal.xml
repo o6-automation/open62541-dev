@@ -2224,6 +2224,7 @@
       <Reference ReferenceType="HasProperty">i=25453</Reference> <!-- Writable -->
       <Reference ReferenceType="HasProperty">i=25454</Reference> <!-- UserWritable -->
       <Reference ReferenceType="HasProperty">i=25455</Reference> <!-- OpenCount -->
+      <Reference ReferenceType="HasProperty">i=25458</Reference> <!-- LastModifiedTime -->
       <Reference ReferenceType="HasComponent">i=25459</Reference> <!-- Open -->
       <Reference ReferenceType="HasComponent">i=25462</Reference> <!-- Close -->
       <Reference ReferenceType="HasComponent">i=25464</Reference> <!-- Read -->
@@ -2259,6 +2260,15 @@
   </UAVariable>
   <UAVariable NodeId="i=25455" BrowseName="OpenCount" ParentNodeId="i=25451" DataType="UInt16">
     <DisplayName>OpenCount</DisplayName>
+    <References>
+      <Reference ReferenceType="HasTypeDefinition">i=68</Reference>
+      <Reference ReferenceType="HasProperty" IsForward="false">i=25451</Reference>
+    </References>
+  </UAVariable>
+  <!-- Optional FileType property, instantiated for the last successful
+       CloseAndUpdate (not part of the standard instance declaration) -->
+  <UAVariable NodeId="i=25458" BrowseName="LastModifiedTime" ParentNodeId="i=25451" DataType="i=294">
+    <DisplayName>LastModifiedTime</DisplayName>
     <References>
       <Reference ReferenceType="HasTypeDefinition">i=68</Reference>
       <Reference ReferenceType="HasProperty" IsForward="false">i=25451</Reference>

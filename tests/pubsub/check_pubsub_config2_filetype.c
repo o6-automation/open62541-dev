@@ -154,6 +154,20 @@ readOpenCount(void) {
     return count;
 }
 
+static UA_DateTime
+readLastModifiedTime(void) {
+    UA_ReadValueId rvi;
+    UA_ReadValueId_init(&rvi);
+    rvi.nodeId = UA_NODEID_NUMERIC(0,
+        UA_NS0ID_PUBLISHSUBSCRIBE_PUBSUBCONFIGURATION_LASTMODIFIEDTIME);
+    rvi.attributeId = UA_ATTRIBUTEID_VALUE;
+    UA_DataValue dv = UA_Server_read(server, &rvi, UA_TIMESTAMPSTORETURN_NEITHER);
+    ck_assert(dv.hasValue);
+    UA_DateTime when = *(UA_DateTime*)dv.value.data;
+    UA_DataValue_clear(&dv);
+    return when;
+}
+
 /* Encode an update file with one connection element */
 static UA_ByteString
 buildUpdateFileBlob(const char *connName, UA_UInt16 publisherId) {
@@ -298,6 +312,9 @@ START_TEST(CloseAndUpdateFlow) {
     addBaseConnection();
     UA_PubSubManager *psm = getPSM(server);
 
+    /* No modification yet */
+    ck_assert(readLastModifiedTime() == 0);
+
     UA_UInt32 w = openFile(UA_OPENFILEMODE_WRITE | UA_OPENFILEMODE_ERASEEXISTING,
                            UA_STATUSCODE_GOOD);
     UA_ByteString blob = buildUpdateFileBlob("FileAddedConn", 5555);
@@ -338,9 +355,11 @@ START_TEST(CloseAndUpdateFlow) {
     ck_assert(!UA_NodeId_isNull(&newConnId));
     UA_CallMethodResult_clear(&result);
 
-    /* The connection was added, the handle is closed */
+    /* The connection was added, the handle is closed, the modification
+     * time is set */
     ck_assert_uint_eq(psm->connectionsSize, 2);
     ck_assert_uint_eq(readOpenCount(), 0);
+    ck_assert(readLastModifiedTime() != 0);
     UA_String connName = UA_STRING("FileAddedConn");
     UA_Boolean found = false;
     UA_PubSubConnection *c;

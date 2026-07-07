@@ -65,9 +65,28 @@
 >   `tests/pubsub/check_pubsub_config2_filetype.c` (5 cases via the call
 >   service, incl. the full Open(write)→Write→CloseAndUpdate client
 >   sequence).
-> * **Milestone 5 (remaining tests §4.1/4.6-4.8, Phase D/E examples/docs/CI,
->   C4 LastModifiedTime, C5 access control, C6 legacy-method deprecation
->   option) — not started.**
+> * **Milestone 5 (partial) — DONE (2026-07-07)**: C4 LastModifiedTime
+>   property (node hand-authored in the minimal nodeset — the official
+>   nodeset does not instantiate the optional FileType property; updated on
+>   successful CloseAndUpdate). C6 deprecation option
+>   `UA_ENABLE_PUBSUB_FILE_CONFIG_LEGACY_METHODS` (default ON) gating the
+>   vendor method nodes; CHANGES.md entry added. §4.6 state-machine tests
+>   `tests/pubsub/check_pubsub_config2_state.c` (7 cases: paused-add under
+>   disabled parent + cascade, modify of running WG keeps publishing,
+>   remove of operational connection, lifecycle callback counting + veto,
+>   state-change callbacks on modify, custom state machine survives ops,
+>   loopback pub/sub through the file-load path). Engine fix found by the
+>   tests: connection remove now disables first and treats the deferred
+>   channel-close deletion as success. Phase E: reworked
+>   `examples/pubsub/server_pubsub_file_configuration.c` (argv/leak fixes,
+>   demo publisher, FileType pointers), new
+>   `examples/pubsub/client_pubsub_config2_update.c` (Open/Read/decode +
+>   Open(write)/Write/CloseAndUpdate — verified end-to-end against the
+>   server example), doc section "File-Based Configuration" in
+>   server_pubsub.h (rendered into the pubsub docs).
+> * **Still open: tests §4.1 (encoding fuzz corpus)/§4.7-4.8 additions,
+>   Phase D CI variants, C5 access control beyond method permissions, SKS
+>   SecurityGroup element ops, PDS/SSDS modify.**
 
 Branch: `feat_pubsub_config2` — target: open62541 1.5 / master
 Reference: OPC 10000-14 v1.05.06 (`OPC-10000-14-v1.05.06.md` in the repo root)

@@ -199,13 +199,33 @@ Bidirectional mapping between Part 14 DataTypes and internal `UA_*Config`:
      lock held).
    * Session cleanup: repeated callback (10s) closes handles of ended
      sessions; removed automatically when no handles remain.
-   * Not implemented (plan M5): LastModifiedTime property (C4), access
-     control gating beyond executable permissions (C5), the
-     `UA_ENABLE_PUBSUB_FILE_CONFIG_LEGACY_METHODS` deprecation option (C6),
-     Phase D/E (CI variants, examples, doc section), tests §4.1/4.6-4.8.
    * Tests: `check_pubsub_config2_filetype.c` uses `UA_Server_call` — all
      handles belong to the admin session, so the session-cleanup path is
      not covered by it.
+6. ~~M5 (partial: C4, C6, §4.6, Phase E)~~ DONE 2026-07-07. Facts:
+   * LastModifiedTime (i=25458) is hand-authored in PubSubMinimal.xml — the
+     official nodeset does NOT instantiate this optional FileType property,
+     only the NodeIds.csv define exists. Updated on successful
+     CloseAndUpdate, 0 before the first update.
+   * `UA_ENABLE_PUBSUB_FILE_CONFIG_LEGACY_METHODS` (CMake, default ON,
+     define in config.h.in) gates the two vendor method nodes + their
+     callbacks in ua_pubsub_ns0.c. Announced for removal in CHANGES.md.
+   * Engine fix from §4.6 testing: `applyRemove` for connections disables
+     first and maps the deferred-deletion BADINTERNALERROR (open channels,
+     deleteFlag set, freed on later EL iterations) to GOOD. Note for tests:
+     removed WGs/connections can linger in the component lists until the
+     EventLoop unlinks them — compare by name/flag, not by count, and
+     iterate before asserting.
+   * componentLifecycleCallback caveat: a veto (bad return) on REMOVE also
+     blocks the compensating removal inside a vetoed CREATE, orphaning the
+     half-created component — application callbacks should only veto
+     creations (documented in check_pubsub_config2_state.c).
+   * The examples were verified end-to-end: server_pubsub_file_configuration
+     (fixed argv[2]->argv[1] bug + ByteString leak) + new
+     client_pubsub_config2_update read the config over the network, applied
+     CloseAndUpdate (ChangesApplied=true) and saw the added connection.
+   * Still open: §4.1 fuzz corpus, §4.7/4.8 additions, Phase D CI variants,
+     C5 access control, SKS SecurityGroup element ops, PDS/SSDS modify.
 
 ## Facts that save you time
 

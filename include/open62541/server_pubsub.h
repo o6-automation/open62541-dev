@@ -967,6 +967,55 @@ UA_Server_setReaderGroupEncryptionKeys(UA_Server *server,
 
 #ifdef UA_ENABLE_PUBSUB_FILE_CONFIG
 
+/**
+ * File-Based Configuration
+ * ------------------------
+ * With ``UA_ENABLE_PUBSUB_FILE_CONFIG`` the complete PubSub configuration
+ * can be exchanged as a file per OPC UA Part 14 (9.1.3.7). The file content
+ * is a UA Binary encoded ExtensionObject with a ``UABinaryFileDataType``
+ * whose body is a ``PubSubConfiguration2DataType``. The legacy
+ * ``PubSubConfigurationDataType`` body is still accepted on load; the export
+ * always emits the Configuration2 format. The namespaces array of the file
+ * maps the namespace indices used in the body -- unknown namespaces are
+ * added to the server on load and the NodeIds are remapped.
+ *
+ * Three access paths exist:
+ *
+ * - Full load/save via ByteString with the functions below (a load is a
+ *   destructive full replace of the running configuration).
+ * - Incremental updates via `UA_Server_updatePubSubConfig2` with the element
+ *   operations of the CloseAndUpdate method (add/match/modify/remove).
+ * - For OPC UA clients the standard ``PubSubConfiguration`` FileType object
+ *   below ``PublishSubscribe`` (requires the PubSub information model):
+ *   Open supports the modes Read (0x01), Read+Write (0x03) and
+ *   Write+EraseExisting (0x06); parallel readers are allowed while a writer
+ *   has exclusive access. The read snapshot is generated at open. Writes are
+ *   buffered per file handle -- a plain Close discards them, only
+ *   CloseAndUpdate applies the referenced element operations. File handles
+ *   are bound to the session and closed when the session ends.
+ *
+ * Interaction with the state machine:
+ *
+ * - Element operations never touch components that are not referenced.
+ * - An added component is auto-enabled when the ``enabled`` flag of its file
+ *   element is set. Under a disabled parent it waits in Paused and cascades
+ *   with the parent.
+ * - A modify preserves the operational state: a running component is
+ *   disabled, updated and restored.
+ * - Writer/reader operations temporarily disable the parent group (the
+ *   component model requires that) and restore it afterwards.
+ * - The ``componentLifecycleCallback`` is invoked for every add/remove and
+ *   can veto the element operation; the state-change callbacks fire for all
+ *   transitions triggered by an update.
+ *
+ * Not (yet) supported: SecurityGroup and PushTarget element references,
+ * modify of Published/SubscribedDataSets (use remove + add in one call),
+ * SubscribedDataSetMirror and PublishedEvents elements.
+ *
+ * The older vendor-defined method nodes "PubSub configuration" and
+ * "Delete PubSub config" below PublishSubscribe are deprecated and only
+ * available behind ``UA_ENABLE_PUBSUB_FILE_CONFIG_LEGACY_METHODS``. */
+
 /* Decodes the information from the ByteString. The ByteString contains a
  * UABinaryFileDataType-object with a PubSubConfiguration2DataType (or the
  * legacy PubSubConfigurationDataType) as body (see Part 14, PubSubConfigurationType).
