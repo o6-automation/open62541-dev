@@ -21,7 +21,7 @@
 /* The UABinaryFileDataType carries a namespaces array (via the
  * DataTypeSchemaHeader). Namespace indices used in the file body refer to this
  * array, where the entry [i] corresponds to the namespace index i+1 (ns0 is
- * skipped, see Part 14 Table 88). On loading, the indices are remapped to the
+ * skipped, see Part 14 v1.05 Table 88). On loading, the indices are remapped to the
  * server's NamespaceArray. Unknown namespaces are added to the server. Indices
  * beyond the file's namespaces array are kept unchanged (they are expected to
  * match the server's NamespaceArray directly). */
@@ -884,7 +884,7 @@ encodePubSubConfiguration2(UA_PubSubManager *psm,
 
     /* The namespaces array of the file lists the server NamespaceArray with
      * ns0 skipped. The namespace indices in the body match the server (Part 14
-     * Table 88). The array is borrowed from the server, the binFile is only
+     * v1.05 Table 88). The array is borrowed from the server, the binFile is only
      * encoded and not cleared. */
     UA_Server *server = psm->sc.server;
     if(server->namespacesSize > 1) {

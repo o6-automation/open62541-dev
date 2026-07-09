@@ -1,7 +1,7 @@
 /* This work is licensed under a Creative Commons CCZero 1.0 Universal License.
  * See http://creativecommons.org/publicdomain/zero/1.0/ for more information. */
 
-/* Client for the PubSubConfiguration FileType object (OPC UA Part 14,
+/* Client for the PubSubConfiguration FileType object (OPC UA Part 14 v1.05,
  * 9.1.3.7). The client demonstrates the standard sequences against a server
  * with UA_ENABLE_PUBSUB_FILE_CONFIG and the PubSub information model (for
  * example examples/pubsub/server_pubsub_file_configuration):

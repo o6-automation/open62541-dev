@@ -13,7 +13,8 @@
 #if defined(UA_ENABLE_PUBSUB) && defined(UA_ENABLE_PUBSUB_INFORMATIONMODEL) && \
     defined(UA_ENABLE_PUBSUB_FILE_CONFIG)
 
-/* FileType front-end for the PubSubConfiguration object (Part 14 9.1.3.7).
+/* FileType front-end for the PubSubConfiguration object (Part 14 v1.05,
+ * 9.1.3.7).
  * The file content is the ExtensionObject-encoded UABinaryFileDataType with
  * a PubSubConfiguration2DataType body:
  *

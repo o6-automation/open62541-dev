@@ -12,7 +12,7 @@
 #include "ua_pubsub_internal.h"
 
 /* Incremental update of the PubSub configuration with the semantics of the
- * Part 14 CloseAndUpdate method (9.1.3.7.6). The update file provides the
+ * Part 14 v1.05 CloseAndUpdate method (9.1.3.7.6). The update file provides the
  * configuration elements, the references select the elements and the
  * operation (add/match/modify/remove).
  *
@@ -328,7 +328,7 @@ matchEndpointArrays(const UA_EndpointDescription *a, size_t aSize,
     return true;
 }
 
-/* Field sets per Part 14 Table 239 */
+/* Field sets per Part 14 v1.05 Table 239 */
 static UA_Boolean
 matchConnection(UA_PubSubConnection *c, const UA_PubSubConnectionDataType *p) {
     UA_PubSubConnectionDataType live;

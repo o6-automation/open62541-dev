@@ -983,7 +983,7 @@ UA_WriterGroup_publishCallback(void *application /* UA_PubSubManager */,
     if(dataSetOrdering == UA_DATASETORDERINGTYPE_ASCENDINGWRITERIDSINGLE)
         maxDSM = 1;
 
-    /* Build array of enabled writers for ordering (DataSetOrdering, OPC UA Part 14 6.3.1.1.3) */
+    /* Build array of enabled writers for ordering (DataSetOrdering, OPC UA Part 14 v1.05 6.3.1.1.3) */
     UA_STACKARRAY(UA_DataSetWriter*, writers, wg->writersCount);
     size_t enabledWriters = 0;
     UA_DataSetWriter *dsw;

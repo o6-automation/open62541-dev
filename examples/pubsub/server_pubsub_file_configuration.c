@@ -1,7 +1,7 @@
 /* This work is licensed under a Creative Commons CCZero 1.0 Universal License.
  * See http://creativecommons.org/publicdomain/zero/1.0/ for more information. */
 
-/* Server with file-based PubSub configuration (OPC UA Part 14, 9.1.3.7)
+/* Server with file-based PubSub configuration (OPC UA Part 14 v1.05, 9.1.3.7)
  *
  * The configuration file is a UA Binary encoded ExtensionObject with a
  * UABinaryFileDataType that contains a PubSubConfiguration2DataType (or the
@@ -182,8 +182,7 @@ int main(int argc, char** argv) {
     /* 5. Start the server. Besides the ByteString load/save used here, the
      * configuration is accessible to clients through the standard
      * PubSubConfiguration FileType object (Open/Read/Write/CloseAndUpdate,
-     * Part 14 9.1.3.7). The older vendor-defined method nodes
-     * "PubSub configuration" and "Delete PubSub config" are deprecated. */
+     * Part 14 v1.05 9.1.3.7). */
     UA_LOG_INFO(UA_Log_Stdout, UA_LOGCATEGORY_APPLICATION, "Starting server...");
 
     UA_StatusCode statusCode = UA_STATUSCODE_GOOD;
