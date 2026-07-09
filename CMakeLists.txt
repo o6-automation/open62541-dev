@@ -384,14 +384,6 @@ if(UA_ENABLE_PUBSUB_FILE_CONFIG)
     endif()
 endif()
 
-# The vendor-defined method nodes "PubSub configuration" and "Delete PubSub
-# config" under PublishSubscribe predate the standard PubSubConfiguration
-# FileType object (Part 14 9.1.3.7) and are deprecated. They stay available
-# for one release; the option (and the methods) will be removed afterwards.
-option(UA_ENABLE_PUBSUB_FILE_CONFIG_LEGACY_METHODS
-       "Expose the deprecated vendor-defined PubSub configuration file methods" ON)
-mark_as_advanced(UA_ENABLE_PUBSUB_FILE_CONFIG_LEGACY_METHODS)
-
 option(UA_ENABLE_MQTT "Enable MQTT connections for the EventLoop" OFF)
 mark_as_advanced(UA_ENABLE_MQTT)
 if(UA_ENABLE_MQTT)

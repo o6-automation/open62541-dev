@@ -68,9 +68,11 @@
 > * **Milestone 5 (partial) — DONE (2026-07-07)**: C4 LastModifiedTime
 >   property (node hand-authored in the minimal nodeset — the official
 >   nodeset does not instantiate the optional FileType property; updated on
->   successful CloseAndUpdate). C6 deprecation option
->   `UA_ENABLE_PUBSUB_FILE_CONFIG_LEGACY_METHODS` (default ON) gating the
->   vendor method nodes; CHANGES.md entry added. §4.6 state-machine tests
+>   successful CloseAndUpdate). C6 deprecation option removed (clean cut):
+>   the vendor method nodes were removed outright instead of being gated
+>   behind `UA_ENABLE_PUBSUB_FILE_CONFIG_LEGACY_METHODS`; only the standard
+>   PubSubConfiguration FileType object (Part 14 v1.05, 9.1.3.7) is
+>   supported. §4.6 state-machine tests
 >   `tests/pubsub/check_pubsub_config2_state.c` (7 cases: paused-add under
 >   disabled parent + cascade, modify of running WG keeps publishing,
 >   remove of operational connection, lifecycle callback counting + veto,
@@ -447,10 +449,12 @@ New file: `src/pubsub/ua_pubsub_ns0_config2.c`
    behind the access-control plugin (session user allowed to modify PubSub
    config ⇒ else `Bad_UserAccessDenied`). Minimal first version: executable-on
    -object via standard method permissions, documented hook for finer control.
-6. **C6 Deprecation**: keep the two vendor method nodes for one release behind
-   a new option `UA_ENABLE_PUBSUB_FILE_CONFIG_LEGACY_METHODS` (default ON in
-   1.5, announce removal), so existing integrations keep working; document in
-   CHANGES.md.
+6. **C6 Legacy methods — removed**: the two vendor method nodes were removed
+   outright (clean cut) instead of being kept behind a deprecation option.
+   Only the standard `PubSubConfiguration` FileType object (Part 14 v1.05,
+   9.1.3.7) is supported now. The ByteString load/save C API is retained.
+   `UA_ENABLE_PUBSUB_FILE_CONFIG_LEGACY_METHODS` was removed from CMake,
+   config.h.in and ua_pubsub_ns0.c.
 
 ### Phase D — Build system & migration
 

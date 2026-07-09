@@ -2257,72 +2257,6 @@ subscribedDataSetTypeDestructor(UA_Server *server,
 /*         PubSub configurator       */
 /*************************************/
 
-#if defined(UA_ENABLE_PUBSUB_FILE_CONFIG) && \
-    defined(UA_ENABLE_PUBSUB_FILE_CONFIG_LEGACY_METHODS)
-
-/* DEPRECATED: The vendor-defined method nodes "PubSub configuration" and
- * "Delete PubSub config" predate the standard PubSubConfiguration FileType
- * object (Part 14 9.1.3.7). They remain available behind
- * UA_ENABLE_PUBSUB_FILE_CONFIG_LEGACY_METHODS for one release and will be
- * removed afterwards. */
-
-/* Callback function that will be executed when the method "PubSub configurator
- * (replace config)" is called. */
-static UA_StatusCode
-UA_loadPubSubConfigMethodCallback(UA_Server *server,
-                                  const UA_NodeId *sessionId, void *sessionContext,
-                                  const UA_NodeId *methodId, void *methodContext,
-                                  const UA_NodeId *objectId, void *objectContext,
-                                  size_t inputSize, const UA_Variant *input,
-                                  size_t outputSize, UA_Variant *output) {
-    UA_LOCK_ASSERT(&server->serviceMutex);
-    if(inputSize == 1) {
-        UA_ByteString *inputStr = (UA_ByteString*)input->data;
-        return UA_Server_loadPubSubConfigFromByteString(server, *inputStr);
-    } else if(inputSize > 1) {
-        return UA_STATUSCODE_BADTOOMANYARGUMENTS;
-    } else {
-        return UA_STATUSCODE_BADARGUMENTSMISSING;
-    }
-}
-
-static void
-deletePubSubConfigMethodFinalize(void *application, void *context) {
-    UA_PubSubManager *psm = (UA_PubSubManager *) application;
-    UA_Server *server = psm->drv.server;
-    lockServer(psm->drv.server);
-    UA_PubSubManager_clear(psm);
-    unlockServer(server);
-    UA_free(context);
-}
-
-/* Callback function that will be executed when the method "PubSub configurator
- *  (delete config)" is called. */
-static UA_StatusCode
-UA_deletePubSubConfigMethodCallback(UA_Server *server,
-                                    const UA_NodeId *sessionId, void *sessionContext,
-                                    const UA_NodeId *methodId, void *methodContext,
-                                    const UA_NodeId *objectId, void *objectContext,
-                                    size_t inputSize, const UA_Variant *input,
-                                    size_t outputSize, UA_Variant *output) {
-    UA_LOCK_ASSERT(&server->serviceMutex);
-    UA_PubSubManager *psm = getPSM(server);
-    if(psm) {
-        psm->drv.stop(&psm->drv);
-        UA_DelayedCallback *dc = (UA_DelayedCallback*)UA_calloc(1, sizeof(UA_DelayedCallback));
-        if(!dc)
-            return UA_STATUSCODE_BADOUTOFMEMORY;
-        dc->callback = deletePubSubConfigMethodFinalize;
-        dc->application = psm;
-        dc->context = dc;
-        server->config.eventLoop->addDelayedCallback(psm->drv.server->config.eventLoop, dc);
-    }
-
-    return UA_STATUSCODE_GOOD;
-}
-
-#endif
-
 UA_StatusCode
 initPubSubNS0(UA_Server *server) {
     UA_LOCK_ASSERT(&server->serviceMutex);
@@ -2378,50 +2312,9 @@ initPubSubNS0(UA_Server *server) {
         retVal |= setMethodNode_callback(server, UA_NS0ID(PUBSUBSTATUSTYPE_DISABLE), disablePubSubObjectAction);
 
 #ifdef UA_ENABLE_PUBSUB_FILE_CONFIG
-        /* FileType methods of the PubSubConfiguration object (Part 14
+        /* FileType methods of the PubSubConfiguration object (Part 14 v1.05
          * 9.1.3.7) */
         retVal |= initPubSubConfig2FileType(server);
-#endif
-
-#if defined(UA_ENABLE_PUBSUB_FILE_CONFIG) && \
-    defined(UA_ENABLE_PUBSUB_FILE_CONFIG_LEGACY_METHODS)
-        /* DEPRECATED (see above): vendor-defined methods, superseded by the
-         * PubSubConfiguration FileType object.
-         * Adds method node to server. This method is used to load binary files for
-         * PubSub configuration and delete / replace old PubSub configurations. */
-        UA_Argument inputArgument;
-        UA_Argument_init(&inputArgument);
-        inputArgument.description = UA_LOCALIZEDTEXT("", "PubSub config binfile");
-        inputArgument.name = UA_STRING("BinFile");
-        inputArgument.dataType = UA_TYPES[UA_TYPES_BYTESTRING].typeId;
-        inputArgument.valueRank = UA_VALUERANK_SCALAR;
-
-        UA_MethodAttributes configAttr = UA_MethodAttributes_default;
-        configAttr.description = UA_LOCALIZEDTEXT("","Load binary configuration file");
-        configAttr.displayName = UA_LOCALIZEDTEXT("","LoadPubSubConfigurationFile");
-        configAttr.executable = true;
-        configAttr.userExecutable = true;
-        retVal |= addMethodNode(server, UA_NODEID_NULL,
-                                UA_NS0ID(PUBLISHSUBSCRIBE), UA_NS0ID(HASORDEREDCOMPONENT),
-                                UA_QUALIFIEDNAME(1, "PubSub configuration"),
-                                &configAttr, UA_loadPubSubConfigMethodCallback,
-                                1, &inputArgument, UA_NODEID_NULL, NULL,
-                                0, NULL, UA_NODEID_NULL, NULL,
-                                NULL, NULL);
-
-        /* Adds method node to server. This method is used to delete the current
-         * PubSub configuration. */
-        configAttr.description = UA_LOCALIZEDTEXT("","Delete current PubSub configuration");
-        configAttr.displayName = UA_LOCALIZEDTEXT("","DeletePubSubConfiguration");
-        configAttr.executable = true;
-        configAttr.userExecutable = true;
-        retVal |= addMethodNode(server, UA_NODEID_NULL,
-                                UA_NS0ID(PUBLISHSUBSCRIBE), UA_NS0ID(HASORDEREDCOMPONENT),
-                                UA_QUALIFIEDNAME(1, "Delete PubSub config"),
-                                &configAttr, UA_deletePubSubConfigMethodCallback,
-                                0, NULL, UA_NODEID_NULL, NULL,
-                                0, NULL, UA_NODEID_NULL, NULL,
-                                NULL, NULL);
 #endif
     } else {
         /* Remove methods */

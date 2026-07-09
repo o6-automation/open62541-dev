@@ -33,15 +33,27 @@ aligned with OPC UA Part 14 v1.05 (9.1.3.7):
 - New API `UA_Server_getPubSubConfig2` returns a deep copy of the running
   configuration as `PubSubConfiguration2DataType`.
 - New API `UA_Server_updatePubSubConfig2` applies incremental updates with
-  the element operations of the Part 14 CloseAndUpdate method
+  the element operations of the Part 14 v1.05 CloseAndUpdate method
   (add/match/modify/remove with per-element status codes).
 - The standard `PubSubConfiguration` FileType object below PublishSubscribe
   is now functional (with the PubSub information model):
   Open/Close/Read/Write/GetPosition/SetPosition/ReserveIds/CloseAndUpdate.
-- The vendor-defined method nodes "PubSub configuration" and "Delete PubSub
-  config" are deprecated. They remain available behind the new build option
-  `UA_ENABLE_PUBSUB_FILE_CONFIG_LEGACY_METHODS` (default ON) and will be
-  removed in a future release.
+- The deprecated vendor-defined method nodes "PubSub configuration" and
+  "Delete PubSub config" below PublishSubscribe (load/delete the whole
+  config via a ByteString argument) have been removed. They predate the
+  standard `PubSubConfiguration` FileType object and are superseded by it;
+  the standard-compliant file configuration interface is now the only
+  supported path. Use `UA_Server_loadPubSubConfigFromByteString` /
+  `UA_Server_writePubSubConfigurationToByteString` for a full load/save,
+  or the `PubSubConfiguration` FileType object for client access.
+
+### PubSub DataSetOrdering Support (OPC UA Part 14)
+
+Support for DataSetOrdering mechanism as defined in OPC UA Part 14 v1.05,
+section 6.3.1.1.3 has been implemented for UADP encoding. The ordering of DataSetMessages
+within NetworkMessages can be controlled via the `dataSetOrdering` field in the
+`UA_UadpWriterGroupMessageDataType` configuration.
+
 
 ### Event API uses string-encoded of BrowsePaths
 

@@ -971,7 +971,7 @@ UA_Server_setReaderGroupEncryptionKeys(UA_Server *server,
  * File-Based Configuration
  * ------------------------
  * With ``UA_ENABLE_PUBSUB_FILE_CONFIG`` the complete PubSub configuration
- * can be exchanged as a file per OPC UA Part 14 (9.1.3.7). The file content
+ * can be exchanged as a file per OPC UA Part 14 v1.05 (9.1.3.7). The file content
  * is a UA Binary encoded ExtensionObject with a ``UABinaryFileDataType``
  * whose body is a ``PubSubConfiguration2DataType``. The legacy
  * ``PubSubConfigurationDataType`` body is still accepted on load; the export
@@ -1010,15 +1010,12 @@ UA_Server_setReaderGroupEncryptionKeys(UA_Server *server,
  *
  * Not (yet) supported: SecurityGroup and PushTarget element references,
  * modify of Published/SubscribedDataSets (use remove + add in one call),
- * SubscribedDataSetMirror and PublishedEvents elements.
- *
- * The older vendor-defined method nodes "PubSub configuration" and
- * "Delete PubSub config" below PublishSubscribe are deprecated and only
- * available behind ``UA_ENABLE_PUBSUB_FILE_CONFIG_LEGACY_METHODS``. */
+ * SubscribedDataSetMirror and PublishedEvents elements. */
 
 /* Decodes the information from the ByteString. The ByteString contains a
  * UABinaryFileDataType-object with a PubSubConfiguration2DataType (or the
- * legacy PubSubConfigurationDataType) as body (see Part 14, PubSubConfigurationType).
+ * legacy PubSubConfigurationDataType) as body (see Part 14 v1.05,
+ * PubSubConfigurationType, 9.1.3.7.1).
  * It will overwrite the current PubSub configuration of the server. The added
  * components are enabled automatically if their enabled-flag is set in the
  * config. Child-components are enabled first.
@@ -1031,7 +1028,7 @@ UA_Server_loadPubSubConfigFromByteString(UA_Server *server,
 
 /* Saves the current PubSub configuration of a server in a ByteString. The
  * content is a UABinaryFileDataType-object with a PubSubConfiguration2DataType
- * body (see Part 14, PubSubConfigurationType). */
+ * body (see Part 14 v1.05, PubSubConfigurationType, 9.1.3.7.1). */
 UA_EXPORT UA_StatusCode
 UA_Server_writePubSubConfigurationToByteString(UA_Server *server,
                                                UA_ByteString *buffer);
@@ -1044,7 +1041,7 @@ UA_Server_getPubSubConfig2(UA_Server *server,
                            UA_PubSubConfiguration2DataType *config);
 
 /* Result of an incremental configuration update. Matches the output
- * arguments of the Part 14 CloseAndUpdate method (9.1.3.7.6). Clean up with
+ * arguments of the Part 14 v1.05 CloseAndUpdate method (9.1.3.7.6). Clean up with
  * UA_PubSubConfigUpdateResult_clear. */
 typedef struct {
     UA_Boolean changesApplied;
@@ -1068,7 +1065,7 @@ UA_EXPORT void
 UA_PubSubConfigUpdateResult_clear(UA_PubSubConfigUpdateResult *result);
 
 /* Apply an incremental update to the running PubSub configuration with the
- * semantics of the Part 14 CloseAndUpdate method (9.1.3.7.6). The config is
+ * semantics of the Part 14 v1.05 CloseAndUpdate method (9.1.3.7.6). The config is
  * the decoded file content, the references select the elements to
  * add/match/modify/remove. Remove operations are processed first. Top-level
  * fields: Enabled and DataSetClasses are ignored, DefaultSecurityKeyServices

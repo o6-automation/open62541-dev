@@ -207,9 +207,12 @@ Bidirectional mapping between Part 14 DataTypes and internal `UA_*Config`:
      official nodeset does NOT instantiate this optional FileType property,
      only the NodeIds.csv define exists. Updated on successful
      CloseAndUpdate, 0 before the first update.
-   * `UA_ENABLE_PUBSUB_FILE_CONFIG_LEGACY_METHODS` (CMake, default ON,
-     define in config.h.in) gates the two vendor method nodes + their
-     callbacks in ua_pubsub_ns0.c. Announced for removal in CHANGES.md.
+    * `UA_ENABLE_PUBSUB_FILE_CONFIG_LEGACY_METHODS` and the two vendor
+      method nodes + their callbacks in ua_pubsub_ns0.c have been removed
+      (clean cut): only the standard PubSubConfiguration FileType object
+      (Part 14 v1.05, 9.1.3.7) is supported now. The ByteString load/save
+      C API (UA_Server_loadPubSubConfigFromByteString /
+      UA_Server_writePubSubConfigurationToByteString) is retained.
    * Engine fix from §4.6 testing: `applyRemove` for connections disables
      first and maps the deferred-deletion BADINTERNALERROR (open channels,
      deleteFlag set, freed on later EL iterations) to GOOD. Note for tests:
