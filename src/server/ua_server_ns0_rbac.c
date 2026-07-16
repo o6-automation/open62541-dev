@@ -17,6 +17,21 @@
 /* RBAC NS0 information model integration.
  * Known RBAC limitations are documented in ua_server_rbac.c. */
 
+#ifdef UA_ENABLE_AUDITING
+/* Emit a RoleMappingRuleChangedAuditEvent for a RoleType Method that changed a
+ * role's mapping rules (Part 18). Must be called with the server lock held. */
+static void
+auditRoleMappingChange(UA_Server *server, const UA_NodeId *sessionId,
+                       const UA_NodeId *methodId, const UA_NodeId *objectId,
+                       size_t inputSize, const UA_Variant *input, UA_StatusCode res) {
+    UA_Session *session = sessionId ? getSessionById(server, sessionId) : NULL;
+    UA_SecureChannel *channel = session ? session->channel : NULL;
+    auditRoleMappingRuleChangedEvent(server, channel, session,
+                                     res == UA_STATUSCODE_GOOD, objectId, methodId,
+                                     res, inputSize, (UA_Variant*)(uintptr_t)input);
+}
+#endif
+
 /* Resolve the Role Object owning a property (inverse HasProperty), so the data
  * source callbacks need no per-node context to release on node deletion. */
 static UA_StatusCode
@@ -379,6 +394,9 @@ addIdentityMethodCallback(UA_Server *server,
 
     res = UA_Server_updateRole(server, &role);
     UA_Role_clear(&role);
+#ifdef UA_ENABLE_AUDITING
+    auditRoleMappingChange(server, sessionId, methodId, objectId, inputSize, input, res);
+#endif
     return res;
 }
 
@@ -432,6 +450,9 @@ removeIdentityMethodCallback(UA_Server *server,
 
     res = UA_Server_updateRole(server, &role);
     UA_Role_clear(&role);
+#ifdef UA_ENABLE_AUDITING
+    auditRoleMappingChange(server, sessionId, methodId, objectId, inputSize, input, res);
+#endif
     return res;
 }
 
@@ -471,6 +492,9 @@ addApplicationMethodCallback(UA_Server *server,
 
     res = UA_Server_updateRole(server, &role);
     UA_Role_clear(&role);
+#ifdef UA_ENABLE_AUDITING
+    auditRoleMappingChange(server, sessionId, methodId, objectId, inputSize, input, res);
+#endif
     return res;
 }
 
@@ -514,6 +538,9 @@ removeApplicationMethodCallback(UA_Server *server,
 
     res = UA_Server_updateRole(server, &role);
     UA_Role_clear(&role);
+#ifdef UA_ENABLE_AUDITING
+    auditRoleMappingChange(server, sessionId, methodId, objectId, inputSize, input, res);
+#endif
     return res;
 }
 
@@ -558,6 +585,9 @@ addEndpointMethodCallback(UA_Server *server,
 
     res = UA_Server_updateRole(server, &role);
     UA_Role_clear(&role);
+#ifdef UA_ENABLE_AUDITING
+    auditRoleMappingChange(server, sessionId, methodId, objectId, inputSize, input, res);
+#endif
     return res;
 }
 
@@ -606,6 +636,9 @@ removeEndpointMethodCallback(UA_Server *server,
 
     res = UA_Server_updateRole(server, &role);
     UA_Role_clear(&role);
+#ifdef UA_ENABLE_AUDITING
+    auditRoleMappingChange(server, sessionId, methodId, objectId, inputSize, input, res);
+#endif
     return res;
 }
 
