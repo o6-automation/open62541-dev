@@ -99,6 +99,102 @@ UA_Server_addDataType(UA_Server *server, const UA_NodeId parentNodeId,
     return res;
 }
 
+/* Maximum number of namespaces that can be referenced from a single
+ * generated types array */
+#define UA_DATATYPEARRAY_MAXNAMESPACES 32
+
+UA_StatusCode
+UA_Server_addDataTypeArray(UA_Server *server, size_t typesSize,
+                           const UA_DataType *types,
+                           const UA_String *namespaceUris,
+                           size_t namespaceUrisSize) {
+    if(typesSize == 0 || !types)
+        return UA_STATUSCODE_GOOD;
+    if(namespaceUrisSize > UA_DATATYPEARRAY_MAXNAMESPACES)
+        return UA_STATUSCODE_BADINTERNALERROR;
+
+    lockServer(server);
+
+    /* Register the namespaces and build the index translation table. Index 0
+     * is always the OPC UA namespace. Empty URIs keep the identity mapping. */
+    UA_UInt16 nsMap[UA_DATATYPEARRAY_MAXNAMESPACES];
+    for(size_t i = 0; i < namespaceUrisSize; i++) {
+        nsMap[i] = (UA_UInt16)i;
+        if(i == 0 || !namespaceUris || namespaceUris[i].length == 0)
+            continue;
+        nsMap[i] = addNamespace(server, namespaceUris[i]);
+    }
+
+    /* Already registered? DataType NodeIds are unique in the server. */
+    UA_NodeId firstId = types[0].typeId;
+    if(firstId.namespaceIndex < namespaceUrisSize)
+        firstId.namespaceIndex = nsMap[firstId.namespaceIndex];
+    if(UA_findDataTypeWithCustom(&firstId, serverCustomTypes(server))) {
+        unlockServer(server);
+        return UA_STATUSCODE_GOOD;
+    }
+
+    /* Do the runtime namespace indices differ from the generation-time
+     * indices baked into the array? */
+    UA_Boolean needsCopy = false;
+    for(size_t i = 0; i < namespaceUrisSize && !needsCopy; i++)
+        needsCopy = (nsMap[i] != (UA_UInt16)i);
+
+    UA_DataTypeArray *ar = (UA_DataTypeArray*)
+        UA_calloc(1, sizeof(UA_DataTypeArray));
+    if(!ar) {
+        unlockServer(server);
+        return UA_STATUSCODE_BADOUTOFMEMORY;
+    }
+    ar->typesSize = typesSize;
+
+    if(!needsCopy) {
+        /* Link the (const) types array directly. It can stay in ROM. */
+        ar->types = types;
+        ar->cleanup = UA_DATATYPEARRAY_CLEANUP_STRUCT;
+    } else {
+        /* Copy the UA_DataType array and rewrite the namespace indices. The
+         * members and names contain no namespace-dependent data and remain
+         * shared with the (const) input array. */
+        UA_DataType *copy = (UA_DataType*)
+            UA_malloc(sizeof(UA_DataType) * typesSize);
+        if(!copy) {
+            UA_free(ar);
+            unlockServer(server);
+            return UA_STATUSCODE_BADOUTOFMEMORY;
+        }
+        memcpy(copy, types, sizeof(UA_DataType) * typesSize);
+        for(size_t i = 0; i < typesSize; i++) {
+            UA_DataType *t = &copy[i];
+            if(t->typeId.namespaceIndex < namespaceUrisSize)
+                t->typeId.namespaceIndex = nsMap[t->typeId.namespaceIndex];
+            if(t->binaryEncodingId.namespaceIndex < namespaceUrisSize)
+                t->binaryEncodingId.namespaceIndex =
+                    nsMap[t->binaryEncodingId.namespaceIndex];
+            if(t->xmlEncodingId.namespaceIndex < namespaceUrisSize)
+                t->xmlEncodingId.namespaceIndex =
+                    nsMap[t->xmlEncodingId.namespaceIndex];
+        }
+        ar->types = copy;
+        ar->cleanup = UA_DATATYPEARRAY_CLEANUP_ARRAY;
+        UA_LOG_WARNING(server->config.logging, UA_LOGCATEGORY_SERVER,
+                       "The runtime namespace indices differ from the indices "
+                       "baked into the DataType array. A copy of the array with "
+                       "adjusted indices was registered. Note that pointers "
+                       "into the original array carry the generation-time "
+                       "NodeIds; resolve the registered definition via "
+                       "UA_Server_findDataType instead. To avoid the copy, "
+                       "align the baked namespace indices (NAMESPACE_MAP "
+                       "generation argument) with the runtime namespace order.");
+    }
+
+    ar->next = server->config.customDataTypes;
+    server->config.customDataTypes = ar;
+
+    unlockServer(server);
+    return UA_STATUSCODE_GOOD;
+}
+
 UA_StatusCode
 UA_Server_addDataTypeFromDescription(UA_Server *server,
                                      const UA_ExtensionObject *description) {

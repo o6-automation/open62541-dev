@@ -65,6 +65,21 @@ The `cleanup` field of `UA_DataTypeArray` changed from `UA_Boolean` to a
 array) and `UA_DATATYPEARRAY_CLEANUP_STRUCT` (free only the structure).
 Existing code using the boolean values keeps its behavior.
 
+### UA_Server_addDataTypeArray
+
+The new method `UA_Server_addDataTypeArray` registers an array of
+DataType definitions together with a table of the namespace URIs behind
+the namespace indices baked into the array. The URIs are added to the
+server (if not already present). If the runtime namespace indices match
+the baked indices, the (const) array is linked into the configuration
+without copying and can reside in read-only memory. Otherwise a copy of
+the `UA_DataType` array with rewritten namespace indices is registered
+(member definitions and names remain shared with the input) and a
+warning is logged. In the copy case, pointers into the original array
+carry the generation-time NodeIds -- resolve the registered definition
+via `UA_Server_findDataType` when the runtime namespace order is not
+fixed.
+
 ### PubSub DataSetOrdering Support (OPC UA Part 14)
 
 Support for DataSetOrdering mechanism as defined in OPC UA Part 14, section
