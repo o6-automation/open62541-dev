@@ -1052,14 +1052,30 @@ UA_EXPORT UA_StatusCode
 UA_DataType_copy(const UA_DataType *t1, UA_DataType *t2);
 
 /* Datatype arrays with custom type definitions can be added in a linked list to
- * the client or server configuration. */
+ * the client or server configuration.
+ *
+ * The cleanup field defines what gets freed when the client or server
+ * configuration containing the UA_DataTypeArray is cleaned up. */
+#define UA_DATATYPEARRAY_CLEANUP_NONE   0 /* Nothing is freed. The structure and
+                                           * the types reside in static memory. */
+#define UA_DATATYPEARRAY_CLEANUP_ALL    1 /* Free the structure, the types array
+                                           * and the heap-allocated content of
+                                           * every type (names, members, ...).
+                                           * Identical to the previous
+                                           * cleanup == true behavior. */
+#define UA_DATATYPEARRAY_CLEANUP_ARRAY  2 /* Free the structure and the types
+                                           * array. The content of the types
+                                           * (names, members, ...) points to
+                                           * static (const) memory. */
+#define UA_DATATYPEARRAY_CLEANUP_STRUCT 3 /* Free only the structure. The types
+                                           * array resides in static (const)
+                                           * memory. */
+
 typedef struct UA_DataTypeArray {
     struct UA_DataTypeArray *next;
     size_t typesSize;
     const UA_DataType *types;
-    UA_Boolean cleanup; /* Free the array structure and its content when the
-                         * client or server configuration containing it is
-                         * cleaned up */
+    UA_Byte cleanup; /* One of the UA_DATATYPEARRAY_CLEANUP_* policies */
 } UA_DataTypeArray;
 
 /* Returns the offset and type of a structure member. The return value is false

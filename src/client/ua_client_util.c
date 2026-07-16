@@ -112,7 +112,7 @@ getRemoteDataTypes(UA_Client *client, UA_ReadRequest *req,
         UA_ReadResponse_clear(&rr);
         return UA_STATUSCODE_BADOUTOFMEMORY;
     }
-    dta->cleanup = true;
+    dta->cleanup = UA_DATATYPEARRAY_CLEANUP_ALL;
     UA_DataType *newTypes = (UA_DataType*)UA_calloc(typesSize, sizeof(UA_DataType));
     dta->types = newTypes;
     if(!newTypes) {

@@ -180,13 +180,24 @@ void
 UA_cleanupDataTypeWithCustom(UA_DataTypeArray *customTypes) {
     while(customTypes) {
         UA_DataTypeArray *next = customTypes->next;
-        if(customTypes->cleanup) {
+        switch(customTypes->cleanup) {
+        case UA_DATATYPEARRAY_CLEANUP_ALL:
             for(size_t i = 0; i < customTypes->typesSize; ++i) {
                 UA_DataType *type = (UA_DataType*)(uintptr_t)&customTypes->types[i];
                 UA_DataType_clear(type);
             }
             UA_free((void*)(uintptr_t)customTypes->types);
             UA_free(customTypes);
+            break;
+        case UA_DATATYPEARRAY_CLEANUP_ARRAY:
+            UA_free((void*)(uintptr_t)customTypes->types);
+            UA_free(customTypes);
+            break;
+        case UA_DATATYPEARRAY_CLEANUP_STRUCT:
+            UA_free(customTypes);
+            break;
+        default: /* UA_DATATYPEARRAY_CLEANUP_NONE: static memory */
+            break;
         }
         customTypes = next;
     }

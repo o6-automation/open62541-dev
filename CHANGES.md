@@ -54,7 +54,16 @@ The namespace index baked into a generated type array is now always
 derived from the namespace URI of the type (via `--namespaceMap`, or
 ascending assignment for unpinned URIs). Explicit `ns=` prefixes in the
 NodeId strings of the type definition files are ignored, as they carry
-file-local indices without a defined runtime meaning.
+ file-local indices without a defined runtime meaning.
+
+### UA_DataTypeArray.cleanup is a cleanup policy
+
+The `cleanup` field of `UA_DataTypeArray` changed from `UA_Boolean` to a
+`UA_Byte` policy: `UA_DATATYPEARRAY_CLEANUP_NONE` (0, previously
+`false`), `UA_DATATYPEARRAY_CLEANUP_ALL` (1, previously `true`),
+`UA_DATATYPEARRAY_CLEANUP_ARRAY` (free the structure and the types
+array) and `UA_DATATYPEARRAY_CLEANUP_STRUCT` (free only the structure).
+Existing code using the boolean values keeps its behavior.
 
 ### PubSub DataSetOrdering Support (OPC UA Part 14)
 
