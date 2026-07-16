@@ -75,6 +75,8 @@ typedef struct {
 typedef struct {
     size_t entriesSize;
     UA_RolePermission *entries;
+    UA_AccessRestrictionType defaultAccessRestrictions;
+    UA_Boolean hasDefaultAccessRestrictions;
 } UA_NamespaceMetadata;
 
 /* Internal RBAC lifecycle */
