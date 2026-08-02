@@ -692,14 +692,22 @@ UA_DataSetWriter_generateDataSetMessage(UA_PubSubManager *psm,
             for(size_t i = 0; i < dsw->lastSamplesCount; i++)
                 UA_DataValue_clear(&dsw->lastSamples[i].value);
 
-            /* Realloc PDS dependent memory */
-            dsw->lastSamplesCount = pds->fieldSize;
-            UA_DataSetWriterSample *newSamplesArray = (UA_DataSetWriterSample * )
+            /* Realloc PDS dependent memory.
+             * Keep lastSamplesCount pointing at the old (valid) array until the
+             * realloc succeeds. Setting lastSamplesCount before confirming the
+             * realloc leaves it out of sync with the actual allocation size: a
+             * subsequent delta-frame publish would iterate up to the new
+             * (larger) count but read/write the old (smaller) array. */
+            UA_DataSetWriterSample *newSamplesArray = (UA_DataSetWriterSample *)
                 UA_realloc(dsw->lastSamples,
-                           sizeof(UA_DataSetWriterSample) * dsw->lastSamplesCount);
-            if(!newSamplesArray)
+                           sizeof(UA_DataSetWriterSample) * pds->fieldSize);
+            if(!newSamplesArray) {
+                dsw->lastSamples = NULL;  /* realloc freed the old block */
+                dsw->lastSamplesCount = 0;
                 return UA_STATUSCODE_BADOUTOFMEMORY;
+            }
             dsw->lastSamples = newSamplesArray;
+            dsw->lastSamplesCount = pds->fieldSize;
             memset(dsw->lastSamples, 0,
                    sizeof(UA_DataSetWriterSample) * dsw->lastSamplesCount);
 
