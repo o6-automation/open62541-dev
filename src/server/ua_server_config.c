@@ -39,7 +39,7 @@ UA_ServerConfig_clear(UA_ServerConfig *config) {
     config->serverUrls = NULL;
     config->serverUrlsSize = 0;
 
-#ifdef UA_ENABLE_LWS
+#ifdef UA_ENABLE_WEBSOCKET_TRANSPORT
     UA_ByteString_clear(&config->webSocketCertificate);
     UA_ByteString_clear(&config->webSocketPrivateKey);
     UA_String_clear(&config->webSocketPrivateKeyPassword);

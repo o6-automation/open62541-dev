@@ -172,6 +172,20 @@ mark_as_advanced(UA_ENABLE_LWS)
 option(UA_ENABLE_LWS_MQTT "Enable the libwebsockets MQTT ConnectionManager" OFF)
 mark_as_advanced(UA_ENABLE_LWS_MQTT)
 
+# The server-side WS transport wiring in src/server/ua_server_ws.c (URL
+# scheme detection, ServerUrls/DiscoveryUrls handling, looking up a
+# UA_ConnectionManager named "websocket" in the EventLoop) has no
+# libwebsockets dependency of its own -- it only uses the generic
+# UA_ConnectionManager interface. Decouple it from UA_ENABLE_LWS so that a
+# non-POSIX platform can provide its own "websocket" UA_ConnectionManager
+# (e.g. built on a native HTTP/WS stack) without pulling in libwebsockets.
+option(UA_ENABLE_WEBSOCKET_TRANSPORT
+       "Enable the generic server-side OPC UA over WebSocket transport wiring (opc.ws:// / opc.wss://). Requires an external UA_ConnectionManager named \"websocket\" registered in the EventLoop; UA_ENABLE_LWS implies this and additionally provides such a ConnectionManager for POSIX." OFF)
+mark_as_advanced(UA_ENABLE_WEBSOCKET_TRANSPORT)
+if(UA_ENABLE_LWS)
+    set(UA_ENABLE_WEBSOCKET_TRANSPORT ON)
+endif()
+
 if(UA_ENABLE_LWS_MQTT AND NOT UA_ENABLE_LWS)
     message(FATAL_ERROR "UA_ENABLE_LWS_MQTT requires UA_ENABLE_LWS")
 endif()
@@ -957,7 +971,7 @@ if(UA_ENABLE_RBAC)
     list(APPEND internal_headers ${PROJECT_SOURCE_DIR}/src/server/ua_server_rbac.h)
 endif()
 
-if(UA_ENABLE_LWS)
+if(UA_ENABLE_WEBSOCKET_TRANSPORT)
     list(APPEND lib_sources ${PROJECT_SOURCE_DIR}/src/server/ua_server_ws.c)
 endif()
 

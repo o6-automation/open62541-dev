@@ -2255,7 +2255,7 @@ struct UA_ServerConfig {
                               * (default: 0 -> unbounded) */
     UA_Boolean tcpReuseAddr;
 
-#ifdef UA_ENABLE_LWS
+#ifdef UA_ENABLE_WEBSOCKET_TRANSPORT
     /* The following settings are specific to OPC UA Binary over WebSockets.
      * The transport is opt-in and requires an opc.wss ServerUrl together with
      * a TLS certificate/private-key pair. The TLS credentials protect the

@@ -700,7 +700,7 @@ updateEndpointUserIdentityToken(UA_Server *server,
 
 /* Also reused to create the EndpointDescription array in the
  * CreateSessionResponse */
-#ifdef UA_ENABLE_LWS
+#ifdef UA_ENABLE_WEBSOCKET_TRANSPORT
 static const UA_String wssBinaryTransportProfile = UA_STRING_STATIC(
     "http://opcfoundation.org/UA-Profile/Transport/wss-uasc-uabinary");
 
@@ -752,7 +752,7 @@ setCurrentEndpointsArray(UA_Server *server, const UA_String endpointUrl,
                 currentEndpointUrl = &sc->applicationDescription.discoveryUrls[i];
 
             const UA_String *transportProfileUri = &ep->transportProfileUri;
-#ifdef UA_ENABLE_LWS
+#ifdef UA_ENABLE_WEBSOCKET_TRANSPORT
             if(isWebSocketEndpointUrl(currentEndpointUrl))
                 transportProfileUri = &wssBinaryTransportProfile;
 #endif

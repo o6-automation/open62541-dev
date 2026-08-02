@@ -5,7 +5,7 @@
 #include "ua_server_internal.h"
 #include "mp_printf.h"
 
-#ifdef UA_ENABLE_LWS
+#ifdef UA_ENABLE_WEBSOCKET_TRANSPORT
 
 static UA_Boolean
 isWebSocketUrl(const UA_String *url) {
@@ -302,4 +302,4 @@ UA_WebSocketProtocolManager_new(void) {
     return &bpm->drv;
 }
 
-#endif /* UA_ENABLE_LWS */
+#endif /* UA_ENABLE_WEBSOCKET_TRANSPORT */

@@ -508,7 +508,7 @@ UA_Server_init(UA_Server *server) {
     res = addDriver(server, server->binaryDriver);
     UA_CHECK_STATUS(res, goto cleanup);
 
-#ifdef UA_ENABLE_LWS
+#ifdef UA_ENABLE_WEBSOCKET_TRANSPORT
     /* Initialize OPC UA Binary over WebSockets */
     server->webSocketDriver = UA_WebSocketProtocolManager_new();
     res = addDriver(server, server->webSocketDriver);
@@ -964,7 +964,7 @@ UA_Server_run_startup(UA_Server *server) {
     }
     UA_ServerConfig *config = &server->config;
 
-#ifdef UA_ENABLE_LWS
+#ifdef UA_ENABLE_WEBSOCKET_TRANSPORT
     if(config->webSocketEnabled) {
         const UA_String wss = UA_STRING_STATIC("opc.wss://");
         const UA_String ws  = UA_STRING_STATIC("opc.ws://");
