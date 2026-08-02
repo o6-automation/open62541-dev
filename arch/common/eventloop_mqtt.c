@@ -370,7 +370,11 @@ findIdenticalBrokerConnection(MQTTConnectionManager *mcm, const UA_KeyValueMap *
         UA_Boolean found = true;
         for(size_t i = 0; i < MQTT_BROKERPARAMETERSSIZE; i++) {
             const UA_Variant *v1 = UA_KeyValueMap_get(kvm, MQTTConnectionParameters[i].name);
-            const UA_Variant *v2 = UA_KeyValueMap_get(kvm, MQTTConnectionParameters[i].name);
+            /* Compare against the existing connection's params, not the incoming
+             * kvm again. The previous code fetched both v1 and v2 from kvm, so
+             * v1 == v2 was always true, causing all MQTT connections to share
+             * the first broker's socket. */
+            const UA_Variant *v2 = UA_KeyValueMap_get(&bc->params, MQTTConnectionParameters[i].name);
             if(v1 == v2)
                 continue;
             if(!v2)
