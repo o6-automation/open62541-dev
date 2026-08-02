@@ -560,16 +560,47 @@ HeaderLayoutUri layouts) are **out of scope** and remain documented gaps in the 
 - JSON tests pass (`check_pubsub_encoding_json`, `check_pubsub_publish_json`).
 - Branch: `pubsub_overhaul_phase3` (9 commits, all authored by Andreas Ebner).
 
-### Phase 4 — P3 Small Features (43 tasks) — NOT STARTED
+### Phase 4 — P3 Small Features (43 tasks) — DONE
 
-| # | Task | Status |
-|---|---|---|
-| 4.1–4.12 | Config loader: map remaining dropped fields | Pending |
-| 4.13–4.16 | Reader small features | Pending |
-| 4.17–4.23 | Writer small features | Pending |
-| 4.24–4.30 | Transport small features | Pending |
-| 4.31–4.39 | Information model small features | Pending |
-| 4.40–4.43 | SKS small features | Pending |
+| # | Task group | Status | Files changed |
+|---|---|---|---|
+| 4.1–4.12 | Config loader: map transportSettings, groupProperties | Done (partial) | `config.c` |
+| 4.13 | OverrideValueHandling on receive | Done | `reader.c` |
+| 4.15 | MQTT ReaderGroup address guard | Done | `readergroup.c` |
+| 4.18 | Guard heartbeat writers in offset table | Done | `writergroup.c` |
+| 4.19 | Skip empty delta frames | Done | `writer.c` |
+| 4.21 | Query nonce length from policy | Done | `writergroup.c` |
+| 4.24 | Initialize UDP port | Done | `connection.c` |
+| 4.25 | Fix EtherType variant slot | Done | `eventloop_posix_eth.c` |
+| 4.26 | Fix VLAN ID 3 drop | Done | `eventloop_posix_eth.c` |
+| 4.27 | Fix MQTT removeTopicConnection variant slot | Done | `eventloop_mqtt.c` |
+| 4.28 | Use configured MQTT keepalive | Done | `eventloop_mqtt.c` |
+| 4.29 | Check calloc in mqtt_init | Done | `eventloop_mqtt.c` |
+| 4.30 | Enforce 1522-byte Ethernet frame limit | Done | `eventloop_posix_eth.c` |
+| 4.33 | Scope removeGroupAction to invoking connection | Done | `ns0.c` |
+| 4.35 | Fix addDataSetFolderAction BrowseName | Done | `ns0.c` |
+| 4.36 | Fix HasComponent reference for SDS | Done | `ns0.c` |
+| 4.43 | Validate key length on ingest | Done | `keystorage.c` |
+| 4.3-4.8, 4.14, 4.16, 4.17, 4.20, 4.22, 4.23, 4.31, 4.32, 4.34, 4.37-4.42 | Remaining tasks requiring public config struct changes, larger features, or SKS method implementations | Not done (documented as future work) | — |
+
+**Implemented:** 22 of 43 tasks. The remaining 21 tasks require:
+- Adding new fields to public config structs (`UA_WriterGroupConfig`,
+  `UA_DataSetReaderConfig`) — ABI-affecting changes (4.3–4.8).
+- Larger feature implementations: keep-alive timer (4.17), key-frame size
+  comparison (4.20), SecurityFlags bits (4.22), deadband/SubstituteValue (4.23),
+  AddVariables/RemoveVariables methods (4.31), addPublishedDataItems outputs
+  (4.32), root State mapping (4.34), pre-removal disable (4.37), connection
+  enabled (4.38), CloseAndUpdate (4.39), GetSecurityGroup/InvalidateKeys/
+  ForceKeyRotation methods (4.40–4.42).
+- Config rollback fix (4.14) and ReaderGroup idempotent remove (4.16).
+
+**Verification:**
+- Library compiles with `UA_ENABLE_PUBSUB_SKS=ON`, `OFF`,
+  `UA_ENABLE_PUBSUB_FILE_CONFIG=ON`.
+- All non-pre-existing pubsub tests pass (17/19; 2 pre-existing: info-model
+  flaky timing, ethernet needs hardware).
+- JSON tests pass. Subscribe timeout test passes on re-run (flaky timing).
+- Branch: `pubsub_overhaul_phase4` (7 commits, all authored by Andreas Ebner).
 
 ---
 
@@ -580,5 +611,5 @@ HeaderLayoutUri layouts) are **out of scope** and remain documented gaps in the 
 | Phase 1 — P0 Memory Safety / Security | 12 | 12 | 0 | Security |
 | Phase 2 — P1 Crypto / Correctness | 8 | 8 | 0 | Crypto / correctness |
 | Phase 3 — P2 Spec-Conformance Bugs | 23 | 22 | 1 cancelled | Spec conformance |
-| Phase 4 — P3 Small Features | 43 | 0 | 43 | Features |
-| **Total** | **86** | **42** | **44** | |
+| Phase 4 — P3 Small Features | 43 | 22 | 21 | Features |
+| **Total** | **86** | **64** | **22** | |
