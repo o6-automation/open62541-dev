@@ -966,24 +966,31 @@ UA_Server_run_startup(UA_Server *server) {
 
 #ifdef UA_ENABLE_LWS
     if(config->webSocketEnabled) {
-        const UA_String prefix = UA_STRING_STATIC("opc.wss://");
+        const UA_String wss = UA_STRING_STATIC("opc.wss://");
+        const UA_String ws  = UA_STRING_STATIC("opc.ws://");
         UA_Boolean haveWebSocketUrl = false;
+        UA_Boolean haveSecureUrl = false;
         for(size_t i = 0; i < config->serverUrlsSize; i++) {
             const UA_String *url = &config->serverUrls[i];
-            if(url->length >= prefix.length &&
-               memcmp(url->data, prefix.data, prefix.length) == 0) {
+            if(url->length >= wss.length &&
+               memcmp(url->data, wss.data, wss.length) == 0) {
                 haveWebSocketUrl = true;
+                haveSecureUrl = true;
                 break;
+            }
+            if(url->length >= ws.length &&
+               memcmp(url->data, ws.data, ws.length) == 0) {
+                haveWebSocketUrl = true;
             }
         }
         if(!haveWebSocketUrl) {
             UA_LOG_ERROR(config->logging, UA_LOGCATEGORY_SERVER,
-                         "WebSocket transport is enabled but no opc.wss "
-                         "ServerUrl is configured");
+                         "WebSocket transport is enabled but no opc.ws:// or "
+                         "opc.wss:// ServerUrl is configured");
             return UA_STATUSCODE_BADCONFIGURATIONERROR;
         }
-        if(config->webSocketCertificate.length == 0 ||
-           config->webSocketPrivateKey.length == 0) {
+        if(haveSecureUrl && (config->webSocketCertificate.length == 0 ||
+                             config->webSocketPrivateKey.length == 0)) {
             UA_LOG_ERROR(config->logging, UA_LOGCATEGORY_SERVER,
                          "WebSocket transport is enabled but its TLS "
                          "certificate or private key is empty");
