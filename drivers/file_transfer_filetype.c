@@ -15,7 +15,7 @@
 
 UA_StatusCode
 getChildId(UA_Server *server, const UA_NodeId parent, const char *name,
-            UA_NodeId *out) {
+           UA_NodeId *out) {
     UA_QualifiedName qn = UA_QUALIFIEDNAME(0, (char*)(uintptr_t)name);
     UA_BrowsePathResult bpr =
         UA_Server_browseSimplifiedBrowsePath(server, parent, 1, &qn);
@@ -240,6 +240,9 @@ resolveHandle(FileTransferDriver *ftd, const UA_NodeId *sessionId,
     FTHandle *h = findFTHandle(ftd, sessionId, handleId);
     if(!h || !UA_NodeId_equal(&h->file->nodeId, objectId))
         return UA_STATUSCODE_BADINVALIDARGUMENT;
+    /* Bump the activity timestamp for the ClientProcessingTimeout sweep */
+    if(h->file->temporary)
+        h->file->lastActivity = UA_DateTime_now();
     *outHandle = h;
     return UA_STATUSCODE_GOOD;
 }
@@ -256,6 +259,11 @@ openFileHandle(UA_Server *server, FileTransferDriver *ftd, FTNode *node,
        ((mode & UA_OPENFILEMODE_ERASEEXISTING) &&
         !(mode & UA_OPENFILEMODE_WRITE)))
         return UA_STATUSCODE_BADINVALIDARGUMENT;
+
+    /* A temporary transfer file is private to the Session that generated it
+     * (Part 20, 4.4): reject an Open from any other Session. */
+    if(node->temporary && !UA_NodeId_equal(&node->creatorSession, sessionId))
+        return UA_STATUSCODE_BADUSERACCESSDENIED;
 
     /* Locking semantics (Part 20, 4.2.2): a file that is open cannot be
      * opened for writing; a file that is open for writing cannot be opened

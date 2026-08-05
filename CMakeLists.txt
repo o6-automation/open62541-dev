@@ -1323,6 +1323,8 @@ list(APPEND plugin_sources ${PROJECT_SOURCE_DIR}/drivers/file_transfer_driver.c)
 list(APPEND plugin_sources ${PROJECT_SOURCE_DIR}/drivers/file_transfer_filetype.c)
 list(APPEND plugin_sources ${PROJECT_SOURCE_DIR}/drivers/file_transfer_directory.c)
 list(APPEND plugin_sources ${PROJECT_SOURCE_DIR}/drivers/file_transfer_backend_localfs.c)
+list(APPEND plugin_sources ${PROJECT_SOURCE_DIR}/drivers/file_transfer_backend_memory.c)
+list(APPEND plugin_sources ${PROJECT_SOURCE_DIR}/drivers/file_transfer_temporary.c)
 
 # For file based server and client configuration
 if(UA_ENABLE_JSON_ENCODING)

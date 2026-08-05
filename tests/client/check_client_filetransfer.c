@@ -39,6 +39,12 @@ static UA_FileTransferDriver *ftDriver;
 static UA_NodeId fileNodeId;
 static UA_NodeId openCountId;
 
+/* Temporary file transfer objects (default and short-timeout) */
+static UA_NodeId tempObjId;
+static UA_NodeId tempTimeoutObjId;
+static UA_Boolean tempApplyCalled;
+static UA_ByteString tempApplied;
+
 /* Simple single-file in-memory backend for the test */
 static UA_ByteString fileContent;
 
@@ -149,6 +155,15 @@ singleFileBackend(void) {
     return b;
 }
 
+static UA_StatusCode
+tfApplyWrite(UA_Server *s, const UA_NodeId *sessionId,
+             const UA_Variant *generateOptions, void *ctx,
+             const UA_ByteString content) {
+    tempApplyCalled = true;
+    UA_ByteString_clear(&tempApplied);
+    return UA_ByteString_copy(&content, &tempApplied);
+}
+
 #endif /* UA_TEST_ENABLE_FILETRANSFER */
 
 THREAD_CALLBACK(serverloop) {
@@ -185,6 +200,29 @@ static void setup(void) {
     ck_assert_uint_eq(bpr.statusCode, UA_STATUSCODE_GOOD);
     UA_NodeId_copy(&bpr.targets[0].targetId.nodeId, &openCountId);
     UA_BrowsePathResult_clear(&bpr);
+
+    /* Temporary transfer objects (created before the server thread starts) */
+    tempApplyCalled = false;
+    UA_ByteString_init(&tempApplied);
+
+    UA_FileTransferTemporaryOptions topts;
+    memset(&topts, 0, sizeof(topts));
+    topts.applyWrite = tfApplyWrite;
+    tempObjId = UA_NODEID_NULL;
+    ck_assert_uint_eq(
+        ftDriver->addTemporaryFileTransfer(ftDriver, UA_NODEID_NULL,
+            UA_NS0ID(OBJECTSFOLDER), UA_QUALIFIEDNAME(0, "FirmwareUpdate"),
+            &topts, &tempObjId), UA_STATUSCODE_GOOD);
+
+    UA_FileTransferTemporaryOptions qopts;
+    memset(&qopts, 0, sizeof(qopts));
+    qopts.applyWrite = tfApplyWrite;
+    qopts.clientProcessingTimeoutMs = 50.0;
+    tempTimeoutObjId = UA_NODEID_NULL;
+    ck_assert_uint_eq(
+        ftDriver->addTemporaryFileTransfer(ftDriver, UA_NODEID_NULL,
+            UA_NS0ID(OBJECTSFOLDER), UA_QUALIFIEDNAME(0, "QuickTimeout"),
+            &qopts, &tempTimeoutObjId), UA_STATUSCODE_GOOD);
 #endif
 
     UA_Server_run_startup(server);
@@ -202,6 +240,9 @@ static void teardown(void) {
     ck_assert_uint_eq(ftDriver->drv.free(&ftDriver->drv), UA_STATUSCODE_GOOD);
     UA_NodeId_clear(&fileNodeId);
     UA_NodeId_clear(&openCountId);
+    UA_NodeId_clear(&tempObjId);
+    UA_NodeId_clear(&tempTimeoutObjId);
+    UA_ByteString_clear(&tempApplied);
     UA_ByteString_clear(&fileContent);
 #endif
     UA_Server_delete(server);
@@ -271,6 +312,156 @@ START_TEST(sessionCloseReleasesHandles) {
     ck_assert_uint_eq(openCount, 0);
 } END_TEST
 
+/* Call a method over the wire; returns the StatusCode and (on Good) the
+ * outputs, which the caller frees. */
+static UA_StatusCode
+clientCall(UA_Client *client, const UA_NodeId object, UA_UInt32 method,
+           size_t inSize, UA_Variant *in, size_t *outSize, UA_Variant **out) {
+    return UA_Client_call(client, object, UA_NODEID_NUMERIC(0, method),
+                          inSize, in, outSize, out);
+}
+
+/* A full write transfer over the wire commits the content to the application */
+START_TEST(tempWriteCommitOverWire) {
+    UA_Client *client = UA_Client_newForUnitTest();
+    ck_assert_uint_eq(UA_Client_connect(client, "opc.tcp://localhost:4840"),
+                      UA_STATUSCODE_GOOD);
+
+    /* GenerateFileForWrite */
+    UA_Variant options;
+    UA_Variant_init(&options);
+    size_t outSize = 0;
+    UA_Variant *out = NULL;
+    ck_assert_uint_eq(clientCall(client, tempObjId,
+        UA_NS0ID_TEMPORARYFILETRANSFERTYPE_GENERATEFILEFORWRITE, 1, &options,
+        &outSize, &out), UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(outSize, 2);
+    UA_NodeId tmpFile;
+    UA_NodeId_copy((UA_NodeId*)out[0].data, &tmpFile);
+    UA_UInt32 handle = *(UA_UInt32*)out[1].data;
+    UA_Array_delete(out, outSize, &UA_TYPES[UA_TYPES_VARIANT]);
+
+    /* Write the content on the temporary FileType Object */
+    UA_ByteString blob = UA_BYTESTRING("firmware-blob-v2");
+    UA_Variant writeIn[2];
+    UA_Variant_setScalar(&writeIn[0], &handle, &UA_TYPES[UA_TYPES_UINT32]);
+    UA_Variant_setScalar(&writeIn[1], &blob, &UA_TYPES[UA_TYPES_BYTESTRING]);
+    ck_assert_uint_eq(clientCall(client, tmpFile, UA_NS0ID_FILETYPE_WRITE,
+        2, writeIn, &outSize, &out), UA_STATUSCODE_GOOD);
+    UA_Array_delete(out, outSize, &UA_TYPES[UA_TYPES_VARIANT]);
+
+    /* CloseAndCommit applies the content */
+    UA_Variant commitIn;
+    UA_Variant_setScalar(&commitIn, &handle, &UA_TYPES[UA_TYPES_UINT32]);
+    ck_assert_uint_eq(clientCall(client, tempObjId,
+        UA_NS0ID_TEMPORARYFILETRANSFERTYPE_CLOSEANDCOMMIT, 1, &commitIn,
+        &outSize, &out), UA_STATUSCODE_GOOD);
+    UA_Array_delete(out, outSize, &UA_TYPES[UA_TYPES_VARIANT]);
+
+    ck_assert(tempApplyCalled);
+    UA_String expected = UA_STRING("firmware-blob-v2");
+    ck_assert(UA_String_equal(&tempApplied, &expected));
+
+    UA_NodeId_clear(&tmpFile);
+    UA_Client_disconnect(client);
+    UA_Client_delete(client);
+} END_TEST
+
+/* Disconnecting mid-transfer aborts the write without applying it */
+START_TEST(tempSessionCloseAborts) {
+    UA_Client *client = UA_Client_newForUnitTest();
+    ck_assert_uint_eq(UA_Client_connect(client, "opc.tcp://localhost:4840"),
+                      UA_STATUSCODE_GOOD);
+
+    UA_Variant options;
+    UA_Variant_init(&options);
+    size_t outSize = 0;
+    UA_Variant *out = NULL;
+    ck_assert_uint_eq(clientCall(client, tempObjId,
+        UA_NS0ID_TEMPORARYFILETRANSFERTYPE_GENERATEFILEFORWRITE, 1, &options,
+        &outSize, &out), UA_STATUSCODE_GOOD);
+    UA_NodeId tmpFile;
+    UA_NodeId_copy((UA_NodeId*)out[0].data, &tmpFile);
+    UA_UInt32 handle = *(UA_UInt32*)out[1].data;
+    UA_Array_delete(out, outSize, &UA_TYPES[UA_TYPES_VARIANT]);
+
+    UA_ByteString blob = UA_BYTESTRING("partial-upload");
+    UA_Variant writeIn[2];
+    UA_Variant_setScalar(&writeIn[0], &handle, &UA_TYPES[UA_TYPES_UINT32]);
+    UA_Variant_setScalar(&writeIn[1], &blob, &UA_TYPES[UA_TYPES_BYTESTRING]);
+    ck_assert_uint_eq(clientCall(client, tmpFile, UA_NS0ID_FILETYPE_WRITE,
+        2, writeIn, &outSize, &out), UA_STATUSCODE_GOOD);
+    UA_Array_delete(out, outSize, &UA_TYPES[UA_TYPES_VARIANT]);
+
+    /* Disconnect without CloseAndCommit */
+    UA_Client_disconnect(client);
+    UA_Client_delete(client);
+
+    /* The transaction was aborted: applyWrite must not have been called. Wait
+     * until the temporary file is gone (the session-close handler deleted it). */
+    UA_StatusCode existRes = UA_STATUSCODE_GOOD;
+    for(int i = 0; i < 1000 && existRes == UA_STATUSCODE_GOOD; i++) {
+        UA_fakeSleep(10);
+        shortSleep();
+        UA_QualifiedName bn;
+        existRes = UA_Server_readBrowseName(server, tmpFile, &bn);
+        if(existRes == UA_STATUSCODE_GOOD)
+            UA_QualifiedName_clear(&bn);
+    }
+    ck_assert_uint_ne(existRes, UA_STATUSCODE_GOOD);
+    ck_assert(!tempApplyCalled);
+
+    /* The write lock is released: a fresh write transfer succeeds */
+    UA_Client *client2 = UA_Client_newForUnitTest();
+    ck_assert_uint_eq(UA_Client_connect(client2, "opc.tcp://localhost:4840"),
+                      UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(clientCall(client2, tempObjId,
+        UA_NS0ID_TEMPORARYFILETRANSFERTYPE_GENERATEFILEFORWRITE, 1, &options,
+        &outSize, &out), UA_STATUSCODE_GOOD);
+    UA_Array_delete(out, outSize, &UA_TYPES[UA_TYPES_VARIANT]);
+
+    UA_NodeId_clear(&tmpFile);
+    UA_Client_disconnect(client2);
+    UA_Client_delete(client2);
+} END_TEST
+
+/* An idle transfer is cancelled after ClientProcessingTimeout */
+START_TEST(tempWriteTimeout) {
+    UA_Client *client = UA_Client_newForUnitTest();
+    ck_assert_uint_eq(UA_Client_connect(client, "opc.tcp://localhost:4840"),
+                      UA_STATUSCODE_GOOD);
+
+    UA_Variant options;
+    UA_Variant_init(&options);
+    size_t outSize = 0;
+    UA_Variant *out = NULL;
+    ck_assert_uint_eq(clientCall(client, tempTimeoutObjId,
+        UA_NS0ID_TEMPORARYFILETRANSFERTYPE_GENERATEFILEFORWRITE, 1, &options,
+        &outSize, &out), UA_STATUSCODE_GOOD);
+    UA_NodeId tmpFile;
+    UA_NodeId_copy((UA_NodeId*)out[0].data, &tmpFile);
+    UA_Array_delete(out, outSize, &UA_TYPES[UA_TYPES_VARIANT]);
+
+    /* Idle past the 50 ms timeout and the 1000 ms sweep interval. Poll the
+     * temporary file node server-side (this does not reset the idle timer, as
+     * any Method call on the handle would) until the sweep deletes it. */
+    UA_StatusCode existRes = UA_STATUSCODE_GOOD;
+    for(int i = 0; i < 1000 && existRes == UA_STATUSCODE_GOOD; i++) {
+        UA_fakeSleep(20);
+        shortSleep();
+        UA_QualifiedName bn;
+        existRes = UA_Server_readBrowseName(server, tmpFile, &bn);
+        if(existRes == UA_STATUSCODE_GOOD)
+            UA_QualifiedName_clear(&bn);
+    }
+    ck_assert_uint_ne(existRes, UA_STATUSCODE_GOOD);
+    ck_assert(!tempApplyCalled);
+
+    UA_NodeId_clear(&tmpFile);
+    UA_Client_disconnect(client);
+    UA_Client_delete(client);
+} END_TEST
+
 #endif /* UA_TEST_ENABLE_FILETRANSFER */
 
 int main(void) {
@@ -279,6 +470,9 @@ int main(void) {
     TCase *tc = tcase_create("File Transfer Session Lifecycle");
 #ifdef UA_TEST_ENABLE_FILETRANSFER
     tcase_add_test(tc, sessionCloseReleasesHandles);
+    tcase_add_test(tc, tempWriteCommitOverWire);
+    tcase_add_test(tc, tempSessionCloseAborts);
+    tcase_add_test(tc, tempWriteTimeout);
 #endif
     tcase_add_checked_fixture(tc, setup, teardown);
     suite_add_tcase(s, tc);

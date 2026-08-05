@@ -199,6 +199,77 @@ typedef struct {
 } UA_FileTransferMountOptions;
 
 /**
+ * Temporary File Transfer (Part 20, 4.4)
+ * ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+ *
+ * A TemporaryFileTransferType Object models handshake-based transfers used for
+ * firmware updates, configuration import/export and report generation. A
+ * transfer creates a temporary FileType Object that is not browsable and is
+ * reachable only by the NodeId and fileHandle returned by the generate Method,
+ * within the creating Session.
+ *
+ * This implementation completes the GenerateFileForRead, GenerateFileForWrite
+ * and CloseAndCommit Methods synchronously and always returns a null
+ * completionStateMachine. The optional FileTransferStateMachineType (used only
+ * for asynchronous preparation/processing, OptionalPlaceholder in the spec) is
+ * therefore not instantiated. This is conformant with the mandatory parts of
+ * TemporaryFileTransferType. */
+
+/* Read transfer: produce the content the Client will download. generateOptions
+ * is the (possibly empty) BaseDataType argument of GenerateFileForRead. The
+ * application allocates outContent; the driver takes ownership and frees it.
+ * Return a Bad StatusCode (e.g. Bad_NotReadable, Bad_UserAccessDenied) to fail
+ * the transfer. */
+typedef UA_StatusCode
+(*UA_FileTransferGenerateReadCallback)(UA_Server *server,
+                                       const UA_NodeId *sessionId,
+                                       const UA_Variant *generateOptions,
+                                       void *transferContext,
+                                       UA_ByteString *outContent);
+
+/* Write transfer: apply the content the Client uploaded, invoked on
+ * CloseAndCommit. content is borrowed (valid only during the call).
+ * generateOptions is the argument captured at GenerateFileForWrite time.
+ * Return a Bad StatusCode to fail the commit; the temporary file is deleted
+ * regardless. */
+typedef UA_StatusCode
+(*UA_FileTransferApplyWriteCallback)(UA_Server *server,
+                                     const UA_NodeId *sessionId,
+                                     const UA_Variant *generateOptions,
+                                     void *transferContext,
+                                     const UA_ByteString content);
+
+typedef struct {
+    /* At least one direction must be set. A NULL generateForRead makes the
+     * Object write-only (GenerateFileForRead returns Bad_NotReadable); a NULL
+     * applyWrite makes it read-only (GenerateFileForWrite returns
+     * Bad_NotWritable). */
+    UA_FileTransferGenerateReadCallback generateForRead;
+    UA_FileTransferApplyWriteCallback applyWrite;
+
+    /* Passed back to both callbacks */
+    void *transferContext;
+
+    /* ClientProcessingTimeout in milliseconds: the maximum time the Server
+     * accepts between the Method calls of a transfer transaction. 0 selects a
+     * default. An exceeded timeout cancels the transaction and deletes the
+     * temporary file. */
+    UA_Double clientProcessingTimeoutMs;
+
+    /* Optional temp storage. If hasBackend is set, temporary files live in the
+     * provided backend (e.g. a local-filesystem temp directory); otherwise the
+     * driver uses an internal in-memory store. Ownership follows addFileSystem:
+     * the backend is cleared on removal or driver free. */
+    UA_Boolean hasBackend;
+    UA_FileTransferBackend backend;
+
+    /* By default more than one parallel read transfer is allowed. Set this to
+     * disable parallel reads so that read transfers are exclusive too. A write
+     * transfer is always exclusive (no parallel write, no read while writing). */
+    UA_Boolean disallowParallelReads;
+} UA_FileTransferTemporaryOptions;
+
+/**
  * File Transfer Driver
  * ~~~~~~~~~~~~~~~~~~~~
  *
@@ -212,7 +283,10 @@ typedef struct {
  * 0:max-read-length [UInt32]
  *    Maximum number of bytes returned by a single Read Method call
  *    (default: 1 MByte). Longer read requests are truncated; clients
- *    continue reading at the advanced position. */
+ *    continue reading at the advanced position.
+ * 0:client-processing-timeout-ms [Double]
+ *    Default ClientProcessingTimeout for temporary transfers when a
+ *    per-object timeout is not set (default: 60000). */
 
 typedef struct UA_FileTransferDriver UA_FileTransferDriver;
 struct UA_FileTransferDriver {
@@ -300,6 +374,38 @@ struct UA_FileTransferDriver {
      * @return The StatusCode of the operation */
     UA_StatusCode (*refresh)(UA_FileTransferDriver *driver,
                              const UA_NodeId directoryNodeId);
+
+    /* Create a TemporaryFileTransferType Object under parentNodeId (referenced
+     * with HasComponent) for handshake-based transfers. The Object exposes
+     * ClientProcessingTimeout and the GenerateFileForRead/GenerateFileForWrite/
+     * CloseAndCommit Methods. Transfers complete synchronously.
+     *
+     * The driver must be started.
+     *
+     * @param driver The file transfer driver
+     * @param requestedNodeId The requested NodeId for the Object. Passing
+     *        UA_NODEID_NULL selects an unused NodeId in namespace 0.
+     * @param parentNodeId The parent node of the Object
+     * @param browseName The BrowseName of the Object
+     * @param options The transfer callbacks and settings
+     * @param outNodeId The created Object (can be NULL)
+     * @return The StatusCode of the operation */
+    UA_StatusCode (*addTemporaryFileTransfer)(UA_FileTransferDriver *driver,
+                                              const UA_NodeId requestedNodeId,
+                                              const UA_NodeId parentNodeId,
+                                              const UA_QualifiedName browseName,
+                                              const UA_FileTransferTemporaryOptions *options,
+                                              UA_NodeId *outNodeId);
+
+    /* Remove a TemporaryFileTransferType Object created with
+     * addTemporaryFileTransfer. In-flight transactions are aborted (temporary
+     * files deleted, no apply) and the Object is removed from the address space.
+     *
+     * @param driver The file transfer driver
+     * @param nodeId The TemporaryFileTransferType Object
+     * @return The StatusCode of the operation */
+    UA_StatusCode (*removeTemporaryFileTransfer)(UA_FileTransferDriver *driver,
+                                                 const UA_NodeId nodeId);
 };
 
 UA_EXPORT UA_FileTransferDriver *
