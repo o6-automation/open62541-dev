@@ -21,6 +21,8 @@ _UA_BEGIN_DECLS
 #define UA_FILETRANSFER_MAXHANDLESPERSESSION_DEFAULT 64
 #define UA_FILETRANSFER_MAXHANDLESPERFILE_DEFAULT 16
 #define UA_FILETRANSFER_MAXREADLENGTH_DEFAULT (1 << 20) /* 1 MByte */
+#define UA_FILETRANSFER_TIMEOUT_DEFAULT_MS 60000.0
+#define UA_FILETRANSFER_TIMEOUT_SWEEP_MS 1000.0
 
 #define UA_FILETRANSFER_OPENMODE_ALLBITS                        \
     (UA_OPENFILEMODE_READ | UA_OPENFILEMODE_WRITE |             \
@@ -30,6 +32,7 @@ _UA_BEGIN_DECLS
 
 typedef struct FTMount FTMount;
 typedef struct FTNode FTNode;
+typedef struct FTTempTransfer FTTempTransfer;
 
 /* One entry per fileHandle returned by the Open Method. Handles are bound to
  * the Session that created them. */
@@ -56,6 +59,15 @@ struct FTNode {
     UA_UInt16 openCount;
     UA_Boolean openForWrite;
     UA_NodeId openCountId; /* The OpenCount Property of a file node */
+
+    /* Temporary file transfer transaction fields (only when temporary) */
+    UA_Boolean temporary;      /* Transient temp-transfer file */
+    UA_Boolean forWrite;       /* Write transaction (vs read) */
+    FTTempTransfer *transfer;  /* Owning temporary-transfer object */
+    UA_NodeId creatorSession;  /* Session that generated the temp file; only
+                                * this Session may Open it */
+    UA_Variant generateOptions;/* Captured for applyWrite (write only) */
+    UA_DateTime lastActivity;  /* For the ClientProcessingTimeout sweep */
 };
 
 struct FTMount {
@@ -64,6 +76,22 @@ struct FTMount {
     UA_FileTransferBackend backend;
     UA_FileTransferMountOptions options;
     UA_Boolean standaloneFile; /* Created via addFile (no directory tree) */
+    UA_Boolean temp;           /* Temp store of a temporary-transfer object */
+};
+
+/* One per addTemporaryFileTransfer object */
+struct FTTempTransfer {
+    LIST_ENTRY(FTTempTransfer) listEntry;
+    UA_NodeId objectNodeId;
+    FTMount *mount;            /* Temp-store mount (in-memory or app backend) */
+    UA_FileTransferGenerateReadCallback generateForRead;
+    UA_FileTransferApplyWriteCallback applyWrite;
+    void *transferContext;
+    UA_Double timeoutMs;
+    UA_Boolean allowParallelReads;
+    UA_UInt32 nextTempId;      /* For unique temp paths */
+    size_t activeReads;
+    size_t activeWrites;
 };
 
 typedef struct FileTransferDriver {
@@ -72,10 +100,13 @@ typedef struct FileTransferDriver {
     LIST_HEAD(, FTMount) mounts;
     LIST_HEAD(, FTNode) nodes;
     LIST_HEAD(, FTHandle) handles;
+    LIST_HEAD(, FTTempTransfer) tempTransfers;
     UA_UInt32 nextHandle;
     UA_UInt16 maxHandlesPerSession;
     UA_UInt16 maxHandlesPerFile;
     UA_UInt32 maxReadLength;
+    UA_Double defaultTimeoutMs;
+    UA_UInt64 timeoutCallbackId; /* Repeated callback for the timeout sweep */
 } FileTransferDriver;
 
 /* driver.c -- top-level helpers and lifecycle */
@@ -104,6 +135,10 @@ void closeMountHandles(UA_Server *server, FileTransferDriver *ftd,
                        FTMount *mount);
 UA_StatusCode closeFTHandle(UA_Server *server, FileTransferDriver *ftd,
                             FTHandle *h);
+UA_StatusCode closeFTHandleEx(UA_Server *server, FileTransferDriver *ftd,
+                              FTHandle *h, UA_Boolean cleanupTemp);
+void cleanupTempNode(UA_Server *server, FileTransferDriver *ftd,
+                     FTNode *node);
 
 /* filetype.c -- property/source helpers and shared file-open helper */
 UA_StatusCode getChildId(UA_Server *server, const UA_NodeId parent,
@@ -139,7 +174,7 @@ UA_StatusCode readMethodCallback(UA_Server *server, const UA_NodeId *sessionId,
                                  const UA_NodeId *methodId,
                                  void *methodContext,
                                  const UA_NodeId *objectId,
-                                  void *objectContext, size_t inputSize,
+                                 void *objectContext, size_t inputSize,
                                  const UA_Variant *input, size_t outputSize,
                                  UA_Variant *output);
 UA_StatusCode writeMethodCallback(UA_Server *server, const UA_NodeId *sessionId,
@@ -181,14 +216,14 @@ UA_StatusCode createDirectoryMethodCallback(UA_Server *server,
                                             size_t outputSize,
                                             UA_Variant *output);
 UA_StatusCode createFileMethodCallback(UA_Server *server,
-                                        const UA_NodeId *sessionId,
-                                        void *sessionContext,
-                                        const UA_NodeId *methodId,
-                                        void *methodContext,
-                                        const UA_NodeId *objectId,
-                                        void *objectContext, size_t inputSize,
-                                        const UA_Variant *input, size_t outputSize,
-                                        UA_Variant *output);
+                                      const UA_NodeId *sessionId,
+                                      void *sessionContext,
+                                      const UA_NodeId *methodId,
+                                      void *methodContext,
+                                      const UA_NodeId *objectId,
+                                      void *objectContext, size_t inputSize,
+                                      const UA_Variant *input, size_t outputSize,
+                                      UA_Variant *output);
 UA_StatusCode deleteMethodCallback(UA_Server *server,
                                    const UA_NodeId *sessionId,
                                    void *sessionContext,
@@ -224,6 +259,53 @@ UA_UInt32 pathDepth(const UA_String path);
 /* Reject a single path segment ('.', '..', separators, NUL, empty). Shared
  * with the localfs backend so the traversal-safety policy lives in one place. */
 UA_Boolean validEntryName(const UA_String name);
+
+/* backend_memory.c (used by temporary.c) */
+UA_StatusCode inMemoryBackend(UA_FileTransferBackend *out);
+
+/* temporary.c -- method callbacks (registered in driver.c) and sweep */
+void temporaryTimeoutSweep(UA_Server *server, void *data);
+UA_StatusCode fileTransferAddTemporary(UA_FileTransferDriver *driver,
+                                       const UA_NodeId requestedNodeId,
+                                       const UA_NodeId parentNodeId,
+                                       const UA_QualifiedName browseName,
+                                       const UA_FileTransferTemporaryOptions *options,
+                                       UA_NodeId *outNodeId);
+UA_StatusCode fileTransferRemoveTemporary(UA_FileTransferDriver *driver,
+                                          const UA_NodeId nodeId);
+UA_StatusCode generateFileForReadCallback(UA_Server *server,
+                                          const UA_NodeId *sessionId,
+                                          void *sessionContext,
+                                          const UA_NodeId *methodId,
+                                          void *methodContext,
+                                          const UA_NodeId *objectId,
+                                          void *objectContext,
+                                          size_t inputSize,
+                                          const UA_Variant *input,
+                                          size_t outputSize,
+                                          UA_Variant *output);
+UA_StatusCode generateFileForWriteCallback(UA_Server *server,
+                                           const UA_NodeId *sessionId,
+                                           void *sessionContext,
+                                           const UA_NodeId *methodId,
+                                           void *methodContext,
+                                           const UA_NodeId *objectId,
+                                           void *objectContext,
+                                           size_t inputSize,
+                                           const UA_Variant *input,
+                                           size_t outputSize,
+                                           UA_Variant *output);
+UA_StatusCode closeAndCommitCallback(UA_Server *server,
+                                     const UA_NodeId *sessionId,
+                                     void *sessionContext,
+                                     const UA_NodeId *methodId,
+                                     void *methodContext,
+                                     const UA_NodeId *objectId,
+                                     void *objectContext,
+                                     size_t inputSize,
+                                     const UA_Variant *input,
+                                     size_t outputSize,
+                                     UA_Variant *output);
 
 _UA_END_DECLS
 

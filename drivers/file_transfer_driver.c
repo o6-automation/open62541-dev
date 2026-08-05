@@ -99,14 +99,38 @@ removeFTNode(FileTransferDriver *ftd, FTNode *node) {
     LIST_REMOVE(node, listEntry);
     UA_NodeId_clear(&node->nodeId);
     UA_NodeId_clear(&node->openCountId);
+    UA_NodeId_clear(&node->creatorSession);
     UA_String_clear(&node->path);
+    UA_Variant_clear(&node->generateOptions);
     UA_free(node);
 }
 
-/* Close the backend file context and release the handle. Removes zombie
- * nodes once their last handle is closed. */
+/* Delete a temporary transfer file: remove the backend file, drop the
+ * transaction accounting and delete the (non-browsable) node. */
+void
+cleanupTempNode(UA_Server *server, FileTransferDriver *ftd, FTNode *node) {
+    UA_FileTransferBackend *b = &node->mount->backend;
+    b->remove(b, node->path); /* Best effort */
+    if(node->transfer) {
+        if(node->forWrite) {
+            if(node->transfer->activeWrites > 0)
+                node->transfer->activeWrites--;
+        } else {
+            if(node->transfer->activeReads > 0)
+                node->transfer->activeReads--;
+        }
+    }
+    UA_Server_deleteNode(server, node->nodeId, true);
+    removeFTNode(ftd, node);
+}
+
+/* Close the backend file context and release the handle. Removes zombie nodes,
+ * and (when cleanupTemp) temporary transfer files, once their last handle is
+ * closed. CloseAndCommit passes cleanupTemp=false so it can read and apply the
+ * content before deleting the temporary file itself. */
 UA_StatusCode
-closeFTHandle(UA_Server *server, FileTransferDriver *ftd, FTHandle *h) {
+closeFTHandleEx(UA_Server *server, FileTransferDriver *ftd, FTHandle *h,
+                UA_Boolean cleanupTemp) {
     FTNode *node = h->file;
     UA_FileTransferBackend *b = &node->mount->backend;
     UA_StatusCode res = b->closeFile(b, h->backendFileContext);
@@ -122,10 +146,17 @@ closeFTHandle(UA_Server *server, FileTransferDriver *ftd, FTHandle *h) {
     if(node->zombie && node->openCount == 0) {
         UA_Server_deleteNode(server, node->nodeId, true);
         removeFTNode(ftd, node);
+    } else if(cleanupTemp && node->temporary && node->openCount == 0) {
+        cleanupTempNode(server, ftd, node);
     } else {
         updateOpenCount(server, node);
     }
     return res;
+}
+
+UA_StatusCode
+closeFTHandle(UA_Server *server, FileTransferDriver *ftd, FTHandle *h) {
+    return closeFTHandleEx(server, ftd, h, true);
 }
 
 /**************************************
@@ -154,10 +185,6 @@ FileTransferDriver_notification(UA_Driver *drv,
     }
 }
 
-/**************************************
- * Method Registration
- **************************************/
-
 UA_StatusCode
 registerFileTransferMethodCallbacks(UA_Server *server) {
     const struct {
@@ -173,7 +200,10 @@ registerFileTransferMethodCallbacks(UA_Server *server) {
         {UA_NS0ID_FILEDIRECTORYTYPE_CREATEDIRECTORY, createDirectoryMethodCallback},
         {UA_NS0ID_FILEDIRECTORYTYPE_CREATEFILE, createFileMethodCallback},
         {UA_NS0ID_FILEDIRECTORYTYPE_DELETEFILESYSTEMOBJECT, deleteMethodCallback},
-        {UA_NS0ID_FILEDIRECTORYTYPE_MOVEORCOPY, moveOrCopyMethodCallback}
+        {UA_NS0ID_FILEDIRECTORYTYPE_MOVEORCOPY, moveOrCopyMethodCallback},
+        {UA_NS0ID_TEMPORARYFILETRANSFERTYPE_GENERATEFILEFORREAD, (UA_MethodCallback)generateFileForReadCallback},
+        {UA_NS0ID_TEMPORARYFILETRANSFERTYPE_GENERATEFILEFORWRITE, (UA_MethodCallback)generateFileForWriteCallback},
+        {UA_NS0ID_TEMPORARYFILETRANSFERTYPE_CLOSEANDCOMMIT, (UA_MethodCallback)closeAndCommitCallback}
     };
 
     UA_StatusCode res = UA_STATUSCODE_GOOD;
@@ -190,10 +220,6 @@ registerFileTransferMethodCallbacks(UA_Server *server) {
  * Public Driver API
  **************************************/
 
-static const UA_FileTransferMountOptions defaultMountOptions =
-    {false, 0, 0, NULL, NULL};
-
-/* Validate that a backend implements the mandatory operations */
 UA_Boolean
 backendComplete(const UA_FileTransferBackend *b) {
     return b->openFile && b->closeFile && b->read && b->write &&
@@ -209,7 +235,8 @@ newMount(FileTransferDriver *ftd, UA_FileTransferBackend backend,
     if(!mount)
         return NULL;
     mount->backend = backend;
-    mount->options = options ? *options : defaultMountOptions;
+    mount->options = options ? *options : (UA_FileTransferMountOptions)
+        {false, 0, 0, NULL, NULL};
     mount->standaloneFile = standaloneFile;
     LIST_INSERT_HEAD(&ftd->mounts, mount, listEntry);
     return mount;
@@ -222,6 +249,15 @@ removeMount(FileTransferDriver *ftd, FTMount *mount) {
     UA_NodeId_clear(&mount->rootNodeId);
     LIST_REMOVE(mount, listEntry);
     UA_free(mount);
+}
+
+void
+removeMountNodes(FileTransferDriver *ftd, FTMount *mount) {
+    FTNode *node, *tmp;
+    LIST_FOREACH_SAFE(node, &ftd->nodes, listEntry, tmp) {
+        if(node->mount == mount)
+            removeFTNode(ftd, node);
+    }
 }
 
 FTNode *
@@ -241,16 +277,6 @@ newFTNode(FileTransferDriver *ftd, FTMount *mount, const UA_NodeId nodeId,
     node->isDirectory = isDirectory;
     LIST_INSERT_HEAD(&ftd->nodes, node, listEntry);
     return node;
-}
-
-/* Remove all registry entries of a mount */
-void
-removeMountNodes(FileTransferDriver *ftd, FTMount *mount) {
-    FTNode *node, *tmp;
-    LIST_FOREACH_SAFE(node, &ftd->nodes, listEntry, tmp) {
-        if(node->mount == mount)
-            removeFTNode(ftd, node);
-    }
 }
 
 /* Close all handles that refer to files below the given mount */
@@ -354,9 +380,13 @@ removeFileSystem(UA_FileTransferDriver *driver, const UA_NodeId fileSystemNodeId
     if(drv->state != UA_LIFECYCLESTATE_STARTED || !drv->server)
         return UA_STATUSCODE_BADINVALIDSTATE;
 
+    /* Temp-store mounts have no rootNodeId (it stays NULL) and are owned by an
+     * FTTempTransfer, not by removeFileSystem. Excluding them here prevents a
+     * removeFileSystem(UA_NODEID_NULL) call from matching and freeing a temp
+     * mount that is still referenced. */
     FTMount *mount = NULL;
     LIST_FOREACH(mount, &ftd->mounts, listEntry) {
-        if(!mount->standaloneFile &&
+        if(!mount->standaloneFile && !mount->temp &&
            UA_NodeId_equal(&mount->rootNodeId, &fileSystemNodeId))
             break;
     }
@@ -485,8 +515,8 @@ refresh(UA_FileTransferDriver *driver, const UA_NodeId directoryNodeId) {
         UA_UInt32 current = countMountNodes(ftd, dirNode->mount);
         nodeBudget = (opts->maxNodes > current) ? opts->maxNodes - current : 0;
     }
-    return fileTransferSyncTree(drv->server, ftd, dirNode, pathDepth(dirNode->path) + 1,
-                    &nodeBudget);
+    return fileTransferSyncTree(drv->server, ftd, dirNode,
+                                pathDepth(dirNode->path) + 1, &nodeBudget);
 }
 
 /**************************************
@@ -540,6 +570,17 @@ FileTransferDriver_start(UA_Driver *drv) {
         return res;
     }
 
+    /* Repeated sweep enforcing ClientProcessingTimeout for temp transfers */
+    res = UA_Server_addRepeatedCallback(drv->server, temporaryTimeoutSweep, ftd,
+                                        UA_FILETRANSFER_TIMEOUT_SWEEP_MS,
+                                        &ftd->timeoutCallbackId);
+    if(res != UA_STATUSCODE_GOOD) {
+        UA_LOG_ERROR(ftd->logging, UA_LOGCATEGORY_SERVER,
+                     "Cannot start the driver \"%S\". Registering the timeout "
+                     "sweep failed with %s", drv->name, UA_StatusCode_name(res));
+        return res;
+    }
+
     drv->state = UA_LIFECYCLESTATE_STARTED;
     return UA_STATUSCODE_GOOD;
 }
@@ -548,8 +589,13 @@ static void
 FileTransferDriver_stop(UA_Driver *drv) {
     FileTransferDriver *ftd = (FileTransferDriver*)drv;
 
-    /* Close all open file handles. The mounts and the mirrored nodes are
-     * kept so the driver can be restarted. */
+    if(ftd->timeoutCallbackId != 0) {
+        UA_Server_removeCallback(drv->server, ftd->timeoutCallbackId);
+        ftd->timeoutCallbackId = 0;
+    }
+
+    /* Close all open file handles. Temporary transfer files are deleted; the
+     * regular mounts and mirrored nodes are kept so the driver can restart. */
     FTHandle *h, *tmp;
     LIST_FOREACH_SAFE(h, &ftd->handles, listEntry, tmp) {
         closeFTHandle(drv->server, ftd, h);
@@ -567,6 +613,13 @@ FileTransferDriver_free(UA_Driver *drv) {
 
     /* All handles are closed during stop */
     UA_assert(LIST_EMPTY(&ftd->handles));
+
+    FTTempTransfer *transfer, *transferTmp;
+    LIST_FOREACH_SAFE(transfer, &ftd->tempTransfers, listEntry, transferTmp) {
+        LIST_REMOVE(transfer, listEntry);
+        UA_NodeId_clear(&transfer->objectNodeId);
+        UA_free(transfer);
+    }
 
     /* Delete the mirrored Objects from the address space before freeing the
      * FTNodes. Their Size/UserWritable/LastModifiedTime value sources carry the
@@ -630,9 +683,18 @@ UA_FileTransferDriver_new(const UA_KeyValueMap params) {
     if(maxReadLength && *maxReadLength > 0)
         ftd->maxReadLength = *maxReadLength;
 
+    ftd->defaultTimeoutMs = UA_FILETRANSFER_TIMEOUT_DEFAULT_MS;
+    const UA_Double *timeout = (const UA_Double*)
+        UA_KeyValueMap_getScalar(&params,
+                                 UA_QUALIFIEDNAME(0, "client-processing-timeout-ms"),
+                                 &UA_TYPES[UA_TYPES_DOUBLE]);
+    if(timeout && *timeout > 0.0)
+        ftd->defaultTimeoutMs = *timeout;
+
     LIST_INIT(&ftd->mounts);
     LIST_INIT(&ftd->nodes);
     LIST_INIT(&ftd->handles);
+    LIST_INIT(&ftd->tempTransfers);
 
     base->name = UA_STRING(UA_DRIVER_FILE_TRANSFER_NAME);
     base->notificationCallback = FileTransferDriver_notification;
@@ -646,6 +708,8 @@ UA_FileTransferDriver_new(const UA_KeyValueMap params) {
     driver->addFile = addFile;
     driver->removeFile = removeFile;
     driver->refresh = refresh;
+    driver->addTemporaryFileTransfer = fileTransferAddTemporary;
+    driver->removeTemporaryFileTransfer = fileTransferRemoveTemporary;
     return driver;
 }
 

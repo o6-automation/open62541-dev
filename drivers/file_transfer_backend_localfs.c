@@ -57,7 +57,7 @@ errnoToStatusCode(int err) {
  * not sandbox against symlinks: a symlink inside rootPath may resolve to a
  * target outside it, and the OS follows it. Each '/'-separated segment is
  * validated with validEntryName so the traversal-safety policy lives in a
- * single place. */
+ * single place (shared with directory.c). */
 static UA_StatusCode
 checkRelativePath(const UA_String path) {
     if(path.length == 0)
@@ -79,7 +79,7 @@ checkRelativePath(const UA_String path) {
 
 static UA_StatusCode
 buildLocalPath(const LocalFileSystemContext *ctx, const UA_String relPath,
-                char *out) {
+               char *out) {
     UA_StatusCode res = checkRelativePath(relPath);
     if(res != UA_STATUSCODE_GOOD)
         return res;
@@ -393,9 +393,7 @@ localFsRename(UA_FileTransferBackend *b, const UA_String fromPath,
     char localTo[UA_PATH_MAX];
     LocalFileSystemContext *ctx = (LocalFileSystemContext*)b->context;
     UA_StatusCode res = buildLocalPath(ctx, fromPath, localFrom);
-    if(res != UA_STATUSCODE_GOOD)
-        return res;
-    res = buildLocalPath(ctx, toPath, localTo);
+    res |= buildLocalPath(ctx, toPath, localTo);
     if(res != UA_STATUSCODE_GOOD)
         return res;
 
@@ -473,6 +471,8 @@ UA_FileTransferBackend_localFilesystem(const UA_String rootPath,
 UA_StatusCode
 UA_FileTransferBackend_localFilesystem(const UA_String rootPath,
                                        UA_FileTransferBackend *out) {
+    (void)rootPath;
+    (void)out;
     return UA_STATUSCODE_BADNOTSUPPORTED;
 }
 

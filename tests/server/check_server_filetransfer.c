@@ -1820,6 +1820,260 @@ START_TEST(localFilesystemMount) {
 } END_TEST
 #endif
 
+/**************************************
+ * TemporaryFileTransferType Tests
+ **************************************/
+
+/* Shared state for the transfer callbacks */
+static UA_ByteString tempReadContent;   /* content generateForRead serves */
+static UA_ByteString tempAppliedContent;/* content applyWrite received */
+static UA_Boolean tempApplyCalled;
+
+static UA_StatusCode
+testGenerateForRead(UA_Server *server, const UA_NodeId *sessionId,
+                    const UA_Variant *generateOptions, void *ctx,
+                    UA_ByteString *outContent) {
+    return UA_ByteString_copy(&tempReadContent, outContent);
+}
+
+static UA_StatusCode
+testApplyWrite(UA_Server *server, const UA_NodeId *sessionId,
+               const UA_Variant *generateOptions, void *ctx,
+               const UA_ByteString content) {
+    tempApplyCalled = true;
+    UA_ByteString_clear(&tempAppliedContent);
+    return UA_ByteString_copy(&content, &tempAppliedContent);
+}
+
+static UA_NodeId
+addTempTransfer(const char *name, UA_Boolean withRead, UA_Boolean withWrite,
+                UA_Double timeoutMs) {
+    UA_FileTransferTemporaryOptions opts;
+    memset(&opts, 0, sizeof(opts));
+    opts.generateForRead = withRead ? testGenerateForRead : NULL;
+    opts.applyWrite = withWrite ? testApplyWrite : NULL;
+    opts.clientProcessingTimeoutMs = timeoutMs;
+    UA_NodeId id = UA_NODEID_NULL;
+    UA_StatusCode res = ftDriver->addTemporaryFileTransfer(
+        ftDriver, UA_NODEID_NULL, UA_NS0ID(OBJECTSFOLDER),
+        UA_QUALIFIEDNAME(0, (char*)(uintptr_t)name), &opts, &id);
+    ck_assert_uint_eq(res, UA_STATUSCODE_GOOD);
+    return id;
+}
+
+/* Call GenerateFileForRead; returns fileNodeId + handle, asserts null SM */
+static void
+callGenerateForRead(const UA_NodeId objId, UA_NodeId *outFile,
+                    UA_UInt32 *outHandle, UA_StatusCode expected) {
+    UA_Variant options; /* null BaseDataType argument */
+    UA_Variant_init(&options);
+    UA_CallMethodResult r = callMethod(
+        objId, UA_NS0ID_TEMPORARYFILETRANSFERTYPE_GENERATEFILEFORREAD, 1, &options);
+    ck_assert_uint_eq(r.statusCode, expected);
+    if(expected == UA_STATUSCODE_GOOD) {
+        ck_assert_uint_eq(r.outputArgumentsSize, 3);
+        UA_NodeId_copy((UA_NodeId*)r.outputArguments[0].data, outFile);
+        *outHandle = *(UA_UInt32*)r.outputArguments[1].data;
+        /* completionStateMachine must be null (synchronous completion) */
+        ck_assert(UA_NodeId_isNull((UA_NodeId*)r.outputArguments[2].data));
+        ck_assert_uint_ne(*outHandle, 0);
+    }
+    UA_CallMethodResult_clear(&r);
+}
+
+static void
+callGenerateForWrite(const UA_NodeId objId, UA_NodeId *outFile,
+                     UA_UInt32 *outHandle, UA_StatusCode expected) {
+    UA_Variant options;
+    UA_Variant_init(&options);
+    UA_CallMethodResult r = callMethod(
+        objId, UA_NS0ID_TEMPORARYFILETRANSFERTYPE_GENERATEFILEFORWRITE, 1, &options);
+    ck_assert_uint_eq(r.statusCode, expected);
+    if(expected == UA_STATUSCODE_GOOD) {
+        ck_assert_uint_eq(r.outputArgumentsSize, 2);
+        UA_NodeId_copy((UA_NodeId*)r.outputArguments[0].data, outFile);
+        *outHandle = *(UA_UInt32*)r.outputArguments[1].data;
+        ck_assert_uint_ne(*outHandle, 0);
+    }
+    UA_CallMethodResult_clear(&r);
+}
+
+static void
+callCloseAndCommit(const UA_NodeId objId, UA_UInt32 handle,
+                   UA_StatusCode expected) {
+    UA_Variant input;
+    UA_Variant_setScalar(&input, &handle, &UA_TYPES[UA_TYPES_UINT32]);
+    UA_CallMethodResult r = callMethod(
+        objId, UA_NS0ID_TEMPORARYFILETRANSFERTYPE_CLOSEANDCOMMIT, 1, &input);
+    ck_assert_uint_eq(r.statusCode, expected);
+    if(expected == UA_STATUSCODE_GOOD) {
+        ck_assert_uint_eq(r.outputArgumentsSize, 1);
+        ck_assert(UA_NodeId_isNull((UA_NodeId*)r.outputArguments[0].data));
+    }
+    UA_CallMethodResult_clear(&r);
+}
+
+START_TEST(tempReadTransfer) {
+    tempReadContent = UA_BYTESTRING_ALLOC("firmware-image-bytes");
+    UA_NodeId objId = addTempTransfer("ReadXfer", true, true, 0);
+
+    /* ClientProcessingTimeout Property is present */
+    UA_NodeId toId;
+    ck_assert(tryResolveChild(server_ft, objId, "ClientProcessingTimeout", &toId));
+    UA_NodeId_clear(&toId);
+
+    UA_NodeId fileId = UA_NODEID_NULL;
+    UA_UInt32 handle = 0;
+    callGenerateForRead(objId, &fileId, &handle, UA_STATUSCODE_GOOD);
+
+    /* The temp file is not browsable under Objects */
+    UA_QualifiedName bn;
+    ck_assert_uint_eq(UA_Server_readBrowseName(server_ft, fileId, &bn),
+                      UA_STATUSCODE_GOOD); /* exists by NodeId */
+    UA_QualifiedName_clear(&bn);
+    ck_assert(!tryResolveChild(server_ft, objId, "TemporaryFile", NULL));
+
+    /* Read the content in chunks via the FileType Read on the temp node */
+    UA_ByteString part1 = callRead(fileId, handle, 8, UA_STATUSCODE_GOOD);
+    UA_ByteString part2 = callRead(fileId, handle, 100, UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(part1.length + part2.length, tempReadContent.length);
+    UA_ByteString_clear(&part1);
+    UA_ByteString_clear(&part2);
+
+    /* Close completes the read transaction and deletes the temp file */
+    callClose(fileId, handle, UA_STATUSCODE_GOOD);
+    ck_assert_uint_ne(UA_Server_readBrowseName(server_ft, fileId, &bn),
+                      UA_STATUSCODE_GOOD);
+
+    ck_assert_uint_eq(ftDriver->removeTemporaryFileTransfer(ftDriver, objId),
+                      UA_STATUSCODE_GOOD);
+    UA_ByteString_clear(&tempReadContent);
+    UA_NodeId_clear(&fileId);
+    UA_NodeId_clear(&objId);
+} END_TEST
+
+START_TEST(tempWriteTransfer) {
+    tempApplyCalled = false;
+    UA_ByteString_init(&tempAppliedContent);
+    UA_NodeId objId = addTempTransfer("WriteXfer", true, true, 0);
+
+    UA_NodeId fileId = UA_NODEID_NULL;
+    UA_UInt32 handle = 0;
+    callGenerateForWrite(objId, &fileId, &handle, UA_STATUSCODE_GOOD);
+
+    callWrite(fileId, handle, "new-config-", UA_STATUSCODE_GOOD);
+    callWrite(fileId, handle, "payload", UA_STATUSCODE_GOOD);
+
+    callCloseAndCommit(objId, handle, UA_STATUSCODE_GOOD);
+    ck_assert(tempApplyCalled);
+    UA_String expected = UA_STRING("new-config-payload");
+    ck_assert(UA_String_equal(&tempAppliedContent, &expected));
+
+    /* The temp file is deleted after commit */
+    UA_QualifiedName bn;
+    ck_assert_uint_ne(UA_Server_readBrowseName(server_ft, fileId, &bn),
+                      UA_STATUSCODE_GOOD);
+
+    ck_assert_uint_eq(ftDriver->removeTemporaryFileTransfer(ftDriver, objId),
+                      UA_STATUSCODE_GOOD);
+    UA_ByteString_clear(&tempAppliedContent);
+    UA_NodeId_clear(&fileId);
+    UA_NodeId_clear(&objId);
+} END_TEST
+
+START_TEST(tempWriteAbort) {
+    tempApplyCalled = false;
+    UA_NodeId objId = addTempTransfer("AbortXfer", true, true, 0);
+
+    UA_NodeId fileId = UA_NODEID_NULL;
+    UA_UInt32 handle = 0;
+    callGenerateForWrite(objId, &fileId, &handle, UA_STATUSCODE_GOOD);
+    callWrite(fileId, handle, "discard-me", UA_STATUSCODE_GOOD);
+
+    /* Closing the temp file (instead of CloseAndCommit) aborts: no apply */
+    callClose(fileId, handle, UA_STATUSCODE_GOOD);
+    ck_assert(!tempApplyCalled);
+    UA_QualifiedName bn;
+    ck_assert_uint_ne(UA_Server_readBrowseName(server_ft, fileId, &bn),
+                      UA_STATUSCODE_GOOD);
+
+    /* A second write transfer is possible after the abort */
+    UA_NodeId fileId2 = UA_NODEID_NULL;
+    UA_UInt32 handle2 = 0;
+    callGenerateForWrite(objId, &fileId2, &handle2, UA_STATUSCODE_GOOD);
+    callClose(fileId2, handle2, UA_STATUSCODE_GOOD);
+
+    ck_assert_uint_eq(ftDriver->removeTemporaryFileTransfer(ftDriver, objId),
+                      UA_STATUSCODE_GOOD);
+    UA_NodeId_clear(&fileId);
+    UA_NodeId_clear(&fileId2);
+    UA_NodeId_clear(&objId);
+} END_TEST
+
+START_TEST(tempDirectionEnforcement) {
+    /* Read-only transfer: write generation is denied */
+    UA_NodeId readOnly = addTempTransfer("ReadOnlyXfer", true, false, 0);
+    UA_NodeId f = UA_NODEID_NULL; UA_UInt32 h = 0;
+    callGenerateForWrite(readOnly, &f, &h, UA_STATUSCODE_BADNOTWRITABLE);
+    ck_assert_uint_eq(ftDriver->removeTemporaryFileTransfer(ftDriver, readOnly),
+                      UA_STATUSCODE_GOOD);
+    UA_NodeId_clear(&readOnly);
+
+    /* Write-only transfer: read generation is denied */
+    UA_NodeId writeOnly = addTempTransfer("WriteOnlyXfer", false, true, 0);
+    callGenerateForRead(writeOnly, &f, &h, UA_STATUSCODE_BADNOTREADABLE);
+    ck_assert_uint_eq(ftDriver->removeTemporaryFileTransfer(ftDriver, writeOnly),
+                      UA_STATUSCODE_GOOD);
+    UA_NodeId_clear(&writeOnly);
+} END_TEST
+
+START_TEST(tempExclusiveWrite) {
+    UA_NodeId objId = addTempTransfer("ExclXfer", true, true, 0);
+
+    UA_NodeId fileId = UA_NODEID_NULL;
+    UA_UInt32 handle = 0;
+    callGenerateForWrite(objId, &fileId, &handle, UA_STATUSCODE_GOOD);
+
+    /* No parallel write, and no read while writing (Part 20, 4.4.1) */
+    UA_NodeId f2 = UA_NODEID_NULL; UA_UInt32 h2 = 0;
+    callGenerateForWrite(objId, &f2, &h2, UA_STATUSCODE_BADNOTWRITABLE);
+    callGenerateForRead(objId, &f2, &h2, UA_STATUSCODE_BADNOTREADABLE);
+
+    callClose(fileId, handle, UA_STATUSCODE_GOOD);
+
+    /* After the write ends a read is possible again */
+    tempReadContent = UA_BYTESTRING_ALLOC("x");
+    callGenerateForRead(objId, &f2, &h2, UA_STATUSCODE_GOOD);
+    callClose(f2, h2, UA_STATUSCODE_GOOD);
+    UA_ByteString_clear(&tempReadContent);
+
+    ck_assert_uint_eq(ftDriver->removeTemporaryFileTransfer(ftDriver, objId),
+                      UA_STATUSCODE_GOOD);
+    UA_NodeId_clear(&fileId);
+    UA_NodeId_clear(&f2);
+    UA_NodeId_clear(&objId);
+} END_TEST
+
+START_TEST(tempBadCommitHandle) {
+    UA_NodeId objId = addTempTransfer("BadHandleXfer", true, true, 0);
+
+    /* Unknown handle */
+    callCloseAndCommit(objId, 9999, UA_STATUSCODE_BADINVALIDARGUMENT);
+
+    /* A read handle is not a valid CloseAndCommit handle */
+    tempReadContent = UA_BYTESTRING_ALLOC("data");
+    UA_NodeId fileId = UA_NODEID_NULL; UA_UInt32 handle = 0;
+    callGenerateForRead(objId, &fileId, &handle, UA_STATUSCODE_GOOD);
+    callCloseAndCommit(objId, handle, UA_STATUSCODE_BADINVALIDARGUMENT);
+    callClose(fileId, handle, UA_STATUSCODE_GOOD);
+    UA_ByteString_clear(&tempReadContent);
+
+    ck_assert_uint_eq(ftDriver->removeTemporaryFileTransfer(ftDriver, objId),
+                      UA_STATUSCODE_GOOD);
+    UA_NodeId_clear(&fileId);
+    UA_NodeId_clear(&objId);
+} END_TEST
+
 /* The mandatory FileType properties are instantiated with the object */
 START_TEST(instanceHasMandatoryProperties) {
     UA_NodeId fileNodeId = addFileTypeInstance(server_ft, "TestFileProps");
@@ -1885,6 +2139,18 @@ int main(void) {
 #endif
     tcase_add_checked_fixture(tc_dir, setup, teardown);
     suite_add_tcase(s, tc_dir);
+
+    TCase *tc_temp = tcase_create("Temporary File Transfer");
+#ifdef UA_TEST_ENABLE_FILETRANSFER
+    tcase_add_test(tc_temp, tempReadTransfer);
+    tcase_add_test(tc_temp, tempWriteTransfer);
+    tcase_add_test(tc_temp, tempWriteAbort);
+    tcase_add_test(tc_temp, tempDirectionEnforcement);
+    tcase_add_test(tc_temp, tempExclusiveWrite);
+    tcase_add_test(tc_temp, tempBadCommitHandle);
+#endif
+    tcase_add_checked_fixture(tc_temp, setup, teardown);
+    suite_add_tcase(s, tc_temp);
 
     TCase *tc_backend = tcase_create("Storage Backends");
 #ifdef UA_TEST_ENABLE_FILETRANSFER

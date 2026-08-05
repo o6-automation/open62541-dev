@@ -237,9 +237,9 @@ mirrorDirectory(UA_Server *server, FileTransferDriver *ftd, FTNode *dirNode,
 }
 
 /* Recursively mirror the backend content below a directory node */
-UA_StatusCode
-fileTransferMirrorTree(UA_Server *server, FileTransferDriver *ftd, FTNode *dirNode,
-                       UA_UInt32 depth, UA_UInt32 *nodeBudget) {
+static UA_StatusCode
+mirrorTree(UA_Server *server, FileTransferDriver *ftd, FTNode *dirNode,
+           UA_UInt32 depth, UA_UInt32 *nodeBudget) {
     const UA_FileTransferMountOptions *opts = &dirNode->mount->options;
     if(opts->maxScanDepth > 0 && depth > opts->maxScanDepth)
         return UA_STATUSCODE_GOOD;
@@ -270,7 +270,7 @@ fileTransferMirrorTree(UA_Server *server, FileTransferDriver *ftd, FTNode *dirNo
             res = mirrorDirectory(server, ftd, dirNode, e->name, &childNode);
             if(res == UA_STATUSCODE_GOOD) {
                 (*nodeBudget)--;
-                res = fileTransferMirrorTree(server, ftd, childNode, depth + 1, nodeBudget);
+                res = mirrorTree(server, ftd, childNode, depth + 1, nodeBudget);
             }
         } else {
             UA_String childPath = UA_STRING_NULL;
@@ -290,6 +290,14 @@ fileTransferMirrorTree(UA_Server *server, FileTransferDriver *ftd, FTNode *dirNo
 
     freeScanEntries(entries);
     return res;
+}
+
+/* Public mirrorTree entry point for driver.c addFileSystem/addFile */
+UA_StatusCode
+fileTransferMirrorTree(UA_Server *server, FileTransferDriver *ftd,
+                       FTNode *dirNode, UA_UInt32 depth,
+                       UA_UInt32 *nodeBudget) {
+    return mirrorTree(server, ftd, dirNode, depth, nodeBudget);
 }
 
 /* Remove the address-space nodes and registry entries below (and including)
@@ -434,9 +442,9 @@ copyBackendTree(UA_FileTransferBackend *srcB, const UA_String fromPath,
 }
 
 /* Reconcile a mirrored directory with the backend content */
-UA_StatusCode
-fileTransferSyncTree(UA_Server *server, FileTransferDriver *ftd, FTNode *dirNode,
-                     UA_UInt32 depth, UA_UInt32 *nodeBudget) {
+static UA_StatusCode
+syncTree(UA_Server *server, FileTransferDriver *ftd, FTNode *dirNode,
+         UA_UInt32 depth, UA_UInt32 *nodeBudget) {
     const UA_FileTransferMountOptions *opts = &dirNode->mount->options;
     if(opts->maxScanDepth > 0 && depth > opts->maxScanDepth)
         return UA_STATUSCODE_GOOD;
@@ -496,7 +504,7 @@ fileTransferSyncTree(UA_Server *server, FileTransferDriver *ftd, FTNode *dirNode
             res = mirrorDirectory(server, ftd, dirNode, e->name, &newDir);
             if(res == UA_STATUSCODE_GOOD) {
                 (*nodeBudget)--;
-                res = fileTransferMirrorTree(server, ftd, newDir, depth + 1, nodeBudget);
+                res = mirrorTree(server, ftd, newDir, depth + 1, nodeBudget);
             }
         } else {
             UA_String childPath = UA_STRING_NULL;
@@ -524,12 +532,20 @@ fileTransferSyncTree(UA_Server *server, FileTransferDriver *ftd, FTNode *dirNode
         if(child->mount != dirMount || !child->isDirectory ||
            child->zombie || !isDirectChildPath(dirPath, child->path))
             continue;
-        res = fileTransferSyncTree(server, ftd, child, depth + 1, nodeBudget);
+        res = syncTree(server, ftd, child, depth + 1, nodeBudget);
         if(res != UA_STATUSCODE_GOOD)
             break;
     }
     UA_String_clear(&dirPath);
     return res;
+}
+
+/* Public syncTree entry point for driver.c refresh */
+UA_StatusCode
+fileTransferSyncTree(UA_Server *server, FileTransferDriver *ftd,
+                     FTNode *dirNode, UA_UInt32 depth,
+                     UA_UInt32 *nodeBudget) {
+    return syncTree(server, ftd, dirNode, depth, nodeBudget);
 }
 
 /**************************************
@@ -549,10 +565,10 @@ resolveDirectoryNode(FileTransferDriver *ftd, const UA_NodeId *objectId,
 
 UA_StatusCode
 createDirectoryMethodCallback(UA_Server *server, const UA_NodeId *sessionId,
-                                void *sessionContext, const UA_NodeId *methodId,
-                                void *methodContext, const UA_NodeId *objectId,
-                                void *objectContext, size_t inputSize, const UA_Variant *input,
-                                size_t outputSize, UA_Variant *output) {
+                              void *sessionContext, const UA_NodeId *methodId,
+                              void *methodContext, const UA_NodeId *objectId,
+                              void *objectContext, size_t inputSize, const UA_Variant *input,
+                              size_t outputSize, UA_Variant *output) {
     FileTransferDriver *ftd = findFileTransferDriver(server);
     if(!ftd)
         return UA_STATUSCODE_BADNOTSUPPORTED;
@@ -595,10 +611,10 @@ createDirectoryMethodCallback(UA_Server *server, const UA_NodeId *sessionId,
 
 UA_StatusCode
 createFileMethodCallback(UA_Server *server, const UA_NodeId *sessionId,
-                          void *sessionContext, const UA_NodeId *methodId,
-                          void *methodContext, const UA_NodeId *objectId,
-                          void *objectContext, size_t inputSize, const UA_Variant *input,
-                          size_t outputSize, UA_Variant *output) {
+                         void *sessionContext, const UA_NodeId *methodId,
+                         void *methodContext, const UA_NodeId *objectId,
+                         void *objectContext, size_t inputSize, const UA_Variant *input,
+                         size_t outputSize, UA_Variant *output) {
     FileTransferDriver *ftd = findFileTransferDriver(server);
     if(!ftd)
         return UA_STATUSCODE_BADNOTSUPPORTED;
@@ -706,10 +722,10 @@ deleteMethodCallback(UA_Server *server, const UA_NodeId *sessionId,
 
 UA_StatusCode
 moveOrCopyMethodCallback(UA_Server *server, const UA_NodeId *sessionId,
-                          void *sessionContext, const UA_NodeId *methodId,
-                          void *methodContext, const UA_NodeId *objectId,
-                          void *objectContext, size_t inputSize, const UA_Variant *input,
-                          size_t outputSize, UA_Variant *output) {
+                         void *sessionContext, const UA_NodeId *methodId,
+                         void *methodContext, const UA_NodeId *objectId,
+                         void *objectContext, size_t inputSize, const UA_Variant *input,
+                         size_t outputSize, UA_Variant *output) {
     FileTransferDriver *ftd = findFileTransferDriver(server);
     if(!ftd)
         return UA_STATUSCODE_BADNOTSUPPORTED;
@@ -840,7 +856,7 @@ moveOrCopyMethodCallback(UA_Server *server, const UA_NodeId *sessionId,
                     nodeBudget = (opts->maxNodes > current) ?
                         opts->maxNodes - current : 0;
                 }
-                res = fileTransferMirrorTree(server, ftd, newNode, pathDepth(destPath) + 1,
+                res = mirrorTree(server, ftd, newNode, pathDepth(destPath) + 1,
                                  &nodeBudget);
             }
         } else {
