@@ -44,7 +44,7 @@ set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 # overwritten with more detailed information if git is available.
 set(OPEN62541_VER_MAJOR 1)
 set(OPEN62541_VER_MINOR 5)
-set(OPEN62541_VER_PATCH 5)
+set(OPEN62541_VER_PATCH 6)
 set(OPEN62541_VER_LABEL "") # like "-rc1" or "-g4538abcd" or "-g4538abcd-dirty"
 set(OPEN62541_VER_COMMIT "unknown-commit")
 
@@ -120,7 +120,6 @@ option(UA_ENABLE_DISCOVERY "Enable Discovery Service (LDS)" ON)
 option(UA_ENABLE_JSON_ENCODING "Enable JSON encoding" ON)
 option(UA_ENABLE_XML_ENCODING "Enable XML encoding" ON)
 option(UA_ENABLE_NODESETLOADER "Enable nodesetLoader public API" OFF)
-option(UA_ENABLE_GDS_PUSHMANAGEMENT "Enable GDS pushManagement support" OFF)
 option(UA_ENABLE_DATATYPES_ALL "Generate all datatypes for namespace zero (uses more binary space)" ON)
 option(UA_ENABLE_RBAC "Enable Role-Based Access Control (EXPERIMENTAL - NOT FOR PRODUCTION)" OFF)
 
@@ -160,11 +159,38 @@ option(UA_ENABLE_INLINABLE_EXPORT "Export 'static inline' methods as regular API
 mark_as_advanced(UA_ENABLE_INLINABLE_EXPORT)
 
 # Drivers
+option(UA_ENABLE_DRIVER_GDS_RECEIVER "Enable the GDS Receiver driver" OFF)
+mark_as_advanced(UA_ENABLE_DRIVER_GDS_RECEIVER)
 option(UA_ENABLE_DRIVER_MDNS_AVAHI "Enable the Avahi mDNS discovery driver" OFF)
 mark_as_advanced(UA_ENABLE_DRIVER_MDNS_AVAHI)
 set(UA_ENABLE_DISCOVERY_MULTICAST_MDNSD OFF)
 set(UA_ENABLE_DISCOVERY_MULTICAST_AVAHI OFF)
 set(UA_FILE_MDNSD "${PROJECT_SOURCE_DIR}/deps/mdnsd/libmdnsd/mdnsd.c")
+
+option(UA_ENABLE_LWS "Includes the libwebsockets library" OFF)
+mark_as_advanced(UA_ENABLE_LWS)
+option(UA_ENABLE_LWS_MQTT "Enable the libwebsockets MQTT ConnectionManager" OFF)
+mark_as_advanced(UA_ENABLE_LWS_MQTT)
+
+
+if(UA_ENABLE_LWS_MQTT AND NOT UA_ENABLE_LWS)
+    message(FATAL_ERROR "UA_ENABLE_LWS_MQTT requires UA_ENABLE_LWS")
+endif()
+
+if(UA_ENABLE_LWS)
+    if(NOT UA_ARCHITECTURE_POSIX)
+        message(FATAL_ERROR "libwebsockets cannot be used without POSIX")
+    endif()
+endif()
+
+option(UA_ENABLE_EVENTLOOP_GLIB "Enable the GLib-based EventLoop implementation (requires glib-2.0)" OFF)
+mark_as_advanced(UA_ENABLE_EVENTLOOP_GLIB)
+
+if(UA_ENABLE_EVENTLOOP_GLIB)
+    if(NOT UA_ARCHITECTURE_POSIX)
+        message(FATAL_ERROR "The GLib EventLoop cannot be used without posix")
+    endif()
+endif()
 
 # security provider
 set(UA_ENCRYPTION_PLUGINS "MBEDTLS" "OPENSSL" "LIBRESSL")
@@ -244,6 +270,12 @@ if(UA_NAMESPACE_ZERO STREQUAL "MINIMAL" OR UA_NAMESPACE_ZERO STREQUAL "NONE")
     set(UA_GENERATED_NAMESPACE_ZERO OFF)
 else()
     set(UA_GENERATED_NAMESPACE_ZERO ON)
+endif()
+
+if(UA_NAMESPACE_ZERO STREQUAL "MINIMAL")
+    set(UA_NAMESPACE_ZERO_MINIMAL ON)
+else()
+    set(UA_NAMESPACE_ZERO_MINIMAL OFF)
 endif()
 
 if(UA_NAMESPACE_ZERO STREQUAL "FULL")
@@ -361,6 +393,9 @@ mark_as_advanced(UA_ENABLE_NODESET_COMPILER_DESCRIPTIONS)
 
 option(UA_ENABLE_DETERMINISTIC_RNG "Do not seed the random number generator (e.g. for unit tests)." OFF)
 mark_as_advanced(UA_ENABLE_DETERMINISTIC_RNG)
+
+option(UA_LWIP_EXTERNAL "LwIP is provided by the parent project" OFF)
+mark_as_advanced(UA_LWIP_EXTERNAL)
 
 option(UA_MSVC_FORCE_STATIC_CRT "Force linking with the static C-runtime library when compiling to static library with MSVC" ON)
 mark_as_advanced(UA_MSVC_FORCE_STATIC_CRT)
@@ -519,6 +554,51 @@ if(UA_ENABLE_TPM2_SECURITY)
     list(APPEND pkgcfg_requiresprivate "tpm2-pkcs11")
 endif()
 
+if(UA_ENABLE_LWS)
+    find_package(libwebsockets 4.3 REQUIRED)
+    list(APPEND open62541_LIBRARIES ${LIBWEBSOCKETS_LIBRARIES})
+
+    include(CheckCSourceCompiles)
+    include(CMakePushCheckState)
+    cmake_push_check_state(RESET)
+    set(CMAKE_REQUIRED_INCLUDES ${LIBWEBSOCKETS_INCLUDE_DIR})
+    check_c_source_compiles("#include <lws_config.h>
+        #if !defined(LWS_WITH_TLS) || defined(LWS_WITH_MBEDTLS) || \
+            defined(USE_WOLFSSL) || defined(LWS_WITH_BORINGSSL) || \
+            defined(LWS_WITH_AWSLC)
+        # error libwebsockets does not use OpenSSL
+        #endif
+        int main(void) { return 0; }" UA_LWS_USES_OPENSSL)
+
+    if(UA_ENABLE_LWS_MQTT)
+        check_c_source_compiles("#include <lws_config.h>
+            #if !defined(LWS_ROLE_MQTT)
+            # error libwebsockets does not include the MQTT role
+            #endif
+            int main(void) { return 0; }" UA_LWS_HAS_MQTT)
+        if(NOT UA_LWS_HAS_MQTT)
+            message(FATAL_ERROR "UA_ENABLE_LWS_MQTT requires libwebsockets "
+                                "built with LWS_ROLE_MQTT=ON")
+        endif()
+    endif()
+    cmake_pop_check_state()
+
+    if(UA_LWS_USES_OPENSSL)
+        find_package(OpenSSL REQUIRED COMPONENTS SSL)
+        include_directories(${OPENSSL_INCLUDE_DIR})
+        list(APPEND open62541_LIBRARIES OpenSSL::SSL)
+        list(APPEND pkgcfg_requiresprivate "openssl")
+    endif()
+endif()
+
+if(UA_ENABLE_EVENTLOOP_GLIB)
+    find_package(PkgConfig REQUIRED)
+    pkg_search_module(GLIB2 REQUIRED glib-2.0)
+    include_directories(${GLIB2_INCLUDE_DIRS})
+    list(APPEND open62541_LIBRARIES ${GLIB2_LIBRARIES})
+    list(APPEND pkgcfg_requiresprivate "glib-2.0")
+endif()
+
 if(MINGW)
     # GCC stack protector support
     list(APPEND open62541_LIBRARIES ws2_32 ssp)
@@ -542,8 +622,12 @@ if(UA_ARCHITECTURE_LWIP)
     #                   ../lwip/contrib/ports/unix/posixlib/include;
     #                   ../lwip/src/include
     # LWIP_LIBRARIES    ../lwip/contrib/ports/unix/lib/build/liblwip.so
-    find_package(LWIP REQUIRED)
-    list(APPEND open62541_LIBRARIES ${LWIP_LIBRARIES})
+    if(NOT UA_LWIP_EXTERNAL)
+        find_package(LWIP REQUIRED)
+    endif()
+    if(LWIP_LIBRARIES)
+        list(APPEND open62541_LIBRARIES ${LWIP_LIBRARIES})
+    endif()
 endif()
 
 #####################
@@ -804,6 +888,7 @@ set(exported_headers ${PROJECT_BINARY_DIR}/src_generated/open62541/config.h
                      ${PROJECT_SOURCE_DIR}/include/open62541/server_pubsub.h
                      ${PROJECT_SOURCE_DIR}/include/open62541/server.h
                      ${PROJECT_SOURCE_DIR}/include/open62541/driver/alarms_conditions.h
+                     ${PROJECT_SOURCE_DIR}/include/open62541/driver/file_transfer.h
                      ${PROJECT_SOURCE_DIR}/include/open62541/driver/mdns.h
                      ${PROJECT_SOURCE_DIR}/include/open62541/pubsub.h
                      ${PROJECT_SOURCE_DIR}/include/open62541/plugin/nodestore.h)
@@ -829,11 +914,10 @@ set(lib_headers ${PROJECT_SOURCE_DIR}/deps/open62541_queue.h
                 ${PROJECT_SOURCE_DIR}/src/server/ua_subscription.h
                 ${PROJECT_SOURCE_DIR}/src/server/ua_services.h
                 ${PROJECT_SOURCE_DIR}/src/server/ua_server_async.h
-                ${PROJECT_SOURCE_DIR}/src/server/ua_gds_push.h
                 ${PROJECT_SOURCE_DIR}/src/server/ua_server_internal.h
                 ${PROJECT_SOURCE_DIR}/src/client/ua_client_internal.h)
 
-if(UA_ENABLE_ENCRYPTION AND (UA_ARCHITECTURE_WIN32 OR UA_ENABLE_AMALGAMATION))
+if(UA_ENABLE_AMALGAMATION OR (UA_ENABLE_ENCRYPTION AND UA_ARCHITECTURE_WIN32))
     list(APPEND lib_headers ${PROJECT_SOURCE_DIR}/deps/tr_dirent.h)
 endif()
 
@@ -854,11 +938,10 @@ set(lib_sources ${PROJECT_SOURCE_DIR}/src/ua_types.c
                 ${PROJECT_SOURCE_DIR}/src/server/ua_server.c
                 ${PROJECT_SOURCE_DIR}/src/server/ua_server_ns0.c
                 ${PROJECT_SOURCE_DIR}/src/server/ua_server_ns0_diagnostics.c
-                ${PROJECT_SOURCE_DIR}/src/server/ua_gds_push.c
-                ${PROJECT_SOURCE_DIR}/src/server/ua_server_ns0_gds.c
                 ${PROJECT_SOURCE_DIR}/src/server/ua_server_config.c
                 ${PROJECT_SOURCE_DIR}/src/server/ua_server_binary.c
-                ${PROJECT_SOURCE_DIR}/src/server/ua_server_binary_reverse.c
+                ${PROJECT_SOURCE_DIR}/src/server/ua_server_binary_tcp.c
+                ${PROJECT_SOURCE_DIR}/src/server/ua_server_binary_tcp_reverse.c
                 ${PROJECT_SOURCE_DIR}/src/server/ua_server_utils.c
                 ${PROJECT_SOURCE_DIR}/src/server/ua_server_auditing.c
                 ${PROJECT_SOURCE_DIR}/src/server/ua_server_async.c
@@ -877,11 +960,23 @@ set(lib_sources ${PROJECT_SOURCE_DIR}/src/ua_types.c
                 ${PROJECT_SOURCE_DIR}/src/server/ua_services_securechannel.c
                 ${PROJECT_SOURCE_DIR}/src/server/ua_services_nodemanagement.c)
 
+if(UA_ENABLE_DRIVER_GDS_RECEIVER)
+    list(APPEND exported_headers
+         ${PROJECT_SOURCE_DIR}/include/open62541/driver/gds_receiver.h)
+    list(APPEND lib_headers
+         ${PROJECT_SOURCE_DIR}/drivers/gds_receiver/gds_receiver_internal.h)
+    list(APPEND lib_sources
+         ${PROJECT_SOURCE_DIR}/drivers/gds_receiver/gds_receiver.c
+         ${PROJECT_SOURCE_DIR}/drivers/gds_receiver/gds_receiver_ns0.c)
+endif()
+
 if(UA_ENABLE_RBAC)
     list(APPEND lib_sources ${PROJECT_SOURCE_DIR}/src/server/ua_server_rbac.c)
     list(APPEND lib_sources ${PROJECT_SOURCE_DIR}/src/server/ua_server_ns0_rbac.c)
     list(APPEND internal_headers ${PROJECT_SOURCE_DIR}/src/server/ua_server_rbac.h)
 endif()
+
+list(APPEND lib_sources ${PROJECT_SOURCE_DIR}/src/server/ua_server_ws.c)
 
 # Dependencies
 set(lib_sources ${lib_sources}
@@ -915,7 +1010,8 @@ if(UA_ENABLE_SUBSCRIPTIONS_EVENTS)
         message(FATAL_ERROR "Event Filter Parsing require JSON to be enabled")
     endif()
     list(APPEND lib_headers ${PROJECT_SOURCE_DIR}/src/util/ua_eventfilter_parser.h)
-    list(APPEND lib_sources ${PROJECT_SOURCE_DIR}/src/util/ua_eventfilter_parser.c
+    list(APPEND lib_sources ${PROJECT_SOURCE_DIR}/src/server/ua_server_modelchange.c
+                            ${PROJECT_SOURCE_DIR}/src/util/ua_eventfilter_parser.c
                             ${PROJECT_SOURCE_DIR}/src/util/ua_eventfilter_lex.c
                             ${PROJECT_SOURCE_DIR}/src/util/ua_eventfilter_grammar.c)
 endif()
@@ -987,8 +1083,35 @@ if(UA_ENABLE_DISCOVERY_MULTICAST_MDNSD)
             "${MDNSD_GENERATED_DIR}/${_f}"
             COPYONLY)
         file(READ "${MDNSD_GENERATED_DIR}/${_f}" _content)
+        # Ensure open62541/config.h (which sets _GNU_SOURCE etc.) is included
+        # before any system header, then remove any original config.h include.
+        string(PREPEND _content "#include \"open62541/config.h\"\n")
+        string(REGEX REPLACE "#include \"config\\.h\"\n?" "" _content "${_content}")
         string(REGEX REPLACE "([^A-Za-z0-9_])class([^A-Za-z0-9_])" "\\1clazz\\2"
                _content "${_content}")
+        string(REGEX REPLACE "([^A-Za-z0-9_])class([^A-Za-z0-9_])" "\\1clazz\\2"
+               _content "${_content}")
+        string(REGEX REPLACE "([^A-Za-z0-9_])new([^A-Za-z0-9_])" "\\1new_\\2"
+               _content "${_content}")
+        string(REGEX REPLACE "([^A-Za-z0-9_])new([^A-Za-z0-9_])" "\\1new_\\2"
+               _content "${_content}")
+        if(_f STREQUAL "mdnsd.h")
+            string(REPLACE "#define DBG(fmt, args...)  mdnsd_log(LOG_DEBUG, \"%s(): \" fmt, __func__, ##args)"
+                           "#define DBG(fmt, ...)  mdnsd_log(LOG_DEBUG, \"%s(): \" fmt, __func__, __VA_ARGS__)"
+                           _content "${_content}")
+            string(REPLACE "#define INFO(fmt, args...) mdnsd_log(LOG_INFO, \"%s(): \" fmt, __func__, ##args)"
+                           "#define INFO(fmt, ...) mdnsd_log(LOG_INFO, \"%s(): \" fmt, __func__, __VA_ARGS__)"
+                           _content "${_content}")
+            string(REPLACE "#define NOTE(fmt, args...) mdnsd_log(LOG_NOTICE, fmt, ##args)"
+                           "#define NOTE(...) mdnsd_log(LOG_NOTICE, __VA_ARGS__)"
+                           _content "${_content}")
+            string(REPLACE "#define WARN(fmt, args...) mdnsd_log(LOG_WARNING, fmt, ##args)"
+                           "#define WARN(...) mdnsd_log(LOG_WARNING, __VA_ARGS__)"
+                           _content "${_content}")
+            string(REPLACE "#define ERR(fmt, args...)  mdnsd_log(LOG_ERR, fmt, ##args)"
+                           "#define ERR(...)  mdnsd_log(LOG_ERR, __VA_ARGS__)"
+                           _content "${_content}")
+        endif()
         if(_f STREQUAL "xht.c")
             string(REPLACE
 [=[	_xht_set(h, ckey, cval, 1);]=]
@@ -998,6 +1121,26 @@ if(UA_ENABLE_DISCOVERY_MULTICAST_MDNSD)
 	}]=]
                 _content "${_content}")
         elseif(_f STREQUAL "mdnsd.c")
+            string(REPLACE
+[=[		c->rr.rdname = strdup(r->known.ns.name);]=]
+[=[		if (!r->known.ns.name) {
+			free(c->rr.rdata);
+			free(c->rr.name);
+			free(c);
+			return 1;
+		}
+		c->rr.rdname = strdup(r->known.ns.name);]=]
+                _content "${_content}")
+            string(REPLACE
+[=[		c->rr.rdname = strdup(r->known.srv.name);]=]
+[=[		if (!r->known.srv.name) {
+			free(c->rr.rdata);
+			free(c->rr.name);
+			free(c);
+			return 1;
+		}
+		c->rr.rdname = strdup(r->known.srv.name);]=]
+                _content "${_content}")
             string(REPLACE
 [=[	memset(buf, 0, sizeof(buf));]=]
 [=[	memset(buf, 0, sizeof(buf));
@@ -1135,6 +1278,12 @@ elseif(UA_ARCHITECTURE_POSIX OR UA_ARCHITECTURE_WIN32 OR UA_ENABLE_AMALGAMATION)
          ${PROJECT_SOURCE_DIR}/arch/posix/eventloop_posix_udp.c
          ${PROJECT_SOURCE_DIR}/arch/posix/eventloop_posix_eth.c
          ${PROJECT_SOURCE_DIR}/arch/posix/eventloop_posix_interrupt.c)
+    if(UA_ENABLE_EVENTLOOP_GLIB)
+        list(APPEND plugin_sources
+             ${PROJECT_SOURCE_DIR}/arch/posix/eventloop_glib.h
+             ${PROJECT_SOURCE_DIR}/arch/posix/eventloop_glib.c
+             ${PROJECT_SOURCE_DIR}/arch/posix/eventloop_glib_interrupt.c)
+    endif()
 endif()
 
 if(UA_ARCHITECTURE_FREERTOS)
@@ -1150,9 +1299,32 @@ if(UA_ARCHITECTURE_FREERTOS)
     list(APPEND open62541_LIBRARIES freertos_config freertos_kernel)
 endif()
 
+if(UA_ENABLE_LWS)
+    list(APPEND plugin_sources
+         ${PROJECT_SOURCE_DIR}/arch/posix/eventloop_posix_http.c
+         ${PROJECT_SOURCE_DIR}/arch/posix/eventloop_posix_websocket_lws.c
+         ${PROJECT_SOURCE_DIR}/arch/posix/eventloop_posix_lws.h
+         ${PROJECT_SOURCE_DIR}/arch/posix/eventloop_posix_lws.c)
+    if(UA_ENABLE_LWS_MQTT)
+        list(APPEND plugin_sources
+             ${PROJECT_SOURCE_DIR}/arch/posix/eventloop_posix_mqtt_lws.c)
+    endif()
+endif()
+
 if(UA_ENABLE_MQTT)
     list(APPEND plugin_sources ${PROJECT_SOURCE_DIR}/arch/common/eventloop_mqtt.c)
 endif()
+
+# The file transfer driver uses the OS-specific file handling definitions.
+# It is appended after the eventloop sources so that the amalgamation
+# integrates the architecture header before the driver code.
+list(APPEND lib_headers ${PROJECT_SOURCE_DIR}/drivers/file_transfer_internal.h)
+list(APPEND plugin_sources ${PROJECT_SOURCE_DIR}/drivers/file_transfer_driver.c)
+list(APPEND plugin_sources ${PROJECT_SOURCE_DIR}/drivers/file_transfer_filetype.c)
+list(APPEND plugin_sources ${PROJECT_SOURCE_DIR}/drivers/file_transfer_directory.c)
+list(APPEND plugin_sources ${PROJECT_SOURCE_DIR}/drivers/file_transfer_backend_localfs.c)
+list(APPEND plugin_sources ${PROJECT_SOURCE_DIR}/drivers/file_transfer_backend_memory.c)
+list(APPEND plugin_sources ${PROJECT_SOURCE_DIR}/drivers/file_transfer_temporary.c)
 
 # For file based server and client configuration
 if(UA_ENABLE_JSON_ENCODING)
@@ -1297,7 +1469,7 @@ else()
         list(APPEND UA_NS0_DATATYPES ${UA_SCHEMA_DIR}/datatypes_diagnostics.txt)
     endif()
 
-    if(UA_ENABLE_GDS_PUSHMANAGEMENT)
+    if(UA_ENABLE_DRIVER_GDS_RECEIVER)
         if(NOT UA_NAMESPACE_ZERO STREQUAL "FULL")
             message(FATAL_ERROR "PushManagement needs the full Namespace Zero")
         endif()
@@ -1480,6 +1652,7 @@ else()
     add_library(open62541-object OBJECT ${lib_sources} ${lib_headers} ${exported_headers})
     add_library(open62541-plugins OBJECT ${plugin_sources} ${plugin_headers})
 endif()
+
 add_library(open62541 $<TARGET_OBJECTS:open62541-object> $<TARGET_OBJECTS:open62541-plugins>)
 
 add_dependencies(open62541-object open62541-code-generation)
@@ -1530,6 +1703,9 @@ if(UA_ENABLE_ENCRYPTION_LIBRESSL)
 endif()
 if(UA_ENABLE_NODESETLOADER)
     include_directories_private(${NODESETLOADER_PRIVATE_INCLUDES})
+endif()
+if(UA_ENABLE_LWS)
+    include_directories_private(${LIBWEBSOCKETS_INCLUDE_DIR})
 endif()
 
 # Public include directories
@@ -1594,20 +1770,41 @@ if(UA_BUILD_UNIT_TESTS)
 endif()
 
 # Build the interop targets standalone (no Check framework, no full examples)
-# when only interop tests are needed.  interop_server and check_interop_client
-# are the only two binaries required by tools/ci/cross-sdk/interop_test.sh.
+# when only interop tests are needed.
 if(UA_BUILD_INTEROP_TESTS AND NOT UA_BUILD_UNIT_TESTS)
-    add_executable(interop_server tests/interop/interop_server.c)
+    add_executable(interop_server
+        tests/interop/interop_server.c
+        tests/interop/common/interop_server_common.c)
     target_link_libraries(interop_server open62541::open62541)
     set_target_properties(interop_server PROPERTIES
         FOLDER "tests"
         RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin/tests")
 
-    add_executable(check_interop_client tests/interop/check_interop_client.c)
+    add_executable(check_interop_client
+        tests/interop/check_interop_client.c
+        tests/interop/common/interop_client_common.c)
     target_link_libraries(check_interop_client open62541::open62541)
     set_target_properties(check_interop_client PROPERTIES
         FOLDER "tests"
         RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin/tests")
+
+    if(UA_ENABLE_LWS)
+        add_executable(interop_server_wss
+            tests/interop/websocket/interop_server_wss.c
+            tests/interop/common/interop_server_common.c)
+        target_link_libraries(interop_server_wss open62541::open62541)
+        set_target_properties(interop_server_wss PROPERTIES
+            FOLDER "tests"
+            RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin/tests")
+
+        add_executable(check_interop_client_wss
+            tests/interop/websocket/check_interop_client_wss.c
+            tests/interop/common/interop_client_common.c)
+        target_link_libraries(check_interop_client_wss open62541::open62541)
+        set_target_properties(check_interop_client_wss PROPERTIES
+            FOLDER "tests"
+            RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin/tests")
+    endif()
 endif()
 
 if(UA_BUILD_FUZZING OR UA_BUILD_OSS_FUZZ OR UA_BUILD_FUZZING_CORPUS)
@@ -1633,12 +1830,23 @@ endif()
 # Enable shared library with `-DBUILD_SHARED_LIBS=ON`
 
 # export library (either static or shared depending on BUILD_SHARED_LIBS)
+# On the FreeRTOS architecture the open62541 target links against build-only
+# targets (freertos_kernel/freertos_config) that are not part of any export
+# set, so exporting the target fails at configure time. Still install the
+# library artifacts, but leave the target out of the export set there.
+if(UA_ARCHITECTURE_FREERTOS)
+install(TARGETS open62541
+        LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
+        ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
+        RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+else()
 install(TARGETS open62541
         EXPORT open62541Targets
         LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
         ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
         RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
         INCLUDES DESTINATION include)
+endif()
 
 set(open62541_install_tools_dir share/open62541)
 set(open62541_install_schema_dir share/open62541/schema)
@@ -1647,6 +1855,10 @@ foreach(f ${UA_NS0_NODESETS})
     list(APPEND open62541_install_ns0_nodesets "\${open62541_SCHEMA_DIR}/${f}")
 endforeach()
 
+# Create the CMake package files (open62541Config.cmake, ConfigVersion,
+# Targets). open62541Config.cmake includes open62541Targets.cmake, so they
+# must be installed together or not at all.
+if(NOT UA_ARCHITECTURE_FREERTOS)
 # Create open62541Config.cmake
 include(CMakePackageConfigHelpers)
 set(cmake_configfile_install ${CMAKE_INSTALL_LIBDIR}/cmake/open62541)
@@ -1675,6 +1887,7 @@ install(EXPORT open62541Targets
 export(TARGETS open62541
        NAMESPACE open62541::
        FILE ${CMAKE_CURRENT_BINARY_DIR}/open62541Targets.cmake)
+endif()
 
 # Generate and install open62541.pc
 set(pkgcfgpubliclibs "")
@@ -1696,7 +1909,7 @@ string(REPLACE ";" " " pkgcfg_requiresprivate "${pkgcfg_requiresprivate}")
 string(REPLACE ";" " " pkgcfg_libsprivate "${pkgcfg_libsprivate}")
 configure_file(tools/open62541.pc.in ${PROJECT_BINARY_DIR}/src_generated/open62541.pc @ONLY)
 
-if(${CMAKE_SYSTEM_NAME} STREQUAL "Linux")
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND NOT UA_ARCHITECTURE_FREERTOS)
     install(FILES "${PROJECT_BINARY_DIR}/src_generated/open62541.pc"
             DESTINATION ${CMAKE_INSTALL_LIBDIR}/pkgconfig)
 endif()

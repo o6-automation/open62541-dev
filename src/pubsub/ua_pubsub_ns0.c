@@ -65,7 +65,24 @@ findPubSubComponentFromStatus(UA_Server *server, const UA_NodeId *statusObjectId
                               void **component, UA_Boolean *isPublishSubscribeObject) {
     UA_LOCK_ASSERT(&server->serviceMutex);
 
+    UA_PubSubManager *psm = getPSM(server);
+    if(!psm)
+        return UA_STATUSCODE_BADINTERNALERROR;
+
     *isPublishSubscribeObject = false;
+
+    /* Enable/Disable on the root PubSub Status (PUBLISHSUBSCRIBE_STATUS,
+     * NS0 id 17405) cannot be resolved via the inverse HasComponent browse
+     * below; match the well-known Status ID and route to the PubSubManager. */
+    UA_NodeId statusId = UA_NS0ID(PUBLISHSUBSCRIBE_STATUS);
+    if(UA_NodeId_equal(statusObjectId, &statusId)) {
+        *componentNodeId = UA_NS0ID(PUBLISHSUBSCRIBE);
+        *componentType = UA_PUBSUBCOMPONENT_CONNECTION;
+        *component = psm;
+        *isPublishSubscribeObject = true;
+        return UA_STATUSCODE_GOOD;
+    }
+
     /* Find the parent PubSub component by browsing up from the Status object */
     UA_BrowseDescription bd;
     UA_BrowseDescription_init(&bd);
@@ -86,9 +103,16 @@ findPubSubComponentFromStatus(UA_Server *server, const UA_NodeId *statusObjectId
     UA_NodeId parentTypeId = br.references[0].typeDefinition.nodeId;
     UA_BrowseResult_clear(&br);
 
-    UA_PubSubManager *psm = getPSM(server);
-    if(!psm)
-        return UA_STATUSCODE_BADINTERNALERROR;
+    /* The top-level PublishSubscribe node's Status child resolves directly to
+     * the PubSubManager. Match it explicitly so Enable/Disable route to the
+     * manager instead of relying on the browse fallback below. */
+    UA_NodeId publishSubscribeId = UA_NS0ID(PUBLISHSUBSCRIBE);
+    if(UA_NodeId_equal(componentNodeId, &publishSubscribeId)) {
+        *isPublishSubscribeObject = true;
+        *componentType = UA_PUBSUBCOMPONENT_CONNECTION;
+        *component = psm;
+        return UA_STATUSCODE_GOOD;
+    }
 
     /* Identify component type and find the component */
     UA_NodeId pubsubconnectionTypeId = UA_NS0ID(PUBSUBCONNECTIONTYPE);
@@ -752,9 +776,29 @@ addReaderGroupConfig(UA_Server *server, UA_NodeId connectionId,
 
     UA_ReaderGroupConfig readerGroupConfig;
     memset(&readerGroupConfig, 0, sizeof(UA_ReaderGroupConfig));
-    readerGroupConfig.name = readerGroup->name;
-    return UA_ReaderGroup_create(psm, connectionId,
-                                 &readerGroupConfig, readerGroupId);
+    UA_StatusCode retVal = UA_String_copy(&readerGroup->name,
+                                          &readerGroupConfig.name);
+    retVal |= UA_String_copy(&readerGroup->securityGroupId,
+                             &readerGroupConfig.securityGroupId);
+    retVal |= UA_ExtensionObject_copy(&readerGroup->transportSettings,
+                                      &readerGroupConfig.transportSettings);
+    readerGroupConfig.securityMode = readerGroup->securityMode;
+    readerGroupConfig.groupProperties.map = readerGroup->groupProperties;
+    readerGroupConfig.groupProperties.mapSize = readerGroup->groupPropertiesSize;
+    if(readerGroup->dataSetReadersSize > 0) {
+        UA_ExtensionObject *settings =
+            &readerGroup->dataSetReaders[0].messageSettings;
+        if(settings->encoding == UA_EXTENSIONOBJECT_DECODED &&
+           settings->content.decoded.type ==
+               &UA_TYPES[UA_TYPES_JSONDATASETREADERMESSAGEDATATYPE])
+            readerGroupConfig.encodingMimeType = UA_PUBSUB_ENCODING_JSON;
+    }
+    if(retVal == UA_STATUSCODE_GOOD)
+        retVal = UA_ReaderGroup_create(psm, connectionId,
+                                       &readerGroupConfig, readerGroupId);
+    readerGroupConfig.groupProperties = UA_KEYVALUEMAP_NULL;
+    UA_ReaderGroupConfig_clear(&readerGroupConfig);
+    return retVal;
 }
 
 /**
@@ -851,46 +895,41 @@ addDataSetReaderConfig(UA_Server *server, UA_NodeId readerGroupId,
     UA_DataSetReaderConfig readerConfig;
     memset(&readerConfig, 0, sizeof(UA_DataSetReaderConfig));
 
-    UA_StatusCode retVal =
-        UA_PublisherId_fromVariant(&readerConfig.publisherId,
-                                   &dataSetReader->publisherId);
-    readerConfig.name = dataSetReader->name;
+    UA_StatusCode retVal = UA_String_copy(&dataSetReader->name,
+                                          &readerConfig.name);
+    retVal |= UA_PublisherId_fromVariant(&readerConfig.publisherId,
+                                         &dataSetReader->publisherId);
     readerConfig.writerGroupId = dataSetReader->writerGroupId;
     readerConfig.dataSetWriterId = dataSetReader->dataSetWriterId;
+    readerConfig.dataSetFieldContentMask =
+        dataSetReader->dataSetFieldContentMask;
+    readerConfig.messageReceiveTimeout =
+        dataSetReader->messageReceiveTimeout;
+    retVal |= UA_ExtensionObject_copy(&dataSetReader->messageSettings,
+                                      &readerConfig.messageSettings);
+    retVal |= UA_ExtensionObject_copy(&dataSetReader->transportSettings,
+                                      &readerConfig.transportSettings);
 
-    /* Setting up Meta data configuration in DataSetReader */
-    UA_DataSetMetaDataType *pMetaData;
-    pMetaData = &readerConfig.dataSetMetaData;
-    UA_DataSetMetaDataType_init (pMetaData);
-    pMetaData->name =  dataSetReader->dataSetMetaData.name;
-    pMetaData->fieldsSize = dataSetReader->dataSetMetaData.fieldsSize;
-    pMetaData->fields = (UA_FieldMetaData*)UA_Array_new (pMetaData->fieldsSize,
-                        &UA_TYPES[UA_TYPES_FIELDMETADATA]);
-    if(pMetaData->fieldsSize > 0 && !pMetaData->fields) {
-        UA_LOG_ERROR(server->config.logging, UA_LOGCATEGORY_PUBSUB,
-                     "Failed to allocate memory for DataSetReader MetaData fields");
-        UA_PublisherId_clear(&readerConfig.publisherId);
-        return UA_STATUSCODE_BADOUTOFMEMORY;
-    }
-    for(size_t i = 0; i < pMetaData->fieldsSize; i++){
-        UA_FieldMetaData_init (&pMetaData->fields[i]);
-        UA_NodeId_copy(&dataSetReader->dataSetMetaData.fields[i].dataType,
-                       &pMetaData->fields[i].dataType);
-        pMetaData->fields[i].builtInType = dataSetReader->dataSetMetaData.fields[i].builtInType;
-        pMetaData->fields[i].name = dataSetReader->dataSetMetaData.fields[i].name;
-        pMetaData->fields[i].valueRank = dataSetReader->dataSetMetaData.fields[i].valueRank;
+    /* Preserve the complete metadata. The previous field-by-field conversion
+     * lost configuration versions, array dimensions and string bounds, which
+     * made fixed-layout DataSetMessages impossible to reproduce. */
+    retVal |= UA_DataSetMetaDataType_copy(&dataSetReader->dataSetMetaData,
+                                          &readerConfig.dataSetMetaData);
+    if(retVal != UA_STATUSCODE_GOOD) {
+        UA_DataSetReaderConfig_clear(&readerConfig);
+        return retVal;
     }
 
     retVal |= UA_DataSetReader_create(psm, readerGroupId,
                                       &readerConfig, dataSetReaderId);
-    UA_PublisherId_clear(&readerConfig.publisherId);
+    UA_DataSetMetaDataType *pMetaData = &readerConfig.dataSetMetaData;
     if(retVal != UA_STATUSCODE_GOOD) {
-        UA_free(pMetaData->fields);
+        UA_DataSetReaderConfig_clear(&readerConfig);
         return retVal;
     }
 
     retVal |= addSubscribedVariables(server, *dataSetReaderId, dataSetReader, pMetaData);
-    UA_free(pMetaData->fields);
+    UA_DataSetReaderConfig_clear(&readerConfig);
     return retVal;
 }
 
@@ -2397,7 +2436,7 @@ initPubSubNS0(UA_Server *server) {
     }
 
     /* Set the object-type destructors */
-    UA_NodeTypeLifecycle lifeCycle;
+    UA_NodeTypeLifecycle lifeCycle = {0};
     lifeCycle.constructor = NULL;
 
     lifeCycle.destructor = connectionTypeDestructor;

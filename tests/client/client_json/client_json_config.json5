@@ -30,6 +30,8 @@
   requestedSessionTimeout: 1000,
   connectivityCheckInterval: 0,
   tcpReuseAddr: true,
+  webSocketCaCertificate: "server_cert.der",
+  webSocketMaxQueueSize: 2000000,
 
   endpoint: {
     endpointUrl: "opc.tcp://localhost:4840",
@@ -89,5 +91,7 @@
 
   namespaces: [],
 
+  maxAsyncServiceCalls: 17,
+  asyncServiceCallRule: 3, // UA_RULEHANDLING_ACCEPT
   outStandingPublishRequests: 0
 }

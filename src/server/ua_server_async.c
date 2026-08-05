@@ -228,7 +228,10 @@ directOpCallback(UA_Server *server, UA_AsyncOperation *op) {
 
 /* Called from the EventLoop via a delayed callback */
 static void
-UA_AsyncManager_processReady(UA_Server *server, UA_AsyncManager *am) {
+UA_AsyncManager_processReady(void *application /* UA_Server */,
+                             void *context /* UA_AsyncManager */) {
+    UA_Server *server = (UA_Server*)application;
+    UA_AsyncManager *am = (UA_AsyncManager*)context;
     lockServer(server);
 
     /* Reset the delayed callback */
@@ -279,7 +282,7 @@ processOperationResult(UA_Server *server, UA_AsyncOperation *op) {
     /* Trigger the main server thread to handle ready operations and responses */
     if(am->dc.callback == NULL) {
         UA_EventLoop *el = server->config.eventLoop;
-        am->dc.callback = (UA_Callback)UA_AsyncManager_processReady;
+        am->dc.callback = UA_AsyncManager_processReady;
         am->dc.application = server;
         am->dc.context = am;
         el->addDelayedCallback(el, &am->dc);
@@ -536,8 +539,9 @@ UA_Server_cancelAsync(UA_Server *server, void *context, UA_StatusCode opstatus,
 /********/
 
 UA_Boolean
-Service_Read(UA_Server *server, UA_Session *session, const UA_ReadRequest *request,
-             UA_ReadResponse *response) {
+Service_Read(UA_Server *server, UA_Session *session, const void *request_, void *response_) {
+    const UA_ReadRequest *request = (const UA_ReadRequest*)request_;
+    UA_ReadResponse *response = (UA_ReadResponse*)response_;
     UA_LOG_DEBUG_SESSION(server->config.logging, session, "Processing ReadRequest");
     UA_LOCK_ASSERT(&server->serviceMutex);
 
@@ -597,10 +601,13 @@ Service_Read(UA_Server *server, UA_Session *session, const UA_ReadRequest *reque
     return (ar->opCountdown == 0);
 }
 
-UA_StatusCode
-read_async(UA_Server *server, UA_Session *session, const UA_ReadValueId *operation,
-           UA_TimestampsToReturn ttr, UA_ServerAsyncReadResultCallback callback,
-           void *context, UA_UInt32 timeout) {
+static UA_StatusCode
+readOptionalNode_async(UA_Server *server, UA_Session *session,
+                       const UA_Node *node,
+                       const UA_ReadValueId *operation,
+                       UA_TimestampsToReturn ttr,
+                       UA_ServerAsyncReadResultCallback callback,
+                       void *context, UA_UInt32 timeout) {
     /* Allocate the async operation. Do this first as we need the pointer to the
      * datavalue to be stable.*/
     UA_AsyncOperation *op = (UA_AsyncOperation*)UA_calloc(1, sizeof(UA_AsyncOperation));
@@ -622,7 +629,10 @@ read_async(UA_Server *server, UA_Session *session, const UA_ReadValueId *operati
     }
 
     /* Call the operation */
-    UA_Boolean done = Operation_Read(server, session, ttr, operation, &op->output.directRead);
+    UA_Boolean done = node ?
+        Operation_ReadWithNode(server, session, node, ttr, operation,
+                               &op->output.directRead) :
+        Operation_Read(server, session, ttr, operation, &op->output.directRead);
     if(!done)
         return persistAsyncDirectOperation(server, op, UA_ASYNCOPERATIONTYPE_READ_DIRECT,
                                            context, (uintptr_t)callback, timeoutDate);
@@ -631,6 +641,28 @@ read_async(UA_Server *server, UA_Session *session, const UA_ReadValueId *operati
     UA_DataValue_clear(&op->output.directRead);
     UA_free(op);
     return UA_STATUSCODE_GOOD;
+}
+
+UA_StatusCode
+read_async(UA_Server *server, UA_Session *session,
+           const UA_ReadValueId *operation, UA_TimestampsToReturn ttr,
+           UA_ServerAsyncReadResultCallback callback,
+           void *context, UA_UInt32 timeout) {
+    return readOptionalNode_async(server, session, NULL, operation, ttr,
+                                  callback, context, timeout);
+}
+
+UA_StatusCode
+readWithNode_async(UA_Server *server, UA_Session *session,
+                   const UA_Node *node, const UA_ReadValueId *operation,
+                   UA_TimestampsToReturn ttr,
+                   UA_ServerAsyncReadResultCallback callback,
+                   void *context, UA_UInt32 timeout) {
+    UA_LOCK_ASSERT(&server->serviceMutex);
+    UA_assert(node != NULL);
+    UA_assert(UA_NodeId_equal(&node->head.nodeId, &operation->nodeId));
+    return readOptionalNode_async(server, session, node, operation, ttr,
+                                  callback, context, timeout);
 }
 
 UA_StatusCode
@@ -665,7 +697,9 @@ UA_Server_setAsyncReadResult(UA_Server *server, UA_DataValue *result) {
 
 UA_Boolean
 Service_Write(UA_Server *server, UA_Session *session,
-              const UA_WriteRequest *request, UA_WriteResponse *response) {
+              const void *request_, void *response_) {
+    const UA_WriteRequest *request = (const UA_WriteRequest*)request_;
+    UA_WriteResponse *response = (UA_WriteResponse*)response_;
     UA_assert(session != NULL);
     UA_LOG_DEBUG_SESSION(server->config.logging, session,
                          "Processing WriteRequest");
@@ -717,10 +751,11 @@ Service_Write(UA_Server *server, UA_Session *session,
     return (ar->opCountdown == 0);
 }
 
-UA_StatusCode
-write_async(UA_Server *server, UA_Session *session, const UA_WriteValue *operation,
-            UA_ServerAsyncWriteResultCallback callback, void *context,
-            UA_UInt32 timeout) {
+static UA_StatusCode
+writeOptionalNode_async(UA_Server *server, UA_Session *session,
+                        UA_Node *node, const UA_WriteValue *operation,
+                        UA_ServerAsyncWriteResultCallback callback,
+                        void *context, UA_UInt32 timeout) {
     /* Allocate the async operation. Do this first as we need the pointer to the
      * datavalue to be stable.*/
     UA_AsyncOperation *op = (UA_AsyncOperation*)UA_calloc(1, sizeof(UA_AsyncOperation));
@@ -743,8 +778,12 @@ write_async(UA_Server *server, UA_Session *session, const UA_WriteValue *operati
 
     /* Call the operation */
     op->context.writeValue = *operation; /* Stable pointer */
-    UA_Boolean done = Operation_Write(server, session, &op->context.writeValue,
-                                      &op->output.directWrite);
+    UA_Boolean done = node ?
+        Operation_WriteWithNode(server, session, node,
+                                &op->context.writeValue,
+                                &op->output.directWrite) :
+        Operation_Write(server, session, &op->context.writeValue,
+                        &op->output.directWrite);
     if(!done)
         return persistAsyncDirectOperation(server, op, UA_ASYNCOPERATIONTYPE_WRITE_DIRECT,
                                            context, (uintptr_t)callback, timeoutDate);
@@ -753,6 +792,27 @@ write_async(UA_Server *server, UA_Session *session, const UA_WriteValue *operati
     callback(server, context, op->output.directWrite);
     UA_free(op);
     return UA_STATUSCODE_GOOD;
+}
+
+UA_StatusCode
+write_async(UA_Server *server, UA_Session *session,
+            const UA_WriteValue *operation,
+            UA_ServerAsyncWriteResultCallback callback, void *context,
+            UA_UInt32 timeout) {
+    return writeOptionalNode_async(server, session, NULL, operation,
+                                   callback, context, timeout);
+}
+
+UA_StatusCode
+writeWithNode_async(UA_Server *server, UA_Session *session,
+                    UA_Node *node, const UA_WriteValue *operation,
+                    UA_ServerAsyncWriteResultCallback callback,
+                    void *context, UA_UInt32 timeout) {
+    UA_LOCK_ASSERT(&server->serviceMutex);
+    UA_assert(node != NULL);
+    UA_assert(UA_NodeId_equal(&node->head.nodeId, &operation->nodeId));
+    return writeOptionalNode_async(server, session, node, operation,
+                                   callback, context, timeout);
 }
 
 UA_StatusCode
@@ -794,7 +854,9 @@ UA_Server_setAsyncWriteResult(UA_Server *server,
 #ifdef UA_ENABLE_METHODCALLS
 UA_Boolean
 Service_Call(UA_Server *server, UA_Session *session,
-             const UA_CallRequest *request, UA_CallResponse *response) {
+             const void *request_, void *response_) {
+    const UA_CallRequest *request = (const UA_CallRequest*)request_;
+    UA_CallResponse *response = (UA_CallResponse*)response_;
     UA_LOG_DEBUG_SESSION(server->config.logging, session, "Processing CallRequest");
     UA_LOCK_ASSERT(&server->serviceMutex);
 

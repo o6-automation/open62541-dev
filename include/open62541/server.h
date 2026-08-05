@@ -223,6 +223,19 @@ typedef void (*UA_ServerNotificationCallback)(UA_Server *server,
                                               const UA_KeyValueMap payload);
 
 /**
+ * SecureChannel Handling
+ * ----------------------
+ * The server opens new SecureChannels internally when a server socket is
+ * active. Information about SecureChannels and their state is notified with
+ * UA_APPLICATIONNOTIFICATIONTYPE_SECURECHANNEL. SecureChannels can be manually
+ * closed. This leaves any attached session alive so that it can potentially
+ * reconnect. */
+
+UA_EXPORT UA_StatusCode UA_THREADSAFE
+UA_Server_closeSecureChannel(UA_Server *server, UA_UInt32 channelId,
+                             UA_ShutdownReason reason);
+
+/**
  * .. _server-session-handling:
  *
  * Session Handling
@@ -403,6 +416,20 @@ UA_EXPORT UA_THREADSAFE UA_StatusCode
 UA_Server_readExecutable(UA_Server *server, const UA_NodeId nodeId,
                          UA_Boolean *out);
 
+/* Returns a variant with a UA_RolePermissionType array */
+UA_EXPORT UA_THREADSAFE UA_StatusCode
+UA_Server_readRolePermissions(UA_Server *server, const UA_NodeId nodeId,
+                              UA_Variant *out);
+
+/* Returns a variant with a UA_RolePermissionType array */
+UA_EXPORT UA_THREADSAFE UA_StatusCode
+UA_Server_readUserRolePermissions(UA_Server *server, const UA_NodeId nodeId,
+                                  UA_Variant *out);
+
+UA_EXPORT UA_THREADSAFE UA_StatusCode
+UA_Server_readAccessRestrictions(UA_Server *server, const UA_NodeId nodeId,
+                                 UA_AccessRestrictionType *out);
+
 /**
  * The following node attributes cannot be written once a node has been created:
  *
@@ -492,6 +519,14 @@ UA_Server_writeHistorizing(UA_Server *server, const UA_NodeId nodeId,
 UA_EXPORT UA_THREADSAFE UA_StatusCode
 UA_Server_writeExecutable(UA_Server *server, const UA_NodeId nodeId,
                           const UA_Boolean executable);
+
+UA_EXPORT UA_THREADSAFE UA_StatusCode
+UA_Server_writeRolePermissions(UA_Server *server, const UA_NodeId nodeId,
+                               const UA_Variant rolePermissions);
+
+UA_EXPORT UA_THREADSAFE UA_StatusCode
+UA_Server_writeAccessRestrictions(UA_Server *server, const UA_NodeId nodeId,
+                                  const UA_AccessRestrictionType accessRestrictions);
 
 /**
  * .. _server-method-call:
@@ -625,19 +660,23 @@ UA_Server_browseSimplifiedBrowsePath(UA_Server *server, const UA_NodeId origin,
                                      size_t browsePathSize,
                                      const UA_QualifiedName *browsePath);
 
-#ifndef HAVE_NODEITER_CALLBACK
-#define HAVE_NODEITER_CALLBACK
+/* Returns the target of a "HasTypeDefinition" reference (or inverse
+ * "HasSubtype" reference for type nodes) */
+UA_StatusCode UA_EXPORT UA_THREADSAFE
+UA_Server_getNodeType(UA_Server *server, const UA_NodeId nodeId,
+                      UA_NodeId *outTypeId);
+
 /* Iterate over all nodes referenced by parentNodeId by calling the callback
  * function for each child node (in ifdef because GCC/CLANG handle include order
  * differently) */
 typedef UA_StatusCode
-(*UA_NodeIteratorCallback)(UA_NodeId childId, UA_Boolean isInverse,
+(*UA_ServerNodeIteratorCallback)(UA_NodeId childId, UA_Boolean isInverse,
                            UA_NodeId referenceTypeId, void *handle);
-#endif
 
 UA_StatusCode UA_EXPORT UA_THREADSAFE
 UA_Server_forEachChildNodeCall(UA_Server *server, UA_NodeId parentNodeId,
-                               UA_NodeIteratorCallback callback, void *handle);
+                               UA_ServerNodeIteratorCallback callback,
+                               void *handle);
 
 /**
  * .. _local-monitoreditems:
@@ -954,8 +993,8 @@ UA_Server_addCallbackValueSourceVariableNode(UA_Server *server,
                                                  outNewNodeId)
 
 /* Set an internal value source. Both the value argument and the notifications
- * argument can be NULL. If value is NULL, the Read service is used to get the
- * latest value before switching from a callback to an internal value source. If
+ * argument can be NULL. If value is NULL, an existing internal value is kept;
+ * switching from another value source creates an empty internal value. If
  * notifications is NULL, then all onRead/onWrite notifications are disabled. */
 UA_StatusCode UA_EXPORT UA_THREADSAFE
 UA_Server_setVariableNode_internalValueSource(UA_Server *server,
@@ -1197,16 +1236,18 @@ UA_Server_addViewNode(UA_Server *server, const UA_NodeId requestedNewNodeId,
  * When a node is destroyed, the node-type destructor is called before the
  * global destructor. So the overall node lifecycle is as follows:
  *
- * 1. Global Constructor (set in the server config)
- * 2. Node-Type Constructor (for VariableType or ObjectTypes)
- * 3. (Usage-period of the Node)
- * 4. Node-Type Destructor
- * 5. Global Destructor
+ * 1. Global Early Constructor (set in the server config)
+ * 2. Node-Type Early Constructor (for Variables or Objects)
+ * 3. Recursive instantiation of the node's children
+ * 4. Global Constructor (set in the server config)
+ * 5. Node-Type Constructor (for Variables or Objects)
+ * 6. (Usage-period of the Node)
+ * 7. Node-Type Destructor
+ * 8. Global Destructor
  *
  * The constructor and destructor callbacks can be set to ``NULL`` and are not
- * used in that case. If the node-type constructor fails, the global destructor
- * will be called before removing the node. The destructors are assumed to never
- * fail.
+ * used in that case. If a constructor fails, the global destructor will be
+ * called before removing the node. The destructors are assumed to never fail.
  *
  * Every node carries a user-context and a constructor-context pointer. The
  * user-context is used to attach custom data to a node. But the (user-defined)
@@ -1223,7 +1264,7 @@ UA_StatusCode UA_EXPORT UA_THREADSAFE
 UA_Server_setNodeContext(UA_Server *server, UA_NodeId nodeId, void *nodeContext);
 
 /**
- * Global constructor and destructor callbacks used for every node type.
+ * Global constructor and destructor callbacks used for every node.
  * It gets set in the server config. */
 
 typedef struct {
@@ -1281,6 +1322,17 @@ typedef struct {
                                          const UA_NodeId *targetParentNodeId,
                                          const UA_NodeId *referenceTypeId,
                                          UA_NodeId *targetNodeId);
+
+    /* Can be NULL. Called after the node has been inserted into the Nodestore
+     * and its parent and TypeDefinition references have been added, but before
+     * automatic child instantiation. This allows the callback to add children
+     * that shall take the place of children declared by the TypeDefinition.
+     * May replace the nodeContext. */
+    UA_StatusCode (*earlyConstructor)(UA_Server *server,
+                                      const UA_NodeId *sessionId,
+                                      void *sessionContext,
+                                      const UA_NodeId *nodeId,
+                                      void **nodeContext);
 } UA_GlobalNodeLifecycle;
 
 /**
@@ -1299,6 +1351,16 @@ typedef struct {
                        const UA_NodeId *sessionId, void *sessionContext,
                        const UA_NodeId *typeNodeId, void *typeNodeContext,
                        const UA_NodeId *nodeId, void **nodeContext);
+
+    /* Can be NULL. Called after the global earlyConstructor and before
+     * automatic child instantiation. May replace the nodeContext. */
+    UA_StatusCode (*earlyConstructor)(UA_Server *server,
+                                      const UA_NodeId *sessionId,
+                                      void *sessionContext,
+                                      const UA_NodeId *typeNodeId,
+                                      void *typeNodeContext,
+                                      const UA_NodeId *nodeId,
+                                      void **nodeContext);
 } UA_NodeTypeLifecycle;
 
 UA_StatusCode UA_EXPORT UA_THREADSAFE
@@ -1319,7 +1381,8 @@ UA_Server_setNodeTypeLifecycle(UA_Server *server, UA_NodeId nodeId,
  *  - prepares the node and adds it to the nodestore
  *  - copies some unassigned attributes from the TypeDefinition node internally
  *  - adds the references to the parent (and the TypeDefinition if applicable)
- *  - performs type-checking of variables.
+ *  - performs type-checking of variables
+ *  - calls the global and node-type earlyConstructors, if configured.
  *
  * You can add an object node without a parent if you set the parentNodeId and
  * referenceTypeId to UA_NODE_ID_NULL. Then you need to add the parent reference
@@ -1620,6 +1683,64 @@ UA_Server_createEventEx(UA_Server *server,
 
 #endif /* UA_ENABLE_SUBSCRIPTIONS_EVENTS */
 
+/**
+ * .. _model-semantic-changes:
+ *
+ * Model and Semantic Changes
+ * ~~~~~~~~~~~~~~~~~~~~~~~~~~
+ * With ``UA_ENABLE_SUBSCRIPTIONS_EVENTS``, the server automatically emits the
+ * standard ``GeneralModelChangeEventType`` and ``SemanticChangeEventType`` for
+ * changes made through OPC UA Services and the corresponding local
+ * ``UA_Server_*`` APIs. Changes made while the server's namespace is initially
+ * populated are suppressed. Both EventTypes are emitted by the Server object.
+ *
+ * A structural change is reported only if the affected Node has a
+ * scalar ``NodeVersion`` Property with the String DataType. The server updates
+ * that Property with the decimal representation of a server-wide, increasing
+ * Int64. Nodes without a suitable ``NodeVersion`` Property are not
+ * included in a ModelChangeEvent. The following successful operations are
+ * reported:
+ *
+ * .. list-table::
+ *    :header-rows: 1
+ *
+ *    * - Operation
+ *      - ModelChange verb
+ *    * - Add a Node
+ *      - ``NodeAdded``
+ *    * - Delete a Node
+ *      - ``NodeDeleted``
+ *    * - Add a Reference
+ *      - ``ReferenceAdded``
+ *    * - Delete a Reference
+ *      - ``ReferenceDeleted``
+ *    * - Change the DataType Attribute
+ *      - ``DataTypeChanged``
+ *
+ * Changes to ValueRank and ArrayDimensions are not structural ModelChanges.
+ *
+ * A SemanticChange is reported when a successful Value write changes a
+ * Variable whose AccessLevel contains ``UA_ACCESSLEVELMASK_SEMANTICCHANGE``.
+ * The Variable must be a Property connected to its owner by ``HasProperty`` or
+ * a subtype. The owner is reported as the affected Node. Same-value writes are
+ * suppressed when the previous value is directly available. For callback-based
+ * value sources the previous value may not be available for comparison, so a
+ * successful write is treated as a SemanticChange.
+ *
+ * A SemanticChange also marks Value MonitoredItems on the affected Variable.
+ * Their next DataChange notification contains the ``SemanticsChanged``
+ * StatusCode bit. MonitoredItems with a zero SamplingInterval are sampled
+ * immediately. For cyclic sampling the bit remains pending until the next
+ * notification.
+ *
+ * Changes are accumulated until the outermost local operation or decoded
+ * Service request completes. Entries for the same affected Node are coalesced
+ * by combining their ModelChange verbs. Model and Semantic changes collected
+ * together are emitted as separate standard Events. Failed operations are not
+ * reported.
+ *
+ * See ``examples/events/server_modelchange.c`` for a complete local example. */
+
 #ifdef UA_ENABLE_DISCOVERY
 
 /**
@@ -1736,7 +1857,8 @@ UA_Server_deregisterServerOnNetwork(UA_Server *server,
  * implementation. */
 
 typedef enum {
-    UA_DRIVERTYPE_GENERIC = 0
+    UA_DRIVERTYPE_GENERIC = 0,
+    UA_DRIVERTYPE_GDS_RECEIVER
 } UA_DriverType;
 
 struct UA_Driver;
@@ -1943,7 +2065,7 @@ UA_Server_readObjectProperty(UA_Server *server, const UA_NodeId objectId,
  * Role-Based Access Control (RBAC)
  * --------------------------------
  *
- * Role-Based Access Control implementation per OPC UA Part 18.
+ * Role-Based Access Control implementation per OPC UA Part 18 v1.05.
  *
  * **WARNING**: This feature is EXPERIMENTAL and NOT FOR PRODUCTION USE.
  * The RBAC implementation is under active development and the API may change.
@@ -1988,7 +2110,7 @@ UA_RolePermissionSet_copy(const UA_RolePermissionSet *src,
 
 /* UA_Role
  * Represents an OPC UA role with identity mapping rules and optional
- * application/endpoint restrictions per OPC UA Part 18. */
+ * application/endpoint restrictions per OPC UA Part 18 v1.05 §4.4. */
 typedef struct {
     UA_NodeId roleId;
     UA_QualifiedName roleName;              /* BrowseName of the role */
@@ -2043,6 +2165,13 @@ UA_Role_equal(const UA_Role *r1, const UA_Role *r2);
  * 4. After shutdown of the server, clean up the configuration (free memory)
  *
  * The :ref:`tutorials` provide a good starting point for this. */
+
+/* Encryption mode requirement for OPC UA Binary over WebSockets */
+typedef enum {
+    UA_WEBSOCKET_ENCRYPTION_OPTIONAL = 0, /* Allow both opc.ws:// (unencrypted) and opc.wss:// (TLS) */
+    UA_WEBSOCKET_ENCRYPTION_REQUIRED = 1, /* Allow only opc.wss:// (TLS); reject opc.ws:// */
+    UA_WEBSOCKET_ENCRYPTION_DISABLED = 2  /* Allow only opc.ws:// (unencrypted); reject opc.wss:// */
+} UA_WebSocketEncryptionMode;
 
 struct UA_ServerConfig {
     void *context; /* Used to attach custom data to a server config. This can
@@ -2136,10 +2265,10 @@ struct UA_ServerConfig {
 
     /* Networking
      * ~~~~~~~~~~
-     * The `severUrls` array contains the server URLs like
+     * The `serverUrls` array contains the server URLs like
      * `opc.tcp://my-server:4840` or `opc.wss://localhost:443`. The URLs are
      * used both for discovery and to set up the server sockets based on the
-     * defined hostnames (and ports).
+     * defined hostnames, ports and WebSocket paths.
      *
      * - If the list is empty: Listen on all network interfaces with TCP port 4840.
      * - If the hostname of a URL is empty: Use the define protocol and port and
@@ -2148,7 +2277,7 @@ struct UA_ServerConfig {
     size_t serverUrlsSize;
 
     /* The following settings are specific to OPC UA with TCP transport. */
-    UA_Boolean tcpEnabled;
+    UA_Boolean tcpEnabled;    /* Enable the TCP listener (default: true) */
     UA_UInt32 tcpBufSize;    /* Max length of sent and received chunks (packets)
                               * (default: 64kB) */
     UA_UInt32 tcpMaxMsgSize; /* Max length of messages
@@ -2156,6 +2285,25 @@ struct UA_ServerConfig {
     UA_UInt32 tcpMaxChunks;  /* Max number of chunks per message
                               * (default: 0 -> unbounded) */
     UA_Boolean tcpReuseAddr;
+
+
+    /* The following settings are specific to OPC UA Binary over WebSockets.
+     * The transport is opt-in and controlled via webSocketEnabled (default: false).
+     * TLS credentials protect opc.wss:// endpoints independently of OPC UA SecurityPolicies. */
+    UA_Boolean webSocketEnabled; /* Enable the WebSocket listener (default: false) */
+    UA_Boolean webSocketAllowUnencrypted; /* Allow non-standard unencrypted opc.ws:// endpoints (default: false) */
+    UA_WebSocketEncryptionMode webSocketEncryptionMode; /* Encryption requirement (default: UA_WEBSOCKET_ENCRYPTION_OPTIONAL) */
+    UA_UInt32 webSocketBufSize;    /* Max length of sent and received chunks
+                                    * (default: 64kB) */
+    UA_UInt32 webSocketMaxMsgSize; /* Max length of messages
+                                    * (default: 0 -> unbounded) */
+    UA_UInt32 webSocketMaxChunks;  /* Max number of chunks per message
+                                    * (default: 0 -> unbounded) */
+    UA_UInt32 webSocketMaxQueueSize; /* Max bytes queued for a slow WebSocket
+                                      * peer (default: 16 * webSocketBufSize) */
+    UA_ByteString webSocketCertificate; /* TLS certificate, DER or PEM */
+    UA_ByteString webSocketPrivateKey;  /* TLS private key, DER or PEM */
+    UA_String webSocketPrivateKeyPassword;
 
     /* Security and Encryption
      * ~~~~~~~~~~~~~~~~~~~~~~~ */
@@ -2211,6 +2359,11 @@ struct UA_ServerConfig {
      * is allowed that they have any ModellingRule independent of the
      * ModellingRule of their InstanceDeclaration */
     UA_Boolean modellingRulesOnInstances;
+
+    /* Copy Method instance declarations into each Object instance instead of
+     * adding a reference to the Method on the ObjectType. The default is false
+     * for backwards compatibility. */
+    UA_Boolean copyMethodsOnInstances;
 
     /* Limits
      * ~~~~~~ */
@@ -2429,32 +2582,6 @@ UA_ServerConfig_clean(UA_ServerConfig *config) {
     UA_ServerConfig_clear(config);
 }
 
-/**
- * Update the Server Certificate at Runtime
- * ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
- * If certificateGroupId is null the DefaultApplicationGroup is used.
- */
-
-UA_StatusCode UA_EXPORT UA_THREADSAFE
-UA_Server_updateCertificate(UA_Server *server,
-                            const UA_NodeId certificateGroupId,
-                            const UA_NodeId certificateTypeId,
-                            const UA_ByteString certificate,
-                            const UA_ByteString *privateKey);
-
-/* Creates a PKCS #10 DER encoded certificate request signed with the server's
- * private key.
- * If certificateGroupId is null the DefaultApplicationGroup is used.
- */
-UA_StatusCode UA_EXPORT UA_THREADSAFE
-UA_Server_createSigningRequest(UA_Server *server,
-                               const UA_NodeId certificateGroupId,
-                               const UA_NodeId certificateTypeId,
-                               const UA_String *subjectName,
-                               const UA_Boolean *regenerateKey,
-                               const UA_ByteString *nonce,
-                               UA_ByteString *csr);
-
 /* Adds certificates and Certificate Revocation Lists (CRLs) to a specific
  * certificate group on the server.
  *
@@ -2581,7 +2708,8 @@ UA_Server_removeNodeRolePermissions(UA_Server *server,
 /* Add a role to the server's role registry.
  *
  * The role's BrowseName (roleName) is the primary unique identifier,
- * per OPC UA Part 18 Section 4.2. A role with the same roleName or
+ * per OPC UA Part 18 v1.05 §4.2.2 (AddRole: "The BrowseName shall be
+ * unique within the RoleSet Object"). A role with the same roleName or
  * roleId must not already exist.
  *
  * If role->roleId is null, the server auto-assigns a random numeric
@@ -2816,7 +2944,9 @@ UA_Server_getNamespaceDefaultRolePermissions(UA_Server *server,
  * ``examples/server_json_config.c`` document the intended workflow and the
  * currently supported keys. They cover the common runtime limits as well as
  * optional blocks for discovery, subscriptions, historizing, PubSub and
- * security policy configuration.
+ * security policy configuration. TCP is enabled by default. WebSockets are
+ * disabled by default and can be configured with ``webSocketEnabled`` and the
+ * ``webSocket`` block when ``UA_ENABLE_LWS`` is compiled in.
  *
  * The following functions require JSON encoding support
  * (``UA_ENABLE_JSON_ENCODING``). */

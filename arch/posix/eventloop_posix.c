@@ -15,7 +15,7 @@
 /* Timer */
 /*********/
 
-static UA_DateTime
+UA_DateTime
 UA_EventLoopPOSIX_nextTimer(UA_EventLoop *public_el) {
     UA_EventLoopPOSIX *el = (UA_EventLoopPOSIX*)public_el;
     if(el->delayedHead1 > (UA_DelayedCallback *)0x01 ||
@@ -24,7 +24,7 @@ UA_EventLoopPOSIX_nextTimer(UA_EventLoop *public_el) {
     return UA_Timer_next(&el->timer);
 }
 
-static UA_StatusCode
+UA_StatusCode
 UA_EventLoopPOSIX_addTimer(UA_EventLoop *public_el, UA_Callback cb,
                            void *application, void *data, UA_Double interval_ms,
                            UA_DateTime *baseTime, UA_TimerPolicy timerPolicy,
@@ -35,7 +35,7 @@ UA_EventLoopPOSIX_addTimer(UA_EventLoop *public_el, UA_Callback cb,
                         baseTime, timerPolicy, callbackId);
 }
 
-static UA_StatusCode
+UA_StatusCode
 UA_EventLoopPOSIX_modifyTimer(UA_EventLoop *public_el,
                               UA_UInt64 callbackId,
                               UA_Double interval_ms,
@@ -47,7 +47,7 @@ UA_EventLoopPOSIX_modifyTimer(UA_EventLoop *public_el,
                            baseTime, timerPolicy);
 }
 
-static void
+void
 UA_EventLoopPOSIX_removeTimer(UA_EventLoop *public_el,
                               UA_UInt64 callbackId) {
     UA_EventLoopPOSIX *el = (UA_EventLoopPOSIX*)public_el;
@@ -100,7 +100,7 @@ resetDelayedQueue(UA_EventLoopPOSIX *el,
     UA_atomic_xchg(&el->delayedTail, inactiveHead, oldTail);
 }
 
-static void
+void
 UA_EventLoopPOSIX_removeDelayedCallback(UA_EventLoop *public_el,
                                         UA_DelayedCallback *dc) {
     UA_EventLoopPOSIX *el = (UA_EventLoopPOSIX*)public_el;
@@ -132,8 +132,8 @@ UA_EventLoopPOSIX_removeDelayedCallback(UA_EventLoop *public_el,
     UA_UNLOCK(&el->elMutex);
 }
 
-static void
-processDelayed(UA_EventLoopPOSIX *el) {
+void
+UA_EventLoopPOSIX_processDelayed(UA_EventLoopPOSIX *el) {
     UA_LOG_TRACE(el->eventLoop.logger, UA_LOGCATEGORY_EVENTLOOP,
                  "Process delayed callbacks");
 
@@ -166,7 +166,8 @@ processDelayed(UA_EventLoopPOSIX *el) {
 /***********************/
 
 static UA_StatusCode
-UA_EventLoopPOSIX_start(UA_EventLoopPOSIX *el) {
+UA_EventLoopPOSIX_start(UA_EventLoop *public_el) {
+    UA_EventLoopPOSIX *el = (UA_EventLoopPOSIX*)public_el;
     UA_LOCK(&el->elMutex);
 
     if(el->eventLoop.state != UA_EVENTLOOPSTATE_FRESH &&
@@ -301,7 +302,8 @@ checkClosed(UA_EventLoopPOSIX *el) {
 }
 
 static void
-UA_EventLoopPOSIX_stop(UA_EventLoopPOSIX *el) {
+UA_EventLoopPOSIX_stop(UA_EventLoop *public_el) {
+    UA_EventLoopPOSIX *el = (UA_EventLoopPOSIX*)public_el;
     UA_LOCK(&el->elMutex);
 
     if(el->eventLoop.state != UA_EVENTLOOPSTATE_STARTED) {
@@ -334,7 +336,8 @@ UA_EventLoopPOSIX_stop(UA_EventLoopPOSIX *el) {
 }
 
 static UA_StatusCode
-UA_EventLoopPOSIX_run(UA_EventLoopPOSIX *el, UA_UInt32 timeout) {
+UA_EventLoopPOSIX_run(UA_EventLoop *public_el, UA_UInt32 timeout) {
+    UA_EventLoopPOSIX *el = (UA_EventLoopPOSIX*)public_el;
     UA_LOCK(&el->elMutex);
 
     if(el->executing) {
@@ -370,7 +373,7 @@ UA_EventLoopPOSIX_run(UA_EventLoopPOSIX *el, UA_UInt32 timeout) {
      * - The timeout for polling is selected to be ready in time for the next
      *   cyclic callback. So we want to do little work between the timeout
      *   running out and executing the due cyclic callbacks. */
-    processDelayed(el);
+    UA_EventLoopPOSIX_processDelayed(el);
 
     /* A delayed callback could create another delayed callback (or re-add
      * itself). In that case we don't want to wait (indefinitely) for an event
@@ -405,9 +408,10 @@ UA_EventLoopPOSIX_run(UA_EventLoopPOSIX *el, UA_UInt32 timeout) {
 /* Registering Event Sources */
 /*****************************/
 
-static UA_StatusCode
-UA_EventLoopPOSIX_registerEventSource(UA_EventLoopPOSIX *el,
+UA_StatusCode
+UA_EventLoopPOSIX_registerEventSource(UA_EventLoop *public_el,
                                       UA_EventSource *es) {
+    UA_EventLoopPOSIX *el = (UA_EventLoopPOSIX*)public_el;
     UA_LOCK(&el->elMutex);
 
     /* Already registered? */
@@ -436,9 +440,10 @@ UA_EventLoopPOSIX_registerEventSource(UA_EventLoopPOSIX *el,
     return res;
 }
 
-static UA_StatusCode
-UA_EventLoopPOSIX_deregisterEventSource(UA_EventLoopPOSIX *el,
+UA_StatusCode
+UA_EventLoopPOSIX_deregisterEventSource(UA_EventLoop *public_el,
                                         UA_EventSource *es) {
+    UA_EventLoopPOSIX *el = (UA_EventLoopPOSIX*)public_el;
     UA_LOCK(&el->elMutex);
 
     if(es->state != UA_EVENTSOURCESTATE_STOPPED) {
@@ -471,12 +476,12 @@ UA_EventLoopPOSIX_deregisterEventSource(UA_EventLoopPOSIX *el,
 /* Time Domain */
 /***************/
 
-static UA_DateTime
+UA_DateTime
 UA_EventLoopPOSIX_DateTime_now(UA_EventLoop *el) {
 #if defined(UA_ARCHITECTURE_POSIX)
     UA_EventLoopPOSIX *pel = (UA_EventLoopPOSIX*)el;
     struct timespec ts;
-    int res = clock_gettime(pel->clockSource, &ts);
+    int res = clock_gettime((clockid_t)pel->clockSource, &ts);
     if(UA_UNLIKELY(res != 0))
         return 0;
     return (ts.tv_sec * UA_DATETIME_SEC) + (ts.tv_nsec / 100) + UA_DATETIME_UNIX_EPOCH;
@@ -485,12 +490,12 @@ UA_EventLoopPOSIX_DateTime_now(UA_EventLoop *el) {
 #endif
 }
 
-static UA_DateTime
+UA_DateTime
 UA_EventLoopPOSIX_DateTime_nowMonotonic(UA_EventLoop *el) {
 #if defined(UA_ARCHITECTURE_POSIX)
     UA_EventLoopPOSIX *pel = (UA_EventLoopPOSIX*)el;
     struct timespec ts;
-    int res = clock_gettime(pel->clockSourceMonotonic, &ts);
+    int res = clock_gettime((clockid_t)pel->clockSourceMonotonic, &ts);
     if(UA_UNLIKELY(res != 0))
         return 0;
     /* Also add the unix epoch for the monotonic clock. So we get a "normal"
@@ -501,7 +506,7 @@ UA_EventLoopPOSIX_DateTime_nowMonotonic(UA_EventLoop *el) {
 #endif
 }
 
-static UA_Int64
+UA_Int64
 UA_EventLoopPOSIX_DateTime_localTimeUtcOffset(UA_EventLoop *el) {
     /* TODO: Fix for custom clock sources */
     return UA_DateTime_localTimeUtcOffset();
@@ -512,7 +517,8 @@ UA_EventLoopPOSIX_DateTime_localTimeUtcOffset(UA_EventLoop *el) {
 /*************************/
 
 static UA_StatusCode
-UA_EventLoopPOSIX_free(UA_EventLoopPOSIX *el) {
+UA_EventLoopPOSIX_free(UA_EventLoop *public_el) {
+    UA_EventLoopPOSIX *el = (UA_EventLoopPOSIX*)public_el;
     UA_LOCK(&el->elMutex);
 
     /* Check if the EventLoop can be deleted */
@@ -527,7 +533,7 @@ UA_EventLoopPOSIX_free(UA_EventLoopPOSIX *el) {
     /* Deregister and delete all the EventSources */
     while(el->eventLoop.eventSources) {
         UA_EventSource *es = el->eventLoop.eventSources;
-        UA_EventLoopPOSIX_deregisterEventSource(el, es);
+        UA_EventLoopPOSIX_deregisterEventSource(public_el, es);
         es->free(es);
     }
 
@@ -535,7 +541,7 @@ UA_EventLoopPOSIX_free(UA_EventLoopPOSIX *el) {
     UA_Timer_clear(&el->timer);
 
     /* Process remaining delayed callbacks */
-    processDelayed(el);
+    UA_EventLoopPOSIX_processDelayed(el);
 
 #ifdef UA_ARCHITECTURE_WIN32
     /* Stop the Windows networking subsystem */
@@ -551,14 +557,26 @@ UA_EventLoopPOSIX_free(UA_EventLoopPOSIX *el) {
     return UA_STATUSCODE_GOOD;
 }
 
-static void
+void
 UA_EventLoopPOSIX_lock(UA_EventLoop *public_el) {
     UA_LOCK(&((UA_EventLoopPOSIX*)public_el)->elMutex);
 }
-static void
+void
 UA_EventLoopPOSIX_unlock(UA_EventLoop *public_el) {
     UA_UNLOCK(&((UA_EventLoopPOSIX*)public_el)->elMutex);
 }
+
+/* Forward declarations for the FD-polling backend implementations further
+ * down in this file (select or epoll, chosen at compile time). */
+#if defined(UA_HAVE_EPOLL)
+static UA_StatusCode registerFD_epoll(UA_EventLoopPOSIX *el, UA_RegisteredFD *rfd);
+static UA_StatusCode modifyFD_epoll(UA_EventLoopPOSIX *el, UA_RegisteredFD *rfd);
+static void deregisterFD_epoll(UA_EventLoopPOSIX *el, UA_RegisteredFD *rfd);
+#else
+static UA_StatusCode registerFD_select(UA_EventLoopPOSIX *el, UA_RegisteredFD *rfd);
+static UA_StatusCode modifyFD_select(UA_EventLoopPOSIX *el, UA_RegisteredFD *rfd);
+static void deregisterFD_select(UA_EventLoopPOSIX *el, UA_RegisteredFD *rfd);
+#endif
 
 UA_EventLoop *
 UA_EventLoop_new_POSIX(const UA_Logger *logger) {
@@ -599,11 +617,11 @@ UA_EventLoop_new_POSIX(const UA_Logger *logger) {
 #endif
 
     /* Set the method pointers for the interface */
-    el->eventLoop.start = (UA_StatusCode (*)(UA_EventLoop*))UA_EventLoopPOSIX_start;
-    el->eventLoop.stop = (void (*)(UA_EventLoop*))UA_EventLoopPOSIX_stop;
-    el->eventLoop.free = (UA_StatusCode (*)(UA_EventLoop*))UA_EventLoopPOSIX_free;
-    el->eventLoop.run = (UA_StatusCode (*)(UA_EventLoop*, UA_UInt32))UA_EventLoopPOSIX_run;
-    el->eventLoop.cancel = (void (*)(UA_EventLoop*))UA_EventLoopPOSIX_cancel;
+    el->eventLoop.start = UA_EventLoopPOSIX_start;
+    el->eventLoop.stop = UA_EventLoopPOSIX_stop;
+    el->eventLoop.free = UA_EventLoopPOSIX_free;
+    el->eventLoop.run = UA_EventLoopPOSIX_run;
+    el->eventLoop.cancel = UA_EventLoopPOSIX_cancel;
 
     el->eventLoop.dateTime_now = UA_EventLoopPOSIX_DateTime_now;
     el->eventLoop.dateTime_nowMonotonic =
@@ -618,15 +636,22 @@ UA_EventLoop_new_POSIX(const UA_Logger *logger) {
     el->eventLoop.addDelayedCallback = UA_EventLoopPOSIX_addDelayedCallback;
     el->eventLoop.removeDelayedCallback = UA_EventLoopPOSIX_removeDelayedCallback;
 
-    el->eventLoop.registerEventSource =
-        (UA_StatusCode (*)(UA_EventLoop*, UA_EventSource*))
-        UA_EventLoopPOSIX_registerEventSource;
-    el->eventLoop.deregisterEventSource =
-        (UA_StatusCode (*)(UA_EventLoop*, UA_EventSource*))
-        UA_EventLoopPOSIX_deregisterEventSource;
+    el->eventLoop.registerEventSource = UA_EventLoopPOSIX_registerEventSource;
+    el->eventLoop.deregisterEventSource = UA_EventLoopPOSIX_deregisterEventSource;
 
     el->eventLoop.lock = UA_EventLoopPOSIX_lock;
     el->eventLoop.unlock = UA_EventLoopPOSIX_unlock;
+
+    /* Select the FD polling backend */
+#if defined(UA_HAVE_EPOLL)
+    el->registerFD = registerFD_epoll;
+    el->modifyFD = modifyFD_epoll;
+    el->deregisterFD = deregisterFD_epoll;
+#else
+    el->registerFD = registerFD_select;
+    el->modifyFD = modifyFD_select;
+    el->deregisterFD = deregisterFD_select;
+#endif
 
     return &el->eventLoop;
 }
@@ -662,33 +687,19 @@ UA_EventLoopPOSIX_freeNetworkBuffer(UA_ConnectionManager *cm,
 
 UA_StatusCode
 UA_EventLoopPOSIX_allocateStaticBuffers(UA_POSIXConnectionManager *pcm) {
-    UA_StatusCode res = UA_STATUSCODE_GOOD;
-    UA_UInt32 rxBufSize = 2u << 16; /* The default is 64kb */
-    const UA_UInt32 *configRxBufSize = (const UA_UInt32 *)
-        UA_KeyValueMap_getScalar(&pcm->cm.eventSource.params,
-                                 UA_QUALIFIEDNAME(0, "recv-bufsize"),
-                                 &UA_TYPES[UA_TYPES_UINT32]);
-    if(configRxBufSize)
-        rxBufSize = *configRxBufSize;
-    if(pcm->rxBuffer.length != rxBufSize) {
-        UA_ByteString_clear(&pcm->rxBuffer);
-        res = UA_ByteString_allocBuffer(&pcm->rxBuffer, rxBufSize);
-    }
+    UA_StatusCode res =
+        UA_EventLoopCommon_allocStaticBuffer(&pcm->cm.eventSource.params,
+                                             UA_QUALIFIEDNAME(0, "recv-bufsize"),
+                                             1u << 16, /* The default is 64 kb */
+                                             &pcm->rxBuffer);
 
     /* Default the tx buffer to the rx size so a dedicated static send buffer
      * always exists. This avoids a malloc/free on every send without reusing
      * the rx buffer (which may still hold unprocessed received data). */
-    UA_UInt32 txBufSize = rxBufSize;
-    const UA_UInt32 *configTxBufSize = (const UA_UInt32 *)
-        UA_KeyValueMap_getScalar(&pcm->cm.eventSource.params,
-                                 UA_QUALIFIEDNAME(0, "send-bufsize"),
-                                 &UA_TYPES[UA_TYPES_UINT32]);
-    if(configTxBufSize)
-        txBufSize = *configTxBufSize;
-    if(pcm->txBuffer.length != txBufSize) {
-        UA_ByteString_clear(&pcm->txBuffer);
-        res |= UA_ByteString_allocBuffer(&pcm->txBuffer, txBufSize);
-    }
+    res |= UA_EventLoopCommon_allocStaticBuffer(&pcm->cm.eventSource.params,
+                                                UA_QUALIFIEDNAME(0, "send-bufsize"),
+                                                (UA_UInt32)pcm->rxBuffer.length,
+                                                &pcm->txBuffer);
     return res;
 }
 
@@ -760,8 +771,8 @@ flushSelfPipe(UA_SOCKET s) {
 
 #if !defined(UA_HAVE_EPOLL)
 
-UA_StatusCode
-UA_EventLoopPOSIX_registerFD(UA_EventLoopPOSIX *el, UA_RegisteredFD *rfd) {
+static UA_StatusCode
+registerFD_select(UA_EventLoopPOSIX *el, UA_RegisteredFD *rfd) {
     UA_LOCK_ASSERT(&el->elMutex);
     UA_LOG_DEBUG(el->eventLoop.logger, UA_LOGCATEGORY_EVENTLOOP,
                  "Registering fd: %u", (unsigned)rfd->fd);
@@ -780,15 +791,15 @@ UA_EventLoopPOSIX_registerFD(UA_EventLoopPOSIX *el, UA_RegisteredFD *rfd) {
     return UA_STATUSCODE_GOOD;
 }
 
-UA_StatusCode
-UA_EventLoopPOSIX_modifyFD(UA_EventLoopPOSIX *el, UA_RegisteredFD *rfd) {
+static UA_StatusCode
+modifyFD_select(UA_EventLoopPOSIX *el, UA_RegisteredFD *rfd) {
     /* Do nothing, it is enough if the data was changed in the rfd */
     UA_LOCK_ASSERT(&el->elMutex);
     return UA_STATUSCODE_GOOD;
 }
 
-void
-UA_EventLoopPOSIX_deregisterFD(UA_EventLoopPOSIX *el, UA_RegisteredFD *rfd) {
+static void
+deregisterFD_select(UA_EventLoopPOSIX *el, UA_RegisteredFD *rfd) {
     UA_LOCK_ASSERT(&el->elMutex);
     UA_LOG_DEBUG(el->eventLoop.logger, UA_LOGCATEGORY_EVENTLOOP,
                  "Unregistering fd: %u", (unsigned)rfd->fd);
@@ -923,7 +934,7 @@ UA_EventLoopPOSIX_pollFDs(UA_EventLoopPOSIX *el, UA_DateTime listenTimeout) {
         rfd->eventSourceCB(rfd->es, rfd, event);
 
         /* The fd has removed itself */
-        if(i == el->fdsSize || rfd != el->fds[i])
+        if(i >= el->fdsSize || rfd != el->fds[i])
             i--;
     }
     return UA_STATUSCODE_GOOD;
@@ -931,8 +942,8 @@ UA_EventLoopPOSIX_pollFDs(UA_EventLoopPOSIX *el, UA_DateTime listenTimeout) {
 
 #else /* defined(UA_HAVE_EPOLL) */
 
-UA_StatusCode
-UA_EventLoopPOSIX_registerFD(UA_EventLoopPOSIX *el, UA_RegisteredFD *rfd) {
+static UA_StatusCode
+registerFD_epoll(UA_EventLoopPOSIX *el, UA_RegisteredFD *rfd) {
     struct epoll_event event;
     memset(&event, 0, sizeof(struct epoll_event));
     event.data.ptr = rfd;
@@ -953,8 +964,8 @@ UA_EventLoopPOSIX_registerFD(UA_EventLoopPOSIX *el, UA_RegisteredFD *rfd) {
     return UA_STATUSCODE_GOOD;
 }
 
-UA_StatusCode
-UA_EventLoopPOSIX_modifyFD(UA_EventLoopPOSIX *el, UA_RegisteredFD *rfd) {
+static UA_StatusCode
+modifyFD_epoll(UA_EventLoopPOSIX *el, UA_RegisteredFD *rfd) {
     struct epoll_event event;
     memset(&event, 0, sizeof(struct epoll_event));
     event.data.ptr = rfd;
@@ -975,8 +986,8 @@ UA_EventLoopPOSIX_modifyFD(UA_EventLoopPOSIX *el, UA_RegisteredFD *rfd) {
     return UA_STATUSCODE_GOOD;
 }
 
-void
-UA_EventLoopPOSIX_deregisterFD(UA_EventLoopPOSIX *el, UA_RegisteredFD *rfd) {
+static void
+deregisterFD_epoll(UA_EventLoopPOSIX *el, UA_RegisteredFD *rfd) {
     int res = epoll_ctl(el->epollfd, EPOLL_CTL_DEL, rfd->fd, NULL);
     if(res != 0) {
         UA_LOG_SOCKET_ERRNO_WRAP(
@@ -1062,6 +1073,26 @@ UA_EventLoopPOSIX_pollFDs(UA_EventLoopPOSIX *el, UA_DateTime listenTimeout) {
 
 #endif /* defined(UA_HAVE_EPOLL) */
 
+/* Thin wrappers dispatching through the backend selected in
+ * UA_EventLoop_new_POSIX / UA_EventLoop_new_GLib. This is what
+ * ConnectionManagers (TCP, UDP, Ethernet, ...) actually call -- they do not
+ * need to know which backend is behind a given EventLoop instance. */
+
+UA_StatusCode
+UA_EventLoopPOSIX_registerFD(UA_EventLoopPOSIX *el, UA_RegisteredFD *rfd) {
+    return el->registerFD(el, rfd);
+}
+
+UA_StatusCode
+UA_EventLoopPOSIX_modifyFD(UA_EventLoopPOSIX *el, UA_RegisteredFD *rfd) {
+    return el->modifyFD(el, rfd);
+}
+
+void
+UA_EventLoopPOSIX_deregisterFD(UA_EventLoopPOSIX *el, UA_RegisteredFD *rfd) {
+    el->deregisterFD(el, rfd);
+}
+
 #ifdef UA_ARCHITECTURE_WIN32
 int UA_EventLoopPOSIX_pipe(SOCKET fds[2]) {
     struct sockaddr_in inaddr;
@@ -1076,7 +1107,7 @@ int UA_EventLoopPOSIX_pipe(SOCKET fds[2]) {
 
     struct sockaddr_storage addr;
     memset(&addr, 0, sizeof(addr));
-    int len = sizeof(addr);
+    socklen_t len = sizeof(addr);
     getsockname(lst, (struct sockaddr*)&addr, &len);
 
     fds[0] = socket(AF_INET, SOCK_STREAM, 0);
@@ -1106,7 +1137,8 @@ int UA_EventLoopPOSIX_pipe(UA_FD fds[2]) {
 #endif
 
 void
-UA_EventLoopPOSIX_cancel(UA_EventLoopPOSIX *el) {
+UA_EventLoopPOSIX_cancel(UA_EventLoop *public_el) {
+    UA_EventLoopPOSIX *el = (UA_EventLoopPOSIX*)public_el;
     /* Nothing to do if the EventLoop is not executing */
     if(!el->executing)
         return;

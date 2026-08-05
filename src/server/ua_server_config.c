@@ -39,6 +39,10 @@ UA_ServerConfig_clear(UA_ServerConfig *config) {
     config->serverUrls = NULL;
     config->serverUrlsSize = 0;
 
+    UA_ByteString_clear(&config->webSocketCertificate);
+    UA_ByteString_clear(&config->webSocketPrivateKey);
+    UA_String_clear(&config->webSocketPrivateKeyPassword);
+
     /* Security Policies */
     for(size_t i = 0; i < config->securityPoliciesSize; ++i) {
         UA_SecurityPolicy *policy = &config->securityPolicies[i];

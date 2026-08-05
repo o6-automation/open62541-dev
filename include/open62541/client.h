@@ -616,8 +616,9 @@ struct UA_ClientConfig {
      * under these restrictions, then the connection will abort with an error
      * message. */
 
-    UA_String endpointUrl; /* The URI for the client to connect to
-                            * ("opc.tcp://host:port") */
+    UA_String endpointUrl; /* The URI for the client to connect to, e.g.
+                            * "opc.tcp://host:port" or
+                            * "opc.wss://host:port/path" */
 
     /* Session config */
     UA_ExtensionObject userIdentityToken; /* UserIdentityToken containing e.g.
@@ -643,6 +644,13 @@ struct UA_ClientConfig {
     UA_UInt32 connectivityCheckInterval; /* Connectivity check interval in ms.
                                           * 0 -> background task disabled */
     UA_Boolean tcpReuseAddr; /* Specific to OPC UA with TCP transport. */
+#ifdef UA_ENABLE_LWS
+    UA_ByteString webSocketCaCertificate; /* DER or PEM encoded CA certificate
+                                           * for WebSocket TLS. The system trust
+                                           * store is used when empty. */
+    UA_UInt32 webSocketMaxQueueSize; /* Max bytes queued for a slow WebSocket
+                                      * peer (default: 16 * sendBufferSize) */
+#endif
 
     /* Endpoint Selection
      * ~~~~~~~~~~~~~~~~~~
@@ -788,6 +796,17 @@ struct UA_ClientConfig {
 
     /* Advanced Settings
      * ~~~~~~~~~~~~~~~~~ */
+
+    /* Maximum number of application-level asynchronous service calls that may
+     * be outstanding. A value of 0 disables the limit. The default is 32.
+     * Internal requests for connection maintenance and Publish are not counted.
+     *
+     * When the limit is reached, UA_RULEHANDLING_ABORT (and DEFAULT) rejects a
+     * new call with BadTooManyOperations. UA_RULEHANDLING_WARN logs a warning
+     * and waits for capacity. UA_RULEHANDLING_ACCEPT waits silently. Waiting
+     * runs the EventLoop and can therefore execute user callbacks. */
+    UA_UInt32 maxAsyncServiceCalls;
+    UA_RuleHandling asyncServiceCallRule;
 
     /* Number of PublishResponse queued up in the server */
     UA_UInt16 outStandingPublishRequests;

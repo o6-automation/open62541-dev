@@ -22,37 +22,11 @@
 #include "ua_server_internal.h"
 #include "../ua_types_encoding_binary.h"
 #include "ua_services.h"
-#include "mp_printf.h"
 
 #ifdef UA_DEBUG_DUMP_PKGS_FILE
 void UA_debug_dumpCompleteChunk(UA_Server *const server, UA_Connection *const connection,
                                 UA_ByteString *messageBuffer);
 #endif
-
-/* Maximum numbers of sockets to listen on */
-#define UA_MAXSERVERCONNECTIONS 16
-
-typedef struct {
-    UA_ConnectionState state;
-    uintptr_t connectionId;
-    UA_ConnectionManager *connectionManager;
-} UA_ServerConnection;
-
-/* Binary Protocol Manager */
-typedef struct {
-    UA_Driver drv;
-    const UA_Logger *logging; /* shortcut */
-    UA_UInt64 houseKeepingCallbackId;
-
-    UA_ServerConnection serverConnections[UA_MAXSERVERCONNECTIONS];
-    size_t serverConnectionsSize;
-
-    UA_ConnectionConfig tcpConnectionConfig; /* Extracted from the server config
-                                              * parameters */
-
-    /* SecureChannels */
-    TAILQ_HEAD(, UA_SecureChannel) channels;
-} UA_BinaryProtocolManager;
 
 static void
 setBinaryProtocolManagerState(UA_BinaryProtocolManager *bpm,
@@ -543,7 +517,9 @@ purgeFirstChannelWithoutSession(UA_Server *server) {
 }
 
 UA_StatusCode
-createServerSecureChannel(UA_Server *server, UA_ConnectionManager *cm,
+createServerSecureChannel(UA_Server *server,
+                          const UA_ConnectionConfig *connectionConfig,
+                          UA_ConnectionManager *cm,
                           uintptr_t connectionId, const UA_KeyValueMap *params,
                           UA_SecureChannel **outChannel) {
     UA_LOCK_ASSERT(&server->serviceMutex);
@@ -561,28 +537,26 @@ createServerSecureChannel(UA_Server *server, UA_ConnectionManager *cm,
         return UA_STATUSCODE_BADOUTOFMEMORY;
 
     /* Set up the initial connection config */
-    UA_ConnectionConfig connConfig;
-    connConfig.protocolVersion = 0;
-    connConfig.recvBufferSize = config->tcpBufSize;
-    connConfig.sendBufferSize = config->tcpBufSize;
-    connConfig.localMaxMessageSize = config->tcpMaxMsgSize;
-    connConfig.remoteMaxMessageSize = config->tcpMaxMsgSize;
-    connConfig.localMaxChunkCount = config->tcpMaxChunks;
-    connConfig.remoteMaxChunkCount = config->tcpMaxChunks;
+    UA_ConnectionConfig connConfig = *connectionConfig;
 
     /* Further constrain the bufsize if the ConnectionManager has static rx/tx
-     * buffers configured */
+     * buffers configured. Also applies when tcpBufSize is unset (0), so that
+     * chunks always fit into the static buffers. Never constrain below 8192
+     * bytes: the transport buffer must be at least that size to fit a single
+     * MessageChunk (OPC UA Part 6 v1.05.07 §6.7.1 and §6.7.2.4). */
     const UA_UInt32 *bufSize = (const UA_UInt32 *)
         UA_KeyValueMap_getScalar(&cm->eventSource.params,
                                  UA_QUALIFIEDNAME(0, "recv-bufsize"),
                                  &UA_TYPES[UA_TYPES_UINT32]);
-    if(bufSize && *bufSize < connConfig.recvBufferSize)
+    if(bufSize && *bufSize >= 8192 &&
+       (connConfig.recvBufferSize == 0 || *bufSize < connConfig.recvBufferSize))
         connConfig.recvBufferSize = *bufSize;
     bufSize = (const UA_UInt32 *)
         UA_KeyValueMap_getScalar(&cm->eventSource.params,
                                  UA_QUALIFIEDNAME(0, "send-bufsize"),
                                  &UA_TYPES[UA_TYPES_UINT32]);
-    if(bufSize && *bufSize < connConfig.sendBufferSize)
+    if(bufSize && *bufSize >= 8192 &&
+       (connConfig.sendBufferSize == 0 || *bufSize < connConfig.sendBufferSize))
         connConfig.sendBufferSize = *bufSize;
 
     /* Set upper bounds if not configured */
@@ -643,35 +617,7 @@ createServerSecureChannel(UA_Server *server, UA_ConnectionManager *cm,
     return UA_STATUSCODE_GOOD;
 }
 
-static void
-addDiscoveryUrl(UA_Server *server, const UA_String hostname, UA_UInt16 port) {
-    char urlstr[1024];
-    mp_snprintf(urlstr, 1024, "opc.tcp://%S:%d", hostname, port);
-    UA_String discoveryServerUrl = UA_STRING(urlstr);
-
-    /* Check if the ServerUrl is already present in the DiscoveryUrl array.
-     * Add if not already there. */
-    for(size_t i = 0; i < server->config.applicationDescription.discoveryUrlsSize; i++) {
-        if(UA_String_equal(&discoveryServerUrl,
-                           &server->config.applicationDescription.discoveryUrls[i]))
-            return;
-    }
-
-    /* Add to the list of discovery url */
-    UA_StatusCode res =
-        UA_Array_appendCopy((void **)&server->config.applicationDescription.discoveryUrls,
-                            &server->config.applicationDescription.discoveryUrlsSize,
-                            &discoveryServerUrl, &UA_TYPES[UA_TYPES_STRING]);
-    if(res == UA_STATUSCODE_GOOD) {
-        UA_LOG_INFO(server->config.logging, UA_LOGCATEGORY_SERVER,
-                    "New DiscoveryUrl added: %S", discoveryServerUrl);
-    } else {
-        UA_LOG_WARNING(server->config.logging, UA_LOGCATEGORY_SERVER,
-                       "Could not register DiscoveryUrl -- out of memory");
-    }
-}
-
-/* Callback of a TCP socket (server socket or an active connection).
+/* Callback of a server socket or an active connection.
  *
  * The connectionContext points to one of two possible structures. A
  * double-pointer is used here, so we get re-assign the context to a different
@@ -720,14 +666,8 @@ serverNetworkCallbackLocked(UA_ConnectionManager *cm, uintptr_t connectionId,
         *connectionContext = (void*)sc; /* Set the context pointer in the connection */
 
         /* Add to the DiscoveryUrls */
-        const UA_UInt16 *port = (const UA_UInt16*)
-            UA_KeyValueMap_getScalar(params, UA_QUALIFIEDNAME(0, "listen-port"),
-                                     &UA_TYPES[UA_TYPES_UINT16]);
-        const UA_String *address = (const UA_String*)
-            UA_KeyValueMap_getScalar(params, UA_QUALIFIEDNAME(0, "listen-address"),
-                                     &UA_TYPES[UA_TYPES_STRING]);
-        if(port && address)
-            addDiscoveryUrl(bpm->drv.server, *address, *port);
+        if(bpm->addDiscoveryUrl)
+            bpm->addDiscoveryUrl(bpm, params);
         return;
     }
 
@@ -764,13 +704,16 @@ serverNetworkCallbackLocked(UA_ConnectionManager *cm, uintptr_t connectionId,
     if(serverSocket) {
         /* A new connection is opening. This is the only place where
          * createSecureChannel is used. */
-        retval = createServerSecureChannel(bpm->drv.server, cm, connectionId,
+        retval = createServerSecureChannel(bpm->drv.server,
+                                           &bpm->connectionConfig,
+                                           cm, connectionId,
                                            params, &channel);
 
         if(retval != UA_STATUSCODE_GOOD) {
             UA_LOG_WARNING(bpm->logging, UA_LOGCATEGORY_SERVER,
-                           "TCP %lu\t| Could not accept the connection with status %s",
-                           (unsigned long)sc->connectionId, UA_StatusCode_name(retval));
+                           "%S %lu\t| Could not accept the connection with status %s",
+                           bpm->protocolName, (unsigned long)sc->connectionId,
+                           UA_StatusCode_name(retval));
             *connectionContext = NULL;
             cm->closeConnection(cm, connectionId);
             return;
@@ -844,66 +787,6 @@ serverNetworkCallback(UA_ConnectionManager *cm, uintptr_t connectionId,
     unlockServer(bpm->drv.server);
 }
 
-static UA_StatusCode
-createServerConnection(UA_BinaryProtocolManager *bpm, const UA_String *serverUrl) {
-    UA_Server *server = bpm->drv.server;
-    UA_ServerConfig *config = &server->config;
-
-    UA_LOCK_ASSERT(&server->serviceMutex);
-
-    /* Extract the protocol, hostname and port from the url */
-    UA_String hostname = UA_STRING_NULL;
-    UA_String path = UA_STRING_NULL;
-    UA_UInt16 port = 4840; /* default */
-    UA_StatusCode res = UA_parseEndpointUrl(serverUrl, &hostname, &port, &path);
-    if(res != UA_STATUSCODE_GOOD)
-        return res;
-
-    UA_String tcpString = UA_STRING("tcp");
-    for(UA_EventSource *es = config->eventLoop->eventSources;
-        es != NULL; es = es->next) {
-        /* Is this a usable connection manager? */
-        if(es->eventSourceType != UA_EVENTSOURCETYPE_CONNECTIONMANAGER)
-            continue;
-        UA_ConnectionManager *cm = (UA_ConnectionManager*)es;
-        if(!UA_String_equal(&tcpString, &cm->protocol))
-            continue;
-
-        /* Set up the parameters */
-        UA_KeyValuePair params[4];
-        size_t paramsSize = 3;
-
-        params[0].key = UA_QUALIFIEDNAME(0, "port");
-        UA_Variant_setScalar(&params[0].value, &port, &UA_TYPES[UA_TYPES_UINT16]);
-
-        UA_Boolean listen = true;
-        params[1].key = UA_QUALIFIEDNAME(0, "listen");
-        UA_Variant_setScalar(&params[1].value, &listen, &UA_TYPES[UA_TYPES_BOOLEAN]);
-
-        UA_Boolean reuseaddr = config->tcpReuseAddr;
-        params[2].key = UA_QUALIFIEDNAME(0, "reuse");
-        UA_Variant_setScalar(&params[2].value, &reuseaddr, &UA_TYPES[UA_TYPES_BOOLEAN]);
-
-        /* The hostname is non-empty */
-        if(hostname.length > 0) {
-            params[3].key = UA_QUALIFIEDNAME(0, "address");
-            UA_Variant_setArray(&params[3].value, &hostname, 1, &UA_TYPES[UA_TYPES_STRING]);
-            paramsSize = 4;
-        }
-
-        UA_KeyValueMap paramsMap;
-        paramsMap.map = params;
-        paramsMap.mapSize = paramsSize;
-
-        /* Open the server connection */
-        res = cm->openConnection(cm, &paramsMap, bpm, NULL, serverNetworkCallback);
-        if(res == UA_STATUSCODE_GOOD)
-            return res;
-    }
-
-    return UA_STATUSCODE_BADINTERNALERROR;
-}
-
 /* Remove timed out SecureChannels */
 static void
 secureChannelHouseKeeping(UA_Server *server, void *context) {
@@ -913,8 +796,8 @@ secureChannelHouseKeeping(UA_Server *server, void *context) {
     UA_EventLoop *el = server->config.eventLoop;
     UA_DateTime nowMonotonic = el->dateTime_nowMonotonic(el);
 
-    UA_SecureChannel *channel;
-    TAILQ_FOREACH(channel, &bpm->channels, componentEntry) {
+    UA_SecureChannel *channel, *channelTmp;
+    TAILQ_FOREACH_SAFE(channel, &bpm->channels, componentEntry, channelTmp) {
         UA_Boolean timeout = UA_SecureChannel_checkTimeout(channel, nowMonotonic);
         if(timeout) {
             UA_LOG_INFO_CHANNEL(bpm->logging, channel, "SecureChannel has timed out");
@@ -932,71 +815,19 @@ static UA_StatusCode
 UA_BinaryProtocolManager_start(UA_Driver *drv) {
     UA_BinaryProtocolManager *bpm = (UA_BinaryProtocolManager*)drv;
 
-    UA_Server *server = drv->server;
-    UA_ServerConfig *config = &server->config;
-
     /* Set the logging shortcut */
-    bpm->logging = config->logging;
-    
+    UA_Server *server = drv->server;
+    bpm->logging = server->config.logging;
+
     UA_StatusCode retVal =
         addRepeatedCallback(server, secureChannelHouseKeeping,
                             bpm, 1000.0, &bpm->houseKeepingCallbackId);
     if(retVal != UA_STATUSCODE_GOOD)
         return retVal;
 
-    /* Open server sockets */
-    UA_Boolean haveServerSocket = false;
-    if(config->serverUrlsSize == 0) {
-        /* Empty hostname -> listen on all devices */
-        UA_LOG_WARNING(config->logging, UA_LOGCATEGORY_SERVER,
-                       "No Server URL configured. Using \"opc.tcp://:4840\" "
-                       "to configure the listen socket.");
-        UA_String defaultUrl = UA_STRING("opc.tcp://:4840");
-        retVal = createServerConnection(bpm, &defaultUrl);
-        if(retVal == UA_STATUSCODE_GOOD)
-            haveServerSocket = true;
-    } else {
-        for(size_t i = 0; i < config->serverUrlsSize; i++) {
-            retVal = createServerConnection(bpm, &config->serverUrls[i]);
-            if(retVal == UA_STATUSCODE_GOOD)
-                haveServerSocket = true;
-        }
-    }
-
-    if(!haveServerSocket) {
-        UA_LOG_ERROR(config->logging, UA_LOGCATEGORY_SERVER,
-                     "The server has no server socket");
-        return UA_STATUSCODE_BADINTERNALERROR;
-    }
-
-    /* Update the application description to include the server urls for
-     * discovery. Don't add the urls with an empty host (listening on all
-     * interfaces) */
-    for(size_t i = 0; i < config->serverUrlsSize; i++) {
-        UA_String hostname = UA_STRING_NULL;
-        UA_String path = UA_STRING_NULL;
-        UA_UInt16 port = 0;
-        retVal = UA_parseEndpointUrl(&config->serverUrls[i],
-                                     &hostname, &port, &path);
-        if(retVal != UA_STATUSCODE_GOOD || hostname.length == 0)
-            continue;
-
-        /* Check if the ServerUrl is already present in the DiscoveryUrl array.
-         * Add if not already there. */
-        size_t j = 0;
-        for(; j < config->applicationDescription.discoveryUrlsSize; j++) {
-            if(UA_String_equal(&config->serverUrls[i],
-                               &config->applicationDescription.discoveryUrls[j]))
-                break;
-        }
-        if(j == config->applicationDescription.discoveryUrlsSize) {
-            retVal =
-                UA_Array_appendCopy((void**)&config->applicationDescription.discoveryUrls,
-                                    &config->applicationDescription.discoveryUrlsSize,
-                                    &config->serverUrls[i], &UA_TYPES[UA_TYPES_STRING]);
-            (void)retVal;
-        }
-    }
+    retVal = bpm->startTransport(bpm);
+    if(retVal != UA_STATUSCODE_GOOD)
+        return retVal;
 
     /* Set the state to started */
     setBinaryProtocolManagerState(bpm, UA_LIFECYCLESTATE_STARTED);
@@ -1013,8 +844,8 @@ UA_BinaryProtocolManager_stop(UA_Driver *drv) {
     bpm->houseKeepingCallbackId = 0;
 
     /* Stop all SecureChannels */
-    UA_SecureChannel *channel;
-    TAILQ_FOREACH(channel, &bpm->channels, componentEntry) {
+    UA_SecureChannel *channel, *channelTmp;
+    TAILQ_FOREACH_SAFE(channel, &bpm->channels, componentEntry, channelTmp) {
         UA_SecureChannel_shutdown(channel, UA_SHUTDOWNREASON_CLOSE);
     }
 
@@ -1046,22 +877,35 @@ UA_BinaryProtocolManager_free(UA_Driver *drv) {
     return UA_STATUSCODE_GOOD;
 }
 
-UA_Driver *
-UA_BinaryProtocolManager_new(void) {
-    UA_BinaryProtocolManager *bpm = (UA_BinaryProtocolManager*)
-        UA_calloc(1, sizeof(UA_BinaryProtocolManager));
-    if(!bpm)
-        return NULL;
-
+void
+UA_BinaryProtocolManager_init(
+    UA_BinaryProtocolManager *bpm, const UA_String name,
+    const UA_String protocolName,
+    UA_BinaryProtocolManagerStartTransport startTransport,
+    UA_BinaryProtocolManagerAddDiscoveryUrl addDiscoveryUrl) {
     TAILQ_INIT(&bpm->channels);
 
-    bpm->drv.name = UA_STRING("binary");
+    bpm->drv.name = name;
     bpm->drv.start = UA_BinaryProtocolManager_start;
     bpm->drv.stop = UA_BinaryProtocolManager_stop;
     bpm->drv.free = UA_BinaryProtocolManager_free;
+    bpm->protocolName = protocolName;
+    bpm->startTransport = startTransport;
+    bpm->addDiscoveryUrl = addDiscoveryUrl;
 
     /* Gets set during start */
     /* bpm->drv.server = server; */
+}
 
-    return &bpm->drv;
+void
+UA_BinaryConnectionConfig_set(UA_ConnectionConfig *connectionConfig,
+                              UA_UInt32 bufSize, UA_UInt32 maxMsgSize,
+                              UA_UInt32 maxChunks) {
+    connectionConfig->protocolVersion = 0;
+    connectionConfig->recvBufferSize = bufSize;
+    connectionConfig->sendBufferSize = bufSize;
+    connectionConfig->localMaxMessageSize = maxMsgSize;
+    connectionConfig->remoteMaxMessageSize = maxMsgSize;
+    connectionConfig->localMaxChunkCount = maxChunks;
+    connectionConfig->remoteMaxChunkCount = maxChunks;
 }

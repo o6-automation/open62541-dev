@@ -155,7 +155,8 @@ UA_Server_getNamespaceByIndex(UA_Server *server, const size_t namespaceIndex,
 
 UA_StatusCode
 UA_Server_forEachChildNodeCall(UA_Server *server, UA_NodeId parentNodeId,
-                               UA_NodeIteratorCallback callback, void *handle) {
+                               UA_ServerNodeIteratorCallback callback,
+                               void *handle) {
     UA_BrowseDescription bd;
     UA_BrowseDescription_init(&bd);
     bd.nodeId = parentNodeId;
@@ -190,6 +191,21 @@ addDriver(UA_Server *server, UA_Driver *drv) {
     if(!drv)
         return UA_STATUSCODE_BADINTERNALERROR;
 
+    /* A server can expose the GDS PushManagement information model only once. */
+    if(drv->driverType == UA_DRIVERTYPE_GDS_RECEIVER) {
+        UA_Driver *registered = server->drivers;
+        while(registered) {
+            if(registered->driverType == UA_DRIVERTYPE_GDS_RECEIVER) {
+                UA_LOG_ERROR(server->config.logging, UA_LOGCATEGORY_SERVER,
+                             "Cannot add the driver \"%S\". A GDS Receiver "
+                             "driver is already configured",
+                             drv->name);
+                return UA_STATUSCODE_BADALREADYEXISTS;
+            }
+            registered = registered->next;
+        }
+    }
+
     /* If undefined, set the backpointer to the current server */
     if(!drv->server)
         drv->server = server;
@@ -216,21 +232,21 @@ addDriver(UA_Server *server, UA_Driver *drv) {
 
 UA_StatusCode
 UA_Server_addDriver(UA_Server *server, UA_Driver *drv) {
-    UA_LOCK(&server->serviceMutex);
+    lockServer(server);
     UA_StatusCode res = addDriver(server, drv);
-    UA_UNLOCK(&server->serviceMutex);
+    unlockServer(server);
     return res;
 }
 
 UA_StatusCode
 UA_Server_removeDriver(UA_Server *server, UA_Driver *drv) {
-    UA_LOCK(&server->serviceMutex);
+    lockServer(server);
 
     if(drv->state != UA_LIFECYCLESTATE_STOPPED) {
         UA_LOG_ERROR(server->config.logging, UA_LOGCATEGORY_SERVER,
                      "Cannot remove the driver \"%S\". "
                      "It is not fully stopped.", drv->name);
-        UA_UNLOCK(&server->serviceMutex);
+        unlockServer(server);
         return UA_STATUSCODE_BADINTERNALERROR;
     }
 
@@ -245,7 +261,7 @@ UA_Server_removeDriver(UA_Server *server, UA_Driver *drv) {
         }
     }
 
-    UA_UNLOCK(&server->serviceMutex);
+    unlockServer(server);
     return res;
 }
 
@@ -306,6 +322,11 @@ UA_Server_delete(UA_Server *server) {
 
 #if UA_MULTITHREADING >= 100
     UA_AsyncManager_clear(&server->asyncManager, server);
+#endif
+
+#ifdef UA_ENABLE_SUBSCRIPTIONS_EVENTS
+    UA_assert(server->modelChangeDepth == 0);
+    UA_ModelChangeAccumulator_clear(&server->modelChanges);
 #endif
 
     /* Clean up the Admin Session */
@@ -422,6 +443,11 @@ UA_Server_init(UA_Server *server) {
     server->adminSession.validTill = UA_INT64_MAX;
     server->adminSession.sessionName = UA_STRING_ALLOC("Administrator");
 
+#ifdef UA_ENABLE_SUBSCRIPTIONS_EVENTS
+    UA_ModelChangeAccumulator_init(&server->modelChanges);
+    server->modelChangeSuppressionDepth = 1;
+#endif
+
 #ifdef UA_ENABLE_SUBSCRIPTIONS
     /* Initialize the adminSubscription */
     server->adminSubscription = UA_Subscription_new();
@@ -453,8 +479,8 @@ UA_Server_init(UA_Server *server) {
 #endif
 
     /* Initialize namespace 0 */
-#ifdef UA_GENERATED_NAMESPACE_ZERO
-    /* Standard configuration: generate NS0 nodes at runtime */
+#if defined(UA_GENERATED_NAMESPACE_ZERO) || defined(UA_NAMESPACE_ZERO_MINIMAL)
+    /* Generate NS0 nodes at runtime or create the minimal NS0 */
     res = initNS0(server);
 #else
     /* NONE configuration: NS0 pre-loaded by external nodestore (e.g., ROM).
@@ -482,6 +508,11 @@ UA_Server_init(UA_Server *server) {
     res = addDriver(server, server->binaryDriver);
     UA_CHECK_STATUS(res, goto cleanup);
 
+    /* Initialize OPC UA Binary over WebSockets */
+    server->webSocketDriver = UA_WebSocketProtocolManager_new();
+    res = addDriver(server, server->webSocketDriver);
+    UA_CHECK_STATUS(res, goto cleanup);
+
     /* Initialize the reverse connect binary protocol support */
     server->reverseBinaryDriver = UA_ReverseBinaryProtocolManager_new();
     res = addDriver(server, server->reverseBinaryDriver);
@@ -507,11 +538,6 @@ UA_Server_init(UA_Server *server) {
         res = addDriver(server, server->pubSubDriver);
         UA_CHECK_STATUS(res, goto cleanup);
     }
-#endif
-
-#ifdef UA_ENABLE_GDS_PUSHMANAGEMENT
-    res = addDriver(server, UA_GDSPushReceiveManager_new());
-    UA_CHECK_STATUS(res, goto cleanup);
 #endif
 
     /* For all custom datatypes, check if they are represented in the
@@ -820,199 +846,6 @@ UA_Server_removeCertificates(UA_Server *server,
     return UA_STATUSCODE_GOOD;
 }
 
-typedef struct UpdateCertInfo {
-    UA_Server *server;
-    UA_NodeId certificateTypeId;
-} UpdateCertInfo;
-
-static void
-secureChannel_delayedClose(void *application, void *context) {
-    UA_DelayedCallback *dc = (UA_DelayedCallback*)context;
-    UpdateCertInfo *info = (UpdateCertInfo*)application;
-
-    UA_SecureChannel *channel;
-    TAILQ_FOREACH(channel, &info->server->channels, serverEntry) {
-        const UA_SecurityPolicy *policy = channel->securityPolicy;
-        if(UA_NodeId_equal(&policy->certificateTypeId, &(info->certificateTypeId)))
-            UA_SecureChannel_shutdown(channel, UA_SHUTDOWNREASON_CLOSE);
-    }
-    UA_NodeId_clear(&(info->certificateTypeId));
-    UA_free(info);
-    UA_free(dc);
-}
-
-UA_StatusCode
-UA_Server_updateCertificate(UA_Server *server,
-                            const UA_NodeId certificateGroupId,
-                            const UA_NodeId certificateTypeId,
-                            const UA_ByteString certificate,
-                            const UA_ByteString *privateKey) {
-    if(!server)
-        return UA_STATUSCODE_BADINTERNALERROR;
-
-    lockServer(server);
-
-#ifdef UA_ENABLE_GDS_PUSHMANAGEMENT
-    UA_GDSManager *gdsm = gdsManager(server);
-    if(gdsm && gdsm->transaction.state == UA_GDSTRANSACTIONSTATE_PENDING) {
-        unlockServer(server);
-        return UA_STATUSCODE_BADTRANSACTIONPENDING;
-    }
-#endif
-
-    UA_NodeId defaultApplicationGroup =
-        UA_NS0ID(SERVERCONFIGURATION_CERTIFICATEGROUPS_DEFAULTAPPLICATIONGROUP);
-    UA_NodeId certGroupId = certificateGroupId;
-    if(UA_NodeId_isNull(&certGroupId)) {
-        /* Use default value if argument is empty */
-        certGroupId = defaultApplicationGroup;
-    }
-    /* The server currently only supports the DefaultApplicationGroup */
-    if(!UA_NodeId_equal(&certGroupId, &defaultApplicationGroup)) {
-        unlockServer(server);
-        return UA_STATUSCODE_BADINVALIDARGUMENT;
-    }
-
-    /* The server currently only supports the following certificate type */
-    /* UA_NodeId certTypRsaMin = UA_NS0ID(RSAMINAPPLICATIONCERTIFICATETYPE); */
-    UA_NodeId certTypRsaSha256 = UA_NS0ID(RSASHA256APPLICATIONCERTIFICATETYPE);
-    if(!UA_NodeId_equal(&certificateTypeId, &certTypRsaSha256)) {
-        unlockServer(server);
-        return UA_STATUSCODE_BADINVALIDARGUMENT;
-    }
-
-    UA_ByteString newPrivateKey = UA_BYTESTRING_NULL;
-    if(privateKey) {
-        if(UA_CertificateUtils_checkKeyPair(&certificate, privateKey) != UA_STATUSCODE_GOOD) {
-            unlockServer(server);
-            return UA_STATUSCODE_BADNOTSUPPORTED;
-        }
-        newPrivateKey = *privateKey;
-    }
-
-    UA_StatusCode retval = UA_STATUSCODE_GOOD;
-    for(size_t i = 0; i < server->config.endpointsSize; i++) {
-        UA_EndpointDescription *ed = &server->config.endpoints[i];
-        UA_SecurityPolicy *sp =
-            getSecurityPolicyByUri(server, &ed->securityPolicyUri);
-        UA_CHECK_MEM(sp, unlockServer(server); return UA_STATUSCODE_BADINTERNALERROR);
-
-        if(!UA_NodeId_equal(&sp->certificateTypeId, &certificateTypeId))
-            continue;
-
-        retval = sp->updateCertificate(sp, certificate, newPrivateKey);
-        if(retval != UA_STATUSCODE_GOOD) {
-            unlockServer(server);
-            return retval;
-        }
-
-        UA_ByteString_clear(&ed->serverCertificate);
-        UA_ByteString_copy(&certificate, &ed->serverCertificate);
-    }
-
-    UA_DelayedCallback *dc = (UA_DelayedCallback*)UA_calloc(1, sizeof(UA_DelayedCallback));
-    if(!dc) {
-        unlockServer(server);
-        return UA_STATUSCODE_BADOUTOFMEMORY;
-    }
-
-    UpdateCertInfo *certInfo = (UpdateCertInfo*)UA_calloc(1, sizeof(UpdateCertInfo));
-    certInfo->server = server;
-    UA_NodeId_copy(&certificateTypeId, &(certInfo->certificateTypeId));
-
-    dc->callback = secureChannel_delayedClose;
-    dc->application = certInfo;
-    dc->context = dc;
-
-    UA_EventLoop *el = server->config.eventLoop;
-    el->addDelayedCallback(el, dc);
-
-    unlockServer(server);
-    return UA_STATUSCODE_GOOD;
-}
-
-UA_StatusCode
-UA_Server_createSigningRequest(UA_Server *server,
-                               const UA_NodeId certificateGroupId,
-                               const UA_NodeId certificateTypeId,
-                               const UA_String *subjectName,
-                               const UA_Boolean *regenerateKey,
-                               const UA_ByteString *nonce,
-                               UA_ByteString *csr) {
-    if(!server || !csr)
-        return UA_STATUSCODE_BADINTERNALERROR;
-
-    UA_StatusCode retval = UA_STATUSCODE_GOOD;
-    UA_NodeId defaultApplicationGroup =
-        UA_NS0ID(SERVERCONFIGURATION_CERTIFICATEGROUPS_DEFAULTAPPLICATIONGROUP);
-    UA_NodeId certGroupId = certificateGroupId;
-    if(UA_NodeId_isNull(&certGroupId)) {
-        /* Use default value if argument is empty */
-        certGroupId = defaultApplicationGroup;
-    }
-    /* The server currently only supports the DefaultApplicationGroup */
-    if(!UA_NodeId_equal(&certGroupId, &defaultApplicationGroup))
-        return UA_STATUSCODE_BADINVALIDARGUMENT;
-
-    /* The server currently only supports RSA CertificateType */
-    UA_NodeId rsaShaCertificateType = UA_NS0ID(RSASHA256APPLICATIONCERTIFICATETYPE);
-    UA_NodeId rsaMinCertificateType = UA_NS0ID(RSAMINAPPLICATIONCERTIFICATETYPE);
-    if(!UA_NodeId_equal(&certificateTypeId, &rsaShaCertificateType) &&
-       !UA_NodeId_equal(&certificateTypeId, &rsaMinCertificateType))
-        return UA_STATUSCODE_BADINVALIDARGUMENT;
-
-    lockServer(server);
-
-    UA_CertificateGroup certGroup = server->config.secureChannelPKI;
-
-    if(!UA_NodeId_equal(&certGroup.certificateGroupId, &defaultApplicationGroup)) {
-        unlockServer(server);
-        return UA_STATUSCODE_BADINTERNALERROR;
-    }
-
-    UA_ByteString *newPrivateKey = NULL;
-    if(regenerateKey && *regenerateKey == true)
-        newPrivateKey = UA_ByteString_new();
-
-    for(size_t i = 0; i < server->config.endpointsSize; i++) {
-        UA_SecurityPolicy *sp =
-            getSecurityPolicyByUri(server, &server->config.endpoints[i].securityPolicyUri);
-        if(!sp) {
-            retval = UA_STATUSCODE_BADINTERNALERROR;
-            goto cleanup;
-        }
-
-        if(sp->policyType == UA_SECURITYPOLICYTYPE_NONE)
-            continue;
-
-        if(UA_NodeId_equal(&certificateTypeId, &sp->certificateTypeId) &&
-           UA_NodeId_equal(&certGroupId, &sp->certificateGroupId)) {
-            retval = sp->createSigningRequest(sp, subjectName, nonce,
-                                              &UA_KEYVALUEMAP_NULL, csr, newPrivateKey);
-            if(retval != UA_STATUSCODE_GOOD)
-                goto cleanup;
-        }
-    }
-
-#ifdef UA_ENABLE_GDS_PUSHMANAGEMENT
-    UA_GDSManager *gdsm = gdsManager(server);
-    if(gdsm) {
-        UA_ByteString_clear(&gdsm->transaction.localCsrCertificate);
-        UA_ByteString_copy(csr, &gdsm->transaction.localCsrCertificate);
-    }
-#endif
-
-cleanup:
-    if(newPrivateKey) {
-        /* wipe private key before freeing its memory */
-        UA_ByteString_memZero(newPrivateKey);
-        UA_ByteString_delete(newPrivateKey);
-    }
-
-    unlockServer(server);
-    return retval;
-}
-
 /***************************/
 /* Server lookup functions */
 /***************************/
@@ -1129,6 +962,86 @@ UA_Server_run_startup(UA_Server *server) {
     }
     UA_ServerConfig *config = &server->config;
 
+    if(config->webSocketEnabled) {
+        const UA_String wss = UA_STRING_STATIC("opc.wss://");
+        const UA_String ws  = UA_STRING_STATIC("opc.ws://");
+        UA_Boolean haveWebSocketUrl = false;
+        UA_Boolean haveSecureUrl = false;
+        UA_Boolean haveInsecureUrl = false;
+        for(size_t i = 0; i < config->serverUrlsSize; i++) {
+            const UA_String *url = &config->serverUrls[i];
+            if(url->length >= wss.length &&
+               memcmp(url->data, wss.data, wss.length) == 0) {
+                haveWebSocketUrl = true;
+                haveSecureUrl = true;
+            } else if(url->length >= ws.length &&
+                      memcmp(url->data, ws.data, ws.length) == 0) {
+                haveWebSocketUrl = true;
+                haveInsecureUrl = true;
+            }
+        }
+        if(!haveWebSocketUrl) {
+            UA_LOG_ERROR(config->logging, UA_LOGCATEGORY_SERVER,
+                         "WebSocket transport is enabled but no opc.ws:// or "
+                         "opc.wss:// ServerUrl is configured");
+            return UA_STATUSCODE_BADCONFIGURATIONERROR;
+        }
+
+        /* Check that a "websocket" protocol-provider (ConnectionManager) is registered in the EventLoop */
+        UA_Boolean foundWebSocketManager = false;
+        if(config->eventLoop) {
+            UA_String websocketStr = UA_STRING_STATIC("websocket");
+            for(UA_EventSource *es = config->eventLoop->eventSources;
+                es != NULL; es = es->next) {
+                if(es->eventSourceType != UA_EVENTSOURCETYPE_CONNECTIONMANAGER)
+                    continue;
+                UA_ConnectionManager *cm = (UA_ConnectionManager*)es;
+                if(UA_String_equal(&cm->protocol, &websocketStr)) {
+                    foundWebSocketManager = true;
+                    break;
+                }
+            }
+        }
+        if(!foundWebSocketManager) {
+            UA_LOG_ERROR(config->logging, UA_LOGCATEGORY_SERVER,
+                         "WebSocket transport is enabled (webSocketEnabled=true), "
+                         "but no 'websocket' protocol-provider (ConnectionManager) was found in the EventLoop");
+            return UA_STATUSCODE_BADCONFIGURATIONERROR;
+        }
+
+        /* Encryption mode checks */
+        if(haveInsecureUrl) {
+            if(!config->webSocketAllowUnencrypted) {
+                UA_LOG_ERROR(config->logging, UA_LOGCATEGORY_SERVER,
+                             "opc.ws:// (unencrypted WebSocket) is configured, but webSocketAllowUnencrypted is false. "
+                             "Unencrypted WebSocket transport is non-standard and must be explicitly allowed.");
+                return UA_STATUSCODE_BADCONFIGURATIONERROR;
+            }
+            UA_LOG_WARNING(config->logging, UA_LOGCATEGORY_SERVER,
+                           "opc.ws:// (unencrypted WebSocket) is enabled. "
+                           "Unencrypted WebSocket transport is non-standard and should only be used for testing/debugging!");
+        }
+
+        if(config->webSocketEncryptionMode == UA_WEBSOCKET_ENCRYPTION_REQUIRED && haveInsecureUrl) {
+            UA_LOG_ERROR(config->logging, UA_LOGCATEGORY_SERVER,
+                         "opc.ws:// URL configured but webSocketEncryptionMode is set to REQUIRED");
+            return UA_STATUSCODE_BADCONFIGURATIONERROR;
+        }
+        if(config->webSocketEncryptionMode == UA_WEBSOCKET_ENCRYPTION_DISABLED && haveSecureUrl) {
+            UA_LOG_ERROR(config->logging, UA_LOGCATEGORY_SERVER,
+                         "opc.wss:// URL configured but webSocketEncryptionMode is set to DISABLED");
+            return UA_STATUSCODE_BADCONFIGURATIONERROR;
+        }
+
+        if(haveSecureUrl && (config->webSocketCertificate.length == 0 ||
+                             config->webSocketPrivateKey.length == 0)) {
+            UA_LOG_ERROR(config->logging, UA_LOGCATEGORY_SERVER,
+                         "WebSocket transport is enabled for opc.wss:// but its TLS "
+                         "certificate or private key is empty");
+            return UA_STATUSCODE_BADCONFIGURATIONERROR;
+        }
+    }
+
 #ifdef FUZZING_BUILD_MODE_UNSAFE_FOR_PRODUCTION
     /* Prominently warn user that fuzzing build is enabled. This will tamper
      * with authentication tokens and other important variables E.g. if fuzzing
@@ -1173,6 +1086,12 @@ UA_Server_run_startup(UA_Server *server) {
 
     /* Take the server lock */
     lockServer(server);
+
+#ifdef UA_ENABLE_SUBSCRIPTIONS_EVENTS
+    /* A restarted server also suppresses changes until startup is complete. */
+    if(server->modelChangeSuppressionDepth == 0)
+        server->modelChangeSuppressionDepth++;
+#endif
 
     /* Does the ApplicationUri match the local certificates? */
     verifyServerApplicationUri(server);
@@ -1238,6 +1157,13 @@ UA_Server_run_startup(UA_Server *server) {
     /* Set the server to STARTED. From here on, only use
      * UA_Server_run_shutdown(server) to stop the server. */
     setServerLifecycleState(server, UA_LIFECYCLESTATE_STARTED);
+
+#ifdef UA_ENABLE_SUBSCRIPTIONS_EVENTS
+    /* Suppress ModelChangeEvents for the initial address-space construction
+     * and startup callbacks. Enable them only once startup has completed. */
+    UA_assert(server->modelChangeSuppressionDepth > 0);
+    server->modelChangeSuppressionDepth--;
+#endif
 
     unlockServer(server);
     return UA_STATUSCODE_GOOD;

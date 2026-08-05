@@ -18,6 +18,156 @@ static void *sessionCalled = (void *)1;
 static void *nodeCalled = (void *)2;
 static UA_Int32 handleCalled = 0;
 
+typedef enum {
+    EARLY_TEST_NONE,
+    EARLY_TEST_PHASES,
+    EARLY_TEST_AUTO_CHILD,
+    EARLY_TEST_PRECREATE_CHILD
+} EarlyTestMode;
+
+static EarlyTestMode earlyTestMode;
+static UA_NodeId earlyTargetId;
+static UA_NodeId earlyChildId;
+static UA_UInt32 earlySequence;
+static UA_UInt32 rootEarlySequence;
+static UA_UInt32 typeEarlySequence;
+static UA_UInt32 childEarlySequence;
+static UA_UInt32 childConstructorSequence;
+static UA_UInt32 rootConstructorSequence;
+static UA_UInt32 typeConstructorSequence;
+static void *lateConstructorContext;
+static UA_Boolean earlyChildWasAbsent;
+static UA_Boolean constructorSawChild;
+
+static UA_Boolean
+nodeHasBrowseName(UA_Server *server_, const UA_NodeId *nodeId,
+                  const UA_QualifiedName *expected) {
+    UA_QualifiedName browseName;
+    UA_QualifiedName_init(&browseName);
+    UA_StatusCode retval = UA_Server_readBrowseName(server_, *nodeId, &browseName);
+    UA_Boolean equal = (retval == UA_STATUSCODE_GOOD &&
+                        UA_QualifiedName_equal(&browseName, expected));
+    UA_QualifiedName_clear(&browseName);
+    return equal;
+}
+
+static UA_Boolean
+targetHasChild(UA_Server *server_, UA_NodeId *childId) {
+    UA_QualifiedName path = UA_QUALIFIEDNAME(1, "Value");
+    UA_BrowsePathResult result =
+        UA_Server_browseSimplifiedBrowsePath(server_, earlyTargetId, 1, &path);
+    UA_Boolean found = (result.statusCode == UA_STATUSCODE_GOOD &&
+                        result.targetsSize == 1);
+    if(found && childId)
+        UA_NodeId_copy(&result.targets[0].targetId.nodeId, childId);
+    UA_BrowsePathResult_clear(&result);
+    return found;
+}
+
+static UA_StatusCode
+earlyInstantiationMethod(UA_Server *server_,
+                         const UA_NodeId *sessionId, void *sessionContext,
+                         const UA_NodeId *nodeId, void **nodeContext) {
+    (void)sessionId;
+    (void)sessionContext;
+
+    if(earlyTestMode == EARLY_TEST_NONE)
+        return UA_STATUSCODE_GOOD;
+
+    if(UA_NodeId_equal(nodeId, &earlyTargetId)) {
+        rootEarlySequence = ++earlySequence;
+        if(earlyTestMode == EARLY_TEST_PHASES) {
+            if(*nodeContext != (void*)0x11)
+                return UA_STATUSCODE_BADINTERNALERROR;
+            *nodeContext = (void*)0x22;
+        }
+        return UA_STATUSCODE_GOOD;
+    }
+
+    if(earlyTestMode == EARLY_TEST_AUTO_CHILD) {
+        UA_QualifiedName expected = UA_QUALIFIEDNAME(1, "Value");
+        if(nodeHasBrowseName(server_, nodeId, &expected))
+            childEarlySequence = ++earlySequence;
+    }
+    return UA_STATUSCODE_GOOD;
+}
+
+static UA_StatusCode
+lateInstantiationMethod(UA_Server *server_,
+                        const UA_NodeId *sessionId, void *sessionContext,
+                        const UA_NodeId *nodeId, void **nodeContext) {
+    (void)sessionId;
+    (void)sessionContext;
+
+    if(earlyTestMode == EARLY_TEST_NONE)
+        return UA_STATUSCODE_GOOD;
+
+    if(UA_NodeId_equal(nodeId, &earlyTargetId)) {
+        rootConstructorSequence = ++earlySequence;
+        lateConstructorContext = *nodeContext;
+        if(earlyTestMode == EARLY_TEST_PRECREATE_CHILD)
+            constructorSawChild = targetHasChild(server_, NULL);
+        return UA_STATUSCODE_GOOD;
+    }
+
+    if(earlyTestMode == EARLY_TEST_AUTO_CHILD) {
+        UA_QualifiedName expected = UA_QUALIFIEDNAME(1, "Value");
+        if(nodeHasBrowseName(server_, nodeId, &expected))
+            childConstructorSequence = ++earlySequence;
+    }
+    return UA_STATUSCODE_GOOD;
+}
+
+static UA_StatusCode
+typeEarlyInstantiationMethod(UA_Server *server_,
+                             const UA_NodeId *sessionId, void *sessionContext,
+                             const UA_NodeId *typeNodeId, void *typeNodeContext,
+                             const UA_NodeId *nodeId, void **nodeContext) {
+    (void)sessionId;
+    (void)sessionContext;
+    (void)typeNodeId;
+    (void)typeNodeContext;
+
+    if(!UA_NodeId_equal(nodeId, &earlyTargetId))
+        return UA_STATUSCODE_GOOD;
+
+    typeEarlySequence = ++earlySequence;
+    if(earlyTestMode == EARLY_TEST_PHASES) {
+        if(*nodeContext != (void*)0x22)
+            return UA_STATUSCODE_BADINTERNALERROR;
+        *nodeContext = (void*)0x33;
+    } else if(earlyTestMode == EARLY_TEST_PRECREATE_CHILD) {
+        earlyChildWasAbsent = !targetHasChild(server_, NULL);
+        UA_VariableAttributes attr = UA_VariableAttributes_default;
+        attr.displayName = UA_LOCALIZEDTEXT("en-US", "Value");
+        return UA_Server_addVariableNode(
+            server_, earlyChildId, *nodeId,
+            UA_NODEID_NUMERIC(0, UA_NS0ID_HASCOMPONENT),
+            UA_QUALIFIEDNAME(1, "Value"),
+            UA_NODEID_NUMERIC(0, UA_NS0ID_BASEDATAVARIABLETYPE),
+            attr, NULL, NULL);
+    }
+    return UA_STATUSCODE_GOOD;
+}
+
+static UA_StatusCode
+typeLateInstantiationMethod(UA_Server *server_,
+                            const UA_NodeId *sessionId, void *sessionContext,
+                            const UA_NodeId *typeNodeId, void *typeNodeContext,
+                            const UA_NodeId *nodeId, void **nodeContext) {
+    (void)server_;
+    (void)sessionId;
+    (void)sessionContext;
+    (void)typeNodeId;
+    (void)typeNodeContext;
+
+    if(UA_NodeId_equal(nodeId, &earlyTargetId)) {
+        typeConstructorSequence = ++earlySequence;
+        lateConstructorContext = *nodeContext;
+    }
+    return UA_STATUSCODE_GOOD;
+}
+
 static UA_StatusCode
 globalInstantiationMethod(UA_Server *server_,
                           const UA_NodeId *sessionId, void *sessionContext,
@@ -39,7 +189,22 @@ static void setup(void) {
     lifecycle.destructor = NULL;
     lifecycle.createOptionalChild = NULL;
     lifecycle.generateChildNodeId = NULL;
+    lifecycle.earlyConstructor = NULL;
     config->nodeLifecycle = &lifecycle;
+
+    earlyTestMode = EARLY_TEST_NONE;
+    earlyTargetId = UA_NODEID_NULL;
+    earlyChildId = UA_NODEID_NULL;
+    earlySequence = 0;
+    rootEarlySequence = 0;
+    typeEarlySequence = 0;
+    childEarlySequence = 0;
+    childConstructorSequence = 0;
+    rootConstructorSequence = 0;
+    typeConstructorSequence = 0;
+    lateConstructorContext = NULL;
+    earlyChildWasAbsent = false;
+    constructorSawChild = false;
 
     UA_Server_setAdminSessionContext(server, (void *)0x3);
 }
@@ -69,6 +234,19 @@ START_TEST(AddVariableNode) {
     ck_assert_int_eq(UA_STATUSCODE_GOOD, res);
     ck_assert_ptr_eq(sessionCalled, (void *)3);
     ck_assert_ptr_eq(nodeCalled, (void *)4);
+} END_TEST
+
+START_TEST(ValueRankConstraintAcceptsEquality) {
+    const UA_Int32 ranks[] = {
+        UA_VALUERANK_SCALAR_OR_ONE_DIMENSION,
+        UA_VALUERANK_ANY,
+        UA_VALUERANK_SCALAR,
+        UA_VALUERANK_ONE_OR_MORE_DIMENSIONS,
+        UA_VALUERANK_ONE_DIMENSION,
+        UA_VALUERANK_TWO_DIMENSIONS
+    };
+    for(size_t i = 0; i < sizeof(ranks) / sizeof(ranks[0]); i++)
+        ck_assert(compatibleValueRanks(ranks[i], ranks[i]));
 } END_TEST
 
 START_TEST(AddVariableNode_ValueRankZero) {
@@ -286,6 +464,73 @@ START_TEST(InstantiateVariableTypeNodeLessDims) {
     ck_assert_int_eq(UA_STATUSCODE_GOOD, res);
 } END_TEST
 
+START_TEST(VariableTypeRestrictionGetsMatchingDefaultValue) {
+    UA_Double parentDefault = 42.0;
+    UA_VariableTypeAttributes parentAttr = UA_VariableTypeAttributes_default;
+    parentAttr.displayName = UA_LOCALIZEDTEXT("en-US", "Number Parent");
+    parentAttr.dataType = UA_NODEID_NUMERIC(0, UA_NS0ID_NUMBER);
+    parentAttr.valueRank = UA_VALUERANK_ANY;
+    UA_Variant_setScalar(&parentAttr.value, &parentDefault,
+                         &UA_TYPES[UA_TYPES_DOUBLE]);
+
+    UA_NodeId parentId;
+    UA_StatusCode res =
+        UA_Server_addVariableTypeNode(server, UA_NODEID_NULL,
+                                      UA_NODEID_NUMERIC(0, UA_NS0ID_BASEDATAVARIABLETYPE),
+                                      UA_NODEID_NUMERIC(0, UA_NS0ID_HASSUBTYPE),
+                                      UA_QUALIFIEDNAME(1, "Number Parent"), UA_NODEID_NULL,
+                                      parentAttr, NULL, &parentId);
+    ck_assert_uint_eq(res, UA_STATUSCODE_GOOD);
+
+    UA_VariableTypeAttributes childAttr = UA_VariableTypeAttributes_default;
+    childAttr.displayName = UA_LOCALIZEDTEXT("en-US", "Float Child");
+    childAttr.dataType = UA_TYPES[UA_TYPES_FLOAT].typeId;
+    childAttr.valueRank = UA_VALUERANK_ANY;
+
+    UA_NodeId childId;
+    res = UA_Server_addVariableTypeNode(server, UA_NODEID_NULL, parentId,
+                                        UA_NODEID_NUMERIC(0, UA_NS0ID_HASSUBTYPE),
+                                        UA_QUALIFIEDNAME(1, "Float Child"), UA_NODEID_NULL,
+                                        childAttr, NULL, &childId);
+    ck_assert_uint_eq(res, UA_STATUSCODE_GOOD);
+
+    UA_Variant value;
+    UA_Variant_init(&value);
+    res = UA_Server_readValue(server, childId, &value);
+    ck_assert_uint_eq(res, UA_STATUSCODE_GOOD);
+    ck_assert(UA_Variant_hasScalarType(&value, &UA_TYPES[UA_TYPES_FLOAT]));
+    ck_assert_float_eq(*(UA_Float*)value.data, 0.0f);
+    UA_Variant_clear(&value);
+} END_TEST
+
+START_TEST(AddVariableNodeAdjustsEnumWireType) {
+    UA_Int32 rawValue = UA_APPLICATIONTYPE_SERVER;
+    UA_VariableAttributes attr = UA_VariableAttributes_default;
+    attr.displayName = UA_LOCALIZEDTEXT("en-US", "Application Type");
+    attr.dataType = UA_TYPES[UA_TYPES_APPLICATIONTYPE].typeId;
+    UA_Variant_setScalar(&attr.value, &rawValue, &UA_TYPES[UA_TYPES_INT32]);
+
+    UA_NodeId nodeId;
+    UA_StatusCode res =
+        UA_Server_addVariableNode(server, UA_NODEID_NULL,
+                                  UA_NODEID_NUMERIC(0, UA_NS0ID_OBJECTSFOLDER),
+                                  UA_NODEID_NUMERIC(0, UA_NS0ID_HASCOMPONENT),
+                                  UA_QUALIFIEDNAME(1, "Application Type"),
+                                  UA_NODEID_NUMERIC(0, UA_NS0ID_BASEDATAVARIABLETYPE),
+                                  attr, NULL, &nodeId);
+    ck_assert_uint_eq(res, UA_STATUSCODE_GOOD);
+
+    UA_Variant value;
+    UA_Variant_init(&value);
+    res = UA_Server_readValue(server, nodeId, &value);
+    ck_assert_uint_eq(res, UA_STATUSCODE_GOOD);
+    ck_assert(UA_Variant_hasScalarType(&value,
+                                      &UA_TYPES[UA_TYPES_APPLICATIONTYPE]));
+    ck_assert_int_eq(*(UA_ApplicationType*)value.data,
+                     UA_APPLICATIONTYPE_SERVER);
+    UA_Variant_clear(&value);
+} END_TEST
+
 START_TEST(AddComplexTypeWithInheritance) {
     /* add a variable node to the address space */
 
@@ -358,7 +603,7 @@ START_TEST(AddObjectWithConstructor) {
     ck_assert_int_eq(res, UA_STATUSCODE_GOOD);
 
     /* Add a constructor to the object type */
-    UA_NodeTypeLifecycle lifecycle;
+    UA_NodeTypeLifecycle lifecycle = {0};
     lifecycle.constructor = objectConstructor;
     lifecycle.destructor = NULL;
     res = UA_Server_setNodeTypeLifecycle(server, objecttypeid, lifecycle);
@@ -401,7 +646,7 @@ START_TEST(DeleteObjectWithDestructor) {
     ck_assert_int_eq(res, UA_STATUSCODE_GOOD);
 
     /* Add a constructor to the object type */
-    UA_NodeTypeLifecycle lifecycle;
+    UA_NodeTypeLifecycle lifecycle = {0};
     lifecycle.constructor = NULL;
     lifecycle.destructor = objectDestructor;
     res = UA_Server_setNodeTypeLifecycle(server, objecttypeid, lifecycle);
@@ -591,6 +836,319 @@ START_TEST(InstantiateObjectType) {
                                                     identifier */
                                      oAttr, NULL, NULL);
     ck_assert_int_eq(retval, UA_STATUSCODE_GOOD);
+} END_TEST
+
+static UA_NodeId
+addEarlyConstructorTestType(UA_Boolean withMandatoryChild) {
+    UA_NodeId typeId = UA_NODEID_NUMERIC(1, 80701);
+    UA_ObjectTypeAttributes typeAttr = UA_ObjectTypeAttributes_default;
+    typeAttr.displayName = UA_LOCALIZEDTEXT("en-US", "EarlyConstructorType");
+    UA_StatusCode retval =
+        UA_Server_addObjectTypeNode(server, typeId,
+                                    UA_NODEID_NUMERIC(0, UA_NS0ID_BASEOBJECTTYPE),
+                                    UA_NODEID_NUMERIC(0, UA_NS0ID_HASSUBTYPE),
+                                    UA_QUALIFIEDNAME(1, "EarlyConstructorType"),
+                                    typeAttr, NULL, NULL);
+    ck_assert_uint_eq(retval, UA_STATUSCODE_GOOD);
+
+    if(!withMandatoryChild)
+        return typeId;
+
+#ifdef UA_GENERATED_NAMESPACE_ZERO
+    UA_VariableAttributes childAttr = UA_VariableAttributes_default;
+    childAttr.displayName = UA_LOCALIZEDTEXT("en-US", "Value");
+    UA_NodeId declarationId = UA_NODEID_NUMERIC(1, 80702);
+    retval = UA_Server_addVariableNode(
+        server, declarationId, typeId,
+        UA_NODEID_NUMERIC(0, UA_NS0ID_HASCOMPONENT),
+        UA_QUALIFIEDNAME(1, "Value"),
+        UA_NODEID_NUMERIC(0, UA_NS0ID_BASEDATAVARIABLETYPE),
+        childAttr, NULL, NULL);
+    ck_assert_uint_eq(retval, UA_STATUSCODE_GOOD);
+    retval = UA_Server_addReference(
+        server, declarationId,
+        UA_NODEID_NUMERIC(0, UA_NS0ID_HASMODELLINGRULE),
+        UA_EXPANDEDNODEID_NUMERIC(0, UA_NS0ID_MODELLINGRULE_MANDATORY), true);
+    ck_assert_uint_eq(retval, UA_STATUSCODE_GOOD);
+#endif
+    return typeId;
+}
+
+START_TEST(EarlyConstructorRunsDuringBegin) {
+    UA_NodeId typeId = addEarlyConstructorTestType(false);
+    UA_NodeTypeLifecycle typeLifecycle = {0};
+    typeLifecycle.earlyConstructor = typeEarlyInstantiationMethod;
+    typeLifecycle.constructor = typeLateInstantiationMethod;
+    UA_StatusCode retval =
+        UA_Server_setNodeTypeLifecycle(server, typeId, typeLifecycle);
+    ck_assert_uint_eq(retval, UA_STATUSCODE_GOOD);
+
+    lifecycle.earlyConstructor = earlyInstantiationMethod;
+    lifecycle.constructor = lateInstantiationMethod;
+    earlyTestMode = EARLY_TEST_PHASES;
+    earlyTargetId = UA_NODEID_NUMERIC(1, 80710);
+
+    UA_ObjectAttributes attr = UA_ObjectAttributes_default;
+    attr.displayName = UA_LOCALIZEDTEXT("en-US", "EarlyObject");
+    UA_NodeId addedId;
+    retval = UA_Server_addNode_begin(
+        server, UA_NODECLASS_OBJECT, earlyTargetId,
+        UA_NODEID_NUMERIC(0, UA_NS0ID_OBJECTSFOLDER),
+        UA_NODEID_NUMERIC(0, UA_NS0ID_HASCOMPONENT),
+        UA_QUALIFIEDNAME(1, "EarlyObject"),
+        typeId,
+        &attr, &UA_TYPES[UA_TYPES_OBJECTATTRIBUTES], (void*)0x11, &addedId);
+    ck_assert_uint_eq(retval, UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(rootEarlySequence, 1);
+    ck_assert_uint_eq(typeEarlySequence, 2);
+    ck_assert_uint_eq(rootConstructorSequence, 0);
+    ck_assert_uint_eq(typeConstructorSequence, 0);
+
+    void *nodeContext = NULL;
+    retval = UA_Server_getNodeContext(server, addedId, &nodeContext);
+    ck_assert_uint_eq(retval, UA_STATUSCODE_GOOD);
+    ck_assert_ptr_eq(nodeContext, (void*)0x33);
+
+    retval = UA_Server_addNode_finish(server, addedId);
+    ck_assert_uint_eq(retval, UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(rootConstructorSequence, 3);
+    ck_assert_uint_eq(typeConstructorSequence, 4);
+    ck_assert_ptr_eq(lateConstructorContext, (void*)0x33);
+} END_TEST
+
+START_TEST(EarlyConstructorRunsForInstantiatedChildren) {
+#ifdef UA_GENERATED_NAMESPACE_ZERO
+    UA_NodeId typeId = addEarlyConstructorTestType(true);
+    lifecycle.earlyConstructor = earlyInstantiationMethod;
+    lifecycle.constructor = lateInstantiationMethod;
+    earlyTestMode = EARLY_TEST_AUTO_CHILD;
+    earlyTargetId = UA_NODEID_NUMERIC(1, 80720);
+
+    UA_ObjectAttributes attr = UA_ObjectAttributes_default;
+    attr.displayName = UA_LOCALIZEDTEXT("en-US", "EarlyObject");
+    UA_StatusCode retval = UA_Server_addObjectNode(
+        server, earlyTargetId, UA_NODEID_NUMERIC(0, UA_NS0ID_OBJECTSFOLDER),
+        UA_NODEID_NUMERIC(0, UA_NS0ID_HASCOMPONENT),
+        UA_QUALIFIEDNAME(1, "EarlyObject"), typeId, attr, NULL, NULL);
+    ck_assert_uint_eq(retval, UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(rootEarlySequence, 1);
+    ck_assert_uint_eq(childEarlySequence, 2);
+    ck_assert_uint_eq(childConstructorSequence, 3);
+    ck_assert_uint_eq(rootConstructorSequence, 4);
+#endif
+} END_TEST
+
+START_TEST(EarlyConstructorRunsForVariableType) {
+    UA_NodeId typeId = UA_NODEID_NUMERIC(1, 80740);
+    UA_VariableTypeAttributes typeAttr = UA_VariableTypeAttributes_default;
+    typeAttr.displayName = UA_LOCALIZEDTEXT("en-US", "EarlyVariableType");
+    typeAttr.dataType = UA_TYPES[UA_TYPES_INT32].typeId;
+    typeAttr.valueRank = UA_VALUERANK_SCALAR;
+    UA_Int32 value = 0;
+    UA_Variant_setScalar(&typeAttr.value, &value, &UA_TYPES[UA_TYPES_INT32]);
+    UA_StatusCode retval = UA_Server_addVariableTypeNode(
+        server, typeId,
+        UA_NODEID_NUMERIC(0, UA_NS0ID_BASEDATAVARIABLETYPE),
+        UA_NODEID_NUMERIC(0, UA_NS0ID_HASSUBTYPE),
+        UA_QUALIFIEDNAME(1, "EarlyVariableType"), UA_NODEID_NULL,
+        typeAttr, NULL, NULL);
+    ck_assert_uint_eq(retval, UA_STATUSCODE_GOOD);
+
+    UA_NodeTypeLifecycle typeLifecycle = {0};
+    typeLifecycle.earlyConstructor = typeEarlyInstantiationMethod;
+    retval = UA_Server_setNodeTypeLifecycle(server, typeId, typeLifecycle);
+    ck_assert_uint_eq(retval, UA_STATUSCODE_GOOD);
+
+    /* Editing the VariableType must retain its lifecycle. */
+    UA_LocalizedText displayName =
+        UA_LOCALIZEDTEXT("en-US", "EditedEarlyVariableType");
+    retval = UA_Server_writeDisplayName(server, typeId, displayName);
+    ck_assert_uint_eq(retval, UA_STATUSCODE_GOOD);
+
+    lifecycle.earlyConstructor = earlyInstantiationMethod;
+    earlyTestMode = EARLY_TEST_PHASES;
+    earlyTargetId = UA_NODEID_NUMERIC(1, 80741);
+
+    UA_VariableAttributes attr = UA_VariableAttributes_default;
+    attr.displayName = UA_LOCALIZEDTEXT("en-US", "EarlyVariable");
+    attr.dataType = UA_TYPES[UA_TYPES_INT32].typeId;
+    attr.valueRank = UA_VALUERANK_SCALAR;
+    UA_Variant_setScalar(&attr.value, &value, &UA_TYPES[UA_TYPES_INT32]);
+    retval = UA_Server_addVariableNode(
+        server, earlyTargetId,
+        UA_NODEID_NUMERIC(0, UA_NS0ID_OBJECTSFOLDER),
+        UA_NODEID_NUMERIC(0, UA_NS0ID_HASCOMPONENT),
+        UA_QUALIFIEDNAME(1, "EarlyVariable"), typeId,
+        attr, (void*)0x11, NULL);
+    ck_assert_uint_eq(retval, UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(rootEarlySequence, 1);
+    ck_assert_uint_eq(typeEarlySequence, 2);
+
+    void *nodeContext = NULL;
+    retval = UA_Server_getNodeContext(server, earlyTargetId, &nodeContext);
+    ck_assert_uint_eq(retval, UA_STATUSCODE_GOOD);
+    ck_assert_ptr_eq(nodeContext, (void*)0x33);
+} END_TEST
+
+START_TEST(EarlyConstructorCanPrecreateMandatoryChild) {
+#ifdef UA_GENERATED_NAMESPACE_ZERO
+    UA_NodeId typeId = addEarlyConstructorTestType(true);
+    UA_NodeTypeLifecycle typeLifecycle = {0};
+    typeLifecycle.earlyConstructor = typeEarlyInstantiationMethod;
+    UA_StatusCode retval =
+        UA_Server_setNodeTypeLifecycle(server, typeId, typeLifecycle);
+    ck_assert_uint_eq(retval, UA_STATUSCODE_GOOD);
+
+    lifecycle.earlyConstructor = earlyInstantiationMethod;
+    lifecycle.constructor = lateInstantiationMethod;
+    earlyTestMode = EARLY_TEST_PRECREATE_CHILD;
+    earlyTargetId = UA_NODEID_NUMERIC(1, 80730);
+    earlyChildId = UA_NODEID_NUMERIC(1, 80731);
+
+    UA_ObjectAttributes attr = UA_ObjectAttributes_default;
+    attr.displayName = UA_LOCALIZEDTEXT("en-US", "EarlyObject");
+    retval = UA_Server_addObjectNode(
+        server, earlyTargetId, UA_NODEID_NUMERIC(0, UA_NS0ID_OBJECTSFOLDER),
+        UA_NODEID_NUMERIC(0, UA_NS0ID_HASCOMPONENT),
+        UA_QUALIFIEDNAME(1, "EarlyObject"), typeId, attr, NULL, NULL);
+    ck_assert_uint_eq(retval, UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(rootEarlySequence, 1);
+    ck_assert_uint_eq(typeEarlySequence, 2);
+    ck_assert(earlyChildWasAbsent);
+    ck_assert(constructorSawChild);
+
+    UA_NodeId resolvedChild = UA_NODEID_NULL;
+    ck_assert(targetHasChild(server, &resolvedChild));
+    ck_assert(UA_NodeId_equal(&resolvedChild, &earlyChildId));
+    UA_NodeId_clear(&resolvedChild);
+#endif
+} END_TEST
+
+START_TEST(CopyMethodsOnInstancesIsConfigurable) {
+#ifdef UA_GENERATED_NAMESPACE_ZERO
+    UA_NodeId typeId = UA_NODEID_NUMERIC(1, 80801);
+    UA_ObjectTypeAttributes typeAttr = UA_ObjectTypeAttributes_default;
+    typeAttr.displayName = UA_LOCALIZEDTEXT("en-US", "MethodOwnerType");
+    UA_StatusCode retval =
+        UA_Server_addObjectTypeNode(server, typeId,
+                                    UA_NODEID_NUMERIC(0, UA_NS0ID_BASEOBJECTTYPE),
+                                    UA_NODEID_NUMERIC(0, UA_NS0ID_HASSUBTYPE),
+                                    UA_QUALIFIEDNAME(1, "MethodOwnerType"),
+                                    typeAttr, NULL, NULL);
+    ck_assert_uint_eq(retval, UA_STATUSCODE_GOOD);
+
+    UA_NodeId methodId = UA_NODEID_NUMERIC(1, 80802);
+    UA_MethodAttributes methodAttr = UA_MethodAttributes_default;
+    methodAttr.displayName = UA_LOCALIZEDTEXT("en-US", "Run");
+    methodAttr.executable = true;
+    methodAttr.userExecutable = true;
+    retval = UA_Server_addMethodNode(
+        server, methodId, typeId,
+        UA_NODEID_NUMERIC(0, UA_NS0ID_HASCOMPONENT),
+        UA_QUALIFIEDNAME(1, "Run"), methodAttr, NULL,
+        0, NULL, 0, NULL, NULL, NULL);
+    ck_assert_uint_eq(retval, UA_STATUSCODE_GOOD);
+    retval = UA_Server_addReference(
+        server, methodId,
+        UA_NODEID_NUMERIC(0, UA_NS0ID_HASMODELLINGRULE),
+        UA_EXPANDEDNODEID_NUMERIC(0, UA_NS0ID_MODELLINGRULE_MANDATORY), true);
+    ck_assert_uint_eq(retval, UA_STATUSCODE_GOOD);
+
+    UA_ObjectAttributes objectAttr = UA_ObjectAttributes_default;
+    objectAttr.displayName = UA_LOCALIZEDTEXT("en-US", "Owner");
+    UA_QualifiedName path = UA_QUALIFIEDNAME(1, "Run");
+
+    UA_NodeId sharedOwner = UA_NODEID_NUMERIC(1, 80803);
+    retval = UA_Server_addObjectNode(
+        server, sharedOwner, UA_NODEID_NUMERIC(0, UA_NS0ID_OBJECTSFOLDER),
+        UA_NODEID_NUMERIC(0, UA_NS0ID_HASCOMPONENT),
+        UA_QUALIFIEDNAME(1, "SharedOwner"), typeId,
+        objectAttr, NULL, NULL);
+    ck_assert_uint_eq(retval, UA_STATUSCODE_GOOD);
+    UA_BrowsePathResult result =
+        UA_Server_browseSimplifiedBrowsePath(server, sharedOwner, 1, &path);
+    ck_assert_uint_eq(result.statusCode, UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(result.targetsSize, 1);
+    ck_assert(UA_NodeId_equal(&result.targets[0].targetId.nodeId, &methodId));
+    UA_BrowsePathResult_clear(&result);
+
+    UA_Server_getConfig(server)->copyMethodsOnInstances = true;
+    UA_NodeId copiedOwner = UA_NODEID_NUMERIC(1, 80804);
+    retval = UA_Server_addObjectNode(
+        server, copiedOwner, UA_NODEID_NUMERIC(0, UA_NS0ID_OBJECTSFOLDER),
+        UA_NODEID_NUMERIC(0, UA_NS0ID_HASCOMPONENT),
+        UA_QUALIFIEDNAME(1, "CopiedOwner"), typeId,
+        objectAttr, NULL, NULL);
+    ck_assert_uint_eq(retval, UA_STATUSCODE_GOOD);
+    result = UA_Server_browseSimplifiedBrowsePath(server, copiedOwner, 1, &path);
+    ck_assert_uint_eq(result.statusCode, UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(result.targetsSize, 1);
+    ck_assert(!UA_NodeId_equal(&result.targets[0].targetId.nodeId, &methodId));
+    UA_BrowsePathResult_clear(&result);
+#endif
+} END_TEST
+
+START_TEST(RecursiveMandatoryChildDepthIsLimited) {
+#ifdef UA_GENERATED_NAMESPACE_ZERO
+    UA_NodeId typeId = UA_NODEID_NUMERIC(1, 80901);
+    UA_VariableTypeAttributes typeAttr = UA_VariableTypeAttributes_default;
+    typeAttr.displayName = UA_LOCALIZEDTEXT("en-US", "RecursiveType");
+    typeAttr.dataType = UA_TYPES[UA_TYPES_INT32].typeId;
+    typeAttr.valueRank = UA_VALUERANK_SCALAR;
+    UA_Int32 value = 0;
+    UA_Variant_setScalar(&typeAttr.value, &value, &UA_TYPES[UA_TYPES_INT32]);
+    UA_StatusCode retval =
+        UA_Server_addVariableTypeNode(server, typeId,
+                                      UA_NODEID_NUMERIC(0, UA_NS0ID_BASEDATAVARIABLETYPE),
+                                      UA_NODEID_NUMERIC(0, UA_NS0ID_HASSUBTYPE),
+                                      UA_QUALIFIEDNAME(1, "RecursiveType"),
+                                      UA_NODEID_NULL, typeAttr, NULL, NULL);
+    ck_assert_uint_eq(retval, UA_STATUSCODE_GOOD);
+
+    /* Add a child with the recursive type. It becomes dangerous only after
+     * the Mandatory modelling rule is attached. */
+    UA_NodeId childId = UA_NODEID_NUMERIC(1, 80902);
+    UA_VariableAttributes childAttr = UA_VariableAttributes_default;
+    childAttr.displayName = UA_LOCALIZEDTEXT("en-US", "RecursiveChild");
+    childAttr.dataType = UA_TYPES[UA_TYPES_INT32].typeId;
+    childAttr.valueRank = UA_VALUERANK_SCALAR;
+    UA_Variant_setScalar(&childAttr.value, &value, &UA_TYPES[UA_TYPES_INT32]);
+    retval =
+        UA_Server_addVariableNode(server, childId, typeId,
+                                  UA_NODEID_NUMERIC(0, UA_NS0ID_HASCOMPONENT),
+                                  UA_QUALIFIEDNAME(1, "RecursiveChild"), typeId,
+                                  childAttr, NULL, NULL);
+    ck_assert_uint_eq(retval, UA_STATUSCODE_GOOD);
+
+    retval =
+        UA_Server_addReference(server, childId,
+                               UA_NODEID_NUMERIC(0, UA_NS0ID_HASMODELLINGRULE),
+                               UA_EXPANDEDNODEID_NUMERIC(
+                                   0, UA_NS0ID_MODELLINGRULE_MANDATORY),
+                               true);
+    ck_assert_uint_eq(retval, UA_STATUSCODE_GOOD);
+
+    UA_NodeId instanceId = UA_NODEID_NUMERIC(1, 80903);
+    UA_VariableAttributes instanceAttr = UA_VariableAttributes_default;
+    instanceAttr.displayName = UA_LOCALIZEDTEXT("en-US", "RecursiveInstance");
+    instanceAttr.dataType = UA_TYPES[UA_TYPES_INT32].typeId;
+    instanceAttr.valueRank = UA_VALUERANK_SCALAR;
+    UA_Variant_setScalar(&instanceAttr.value, &value, &UA_TYPES[UA_TYPES_INT32]);
+    retval =
+        UA_Server_addVariableNode(server, instanceId,
+                                  UA_NODEID_NUMERIC(0, UA_NS0ID_OBJECTSFOLDER),
+                                  UA_NODEID_NUMERIC(0, UA_NS0ID_HASCOMPONENT),
+                                  UA_QUALIFIEDNAME(1, "RecursiveInstance"), typeId,
+                                  instanceAttr, NULL, NULL);
+    ck_assert_uint_eq(retval, UA_STATUSCODE_BADTYPEDEFINITIONINVALID);
+    ck_assert_uint_eq(server->nodeInstantiationDepth, 0);
+
+    /* The failed top-level node and its recursively copied children are
+     * removed while the error unwinds. */
+    UA_NodeClass nodeClass;
+    retval = UA_Server_readNodeClass(server, instanceId, &nodeClass);
+    ck_assert_uint_eq(retval, UA_STATUSCODE_BADNODEIDUNKNOWN);
+#endif
 } END_TEST
 
 START_TEST(ObjectWithDynamicVariableChild) {
@@ -961,6 +1519,188 @@ START_TEST(AddReference_InvalidTargetNodeClass) {
     UA_AddReferencesResponse_clear(&response);
 } END_TEST
 
+START_TEST(AddReference_NonRefTypeAsRefType_rejected) {
+    /* src/server/ua_services_nodemanagement.c:2284-2291:
+     *   if(refType->head.nodeClass != UA_NODECLASS_REFERENCETYPE) {
+     *     *retval = UA_STATUSCODE_BADREFERENCETYPEIDINVALID;
+     * Use a Variable node as the refType argument. */
+    UA_NodeId objectsNodeId = UA_NODEID_NUMERIC(0, UA_NS0ID_OBJECTSFOLDER);
+    UA_NodeId sourceId = addObjInstance(objectsNodeId, "refSrcNR");
+    UA_NodeId targetId = addObjInstance(objectsNodeId, "refTgtNR");
+
+    /* Add a Variable node to be used as a (non-)refType */
+    UA_VariableAttributes vAttr = UA_VariableAttributes_default;
+    UA_Int32 val = 1;
+    UA_Variant_setScalar(&vAttr.value, &val, &UA_TYPES[UA_TYPES_INT32]);
+    UA_NodeId varId;
+    UA_StatusCode st = UA_Server_addVariableNode(
+        server, UA_NODEID_NULL, objectsNodeId,
+        UA_NODEID_NUMERIC(0, UA_NS0ID_ORGANIZES),
+        UA_QUALIFIEDNAME(1, "NotARefType"),
+        UA_NODEID_NUMERIC(0, UA_NS0ID_BASEDATAVARIABLETYPE),
+        vAttr, NULL, &varId);
+    ck_assert_uint_eq(st, UA_STATUSCODE_GOOD);
+
+    UA_ExpandedNodeId targetExpId;
+    targetExpId.nodeId = targetId;
+    targetExpId.namespaceUri = UA_STRING_NULL;
+    targetExpId.serverIndex = 0;
+
+    st = UA_Server_addReference(server, sourceId, varId, targetExpId, true);
+    ck_assert_uint_eq(st, UA_STATUSCODE_BADREFERENCETYPEIDINVALID);
+} END_TEST
+
+START_TEST(AddReference_SourceNodeUnknown_rejected) {
+    /* src/server/ua_services_nodemanagement.c:2328-2332:
+     *   if(!sourceNode) { *retval = UA_STATUSCODE_BADSOURCENODEIDINVALID; }
+     * Use a known refType + known target, but a non-existent source. */
+    UA_NodeId objectsNodeId = UA_NODEID_NUMERIC(0, UA_NS0ID_OBJECTSFOLDER);
+    UA_NodeId targetId = addObjInstance(objectsNodeId, "refTgtSU");
+    UA_NodeId refTypeId = registerRefType("HasSrcUnk", "IsSrcUnkOf");
+
+    UA_ExpandedNodeId targetExpId;
+    targetExpId.nodeId = targetId;
+    targetExpId.namespaceUri = UA_STRING_NULL;
+    targetExpId.serverIndex = 0;
+
+    UA_StatusCode st = UA_Server_addReference(
+        server, UA_NODEID_NUMERIC(1, 99999), refTypeId, targetExpId, true);
+    ck_assert_uint_eq(st, UA_STATUSCODE_BADSOURCENODEIDINVALID);
+} END_TEST
+
+START_TEST(AddReference_TargetNodeUnknown_rejected) {
+    /* src/server/ua_services_nodemanagement.c:2313-2318:
+     *   if(!targetNode) { *retval = UA_STATUSCODE_BADTARGETNODEIDINVALID; }
+     * A local target that does not exist. */
+    UA_NodeId objectsNodeId = UA_NODEID_NUMERIC(0, UA_NS0ID_OBJECTSFOLDER);
+    UA_NodeId sourceId = addObjInstance(objectsNodeId, "refSrcTU");
+    UA_NodeId refTypeId = registerRefType("HasTgtUnk", "IsTgtUnkOf");
+
+    UA_ExpandedNodeId targetExpId;
+    targetExpId.nodeId = UA_NODEID_NUMERIC(1, 88888);
+    targetExpId.namespaceUri = UA_STRING_NULL;
+    targetExpId.serverIndex = 0;
+
+    UA_StatusCode st = UA_Server_addReference(
+        server, sourceId, refTypeId, targetExpId, true);
+    ck_assert_uint_eq(st, UA_STATUSCODE_BADTARGETNODEIDINVALID);
+} END_TEST
+
+START_TEST(AddReference_SourceEqualsTarget_isNoop) {
+    /* src/server/ua_services_nodemanagement.c:2300-2306:
+     *   if(UA_NodeId_equal(&item->targetNodeId.nodeId, &item->sourceNodeId)) {
+     *     *retval = UA_STATUSCODE_GOOD;
+     *     return;
+     * The function returns GOOD without doing anything. */
+    UA_NodeId objectsNodeId = UA_NODEID_NUMERIC(0, UA_NS0ID_OBJECTSFOLDER);
+    UA_NodeId sourceId = addObjInstance(objectsNodeId, "refSrcET");
+    UA_NodeId refTypeId = registerRefType("HasEqTgt", "IsEqTgtOf");
+
+    UA_ExpandedNodeId targetExpId;
+    targetExpId.nodeId = sourceId;
+    targetExpId.namespaceUri = UA_STRING_NULL;
+    targetExpId.serverIndex = 0;
+
+    UA_StatusCode st = UA_Server_addReference(
+        server, sourceId, refTypeId, targetExpId, true);
+    ck_assert_uint_eq(st, UA_STATUSCODE_GOOD);
+} END_TEST
+
+START_TEST(DeleteReference_InvalidRefType_rejected) {
+    /* src/server/ua_services_nodemanagement.c:2444-2446 and 2449-2452:
+     *   if(!refType) { *retval = UA_STATUSCODE_BADREFERENCETYPEIDINVALID; }
+     *   if(refType->head.nodeClass != UA_NODECLASS_REFERENCETYPE) { ... } */
+    UA_NodeId objectsNodeId = UA_NODEID_NUMERIC(0, UA_NS0ID_OBJECTSFOLDER);
+    UA_NodeId sourceId = addObjInstance(objectsNodeId, "delRefSrcIR");
+    UA_NodeId targetId = addObjInstance(objectsNodeId, "delRefTgtIR");
+
+    UA_ExpandedNodeId targetExpId;
+    targetExpId.nodeId = targetId;
+    targetExpId.namespaceUri = UA_STRING_NULL;
+    targetExpId.serverIndex = 0;
+
+    /* Unknown refType */
+    UA_StatusCode st = UA_Server_deleteReference(
+        server, sourceId, UA_NODEID_NUMERIC(1, 77777), true,
+        targetExpId, false);
+    ck_assert_uint_eq(st, UA_STATUSCODE_BADREFERENCETYPEIDINVALID);
+
+    /* Non-ReferenceType node used as refType */
+    UA_VariableAttributes vAttr = UA_VariableAttributes_default;
+    UA_Int32 val = 1;
+    UA_Variant_setScalar(&vAttr.value, &val, &UA_TYPES[UA_TYPES_INT32]);
+    UA_NodeId varId;
+    st = UA_Server_addVariableNode(
+        server, UA_NODEID_NULL, objectsNodeId,
+        UA_NODEID_NUMERIC(0, UA_NS0ID_ORGANIZES),
+        UA_QUALIFIEDNAME(1, "NotARefTypeForDel"),
+        UA_NODEID_NUMERIC(0, UA_NS0ID_BASEDATAVARIABLETYPE),
+        vAttr, NULL, &varId);
+    ck_assert_uint_eq(st, UA_STATUSCODE_GOOD);
+
+    st = UA_Server_deleteReference(
+        server, sourceId, varId, true, targetExpId, false);
+    ck_assert_uint_eq(st, UA_STATUSCODE_BADREFERENCETYPEIDINVALID);
+} END_TEST
+
+START_TEST(DeleteReference_SourceNodeUnknown_rejected) {
+    /* src/server/ua_services_nodemanagement.c:2468-2470:
+     *   if(!firstNode) { *retval = UA_STATUSCODE_BADNODEIDUNKNOWN; } */
+    UA_NodeId objectsNodeId = UA_NODEID_NUMERIC(0, UA_NS0ID_OBJECTSFOLDER);
+    UA_NodeId targetId = addObjInstance(objectsNodeId, "delRefTgtSU");
+    UA_NodeId refTypeId = registerRefType("HasDelSU", "IsDelSUOf");
+
+    UA_ExpandedNodeId targetExpId;
+    targetExpId.nodeId = targetId;
+    targetExpId.namespaceUri = UA_STRING_NULL;
+    targetExpId.serverIndex = 0;
+
+    UA_StatusCode st = UA_Server_deleteReference(
+        server, UA_NODEID_NUMERIC(1, 66666), refTypeId, true,
+        targetExpId, false);
+    ck_assert_uint_eq(st, UA_STATUSCODE_BADNODEIDUNKNOWN);
+} END_TEST
+
+START_TEST(DeleteReference_BidirectionalSecondDirection) {
+    /* src/server/ua_services_nodemanagement.c:2475-2491:
+     *   if(!item->deleteBidirectional || item->targetNodeId.serverIndex != 0)
+     *     return;
+     *   if(UA_ExpandedNodeId_isLocal(&item->targetNodeId)) {
+     *     secondNode = UA_NODESTORE_GET_EDIT_SELECTIVE(...);
+     *     ...
+     *     UA_Node_deleteReference(secondNode, ...);
+     *   }
+     * Verify that deleteBidirectional=true on a local target exercises
+     * the second-direction delete. The existing DeleteReference test
+     * asserts GOOD but does not check the second-direction branch. */
+    UA_NodeId objectsNodeId = UA_NODEID_NUMERIC(0, UA_NS0ID_OBJECTSFOLDER);
+    UA_NodeId sourceId = addObjInstance(objectsNodeId, "delRefBiSrc");
+    UA_NodeId targetId = addObjInstance(objectsNodeId, "delRefBiTgt");
+    UA_NodeId refTypeId = registerRefType("HasBiDel", "IsBiDelOf");
+
+    UA_ExpandedNodeId targetExpId;
+    targetExpId.nodeId = targetId;
+    targetExpId.namespaceUri = UA_STRING_NULL;
+    targetExpId.serverIndex = 0;
+
+    /* Add bidirectional reference (deleteBidirectional=true means add
+     * also goes the other way) */
+    UA_StatusCode st = UA_Server_addReference(
+        server, sourceId, refTypeId, targetExpId, true);
+    ck_assert_uint_eq(st, UA_STATUSCODE_GOOD);
+
+    /* Now delete with deleteBidirectional=true -- second direction
+     * branch should be hit */
+    st = UA_Server_deleteReference(
+        server, sourceId, refTypeId, true, targetExpId, true);
+    ck_assert_uint_eq(st, UA_STATUSCODE_GOOD);
+
+    /* A second delete should fail since neither direction exists */
+    st = UA_Server_deleteReference(
+        server, sourceId, refTypeId, true, targetExpId, true);
+    ck_assert_uint_ne(st, UA_STATUSCODE_GOOD);
+} END_TEST
+
 START_TEST(SetNodeTypeLifecycle) {
     /* Set a lifecycle callback on BaseObjectType */
     UA_NodeTypeLifecycle nlc;
@@ -1024,12 +1764,191 @@ START_TEST(SetVariableValueSource) {
     UA_DataValue_delete(externalValuePtr);
 } END_TEST
 
+/* === Context API tests === */
+
+START_TEST(Context_GetSetNodeContext) {
+    /* Add a variable node with context */
+    UA_VariableAttributes attr = UA_VariableAttributes_default;
+    UA_Int32 myInt = 42;
+    UA_Variant_setScalar(&attr.value, &myInt, &UA_TYPES[UA_TYPES_INT32]);
+    attr.displayName = UA_LOCALIZEDTEXT("en-US", "CtxTestVar");
+    UA_NodeId varId = UA_NODEID_STRING(1, "ctx.testvar");
+    int nodeCtx = 12345;
+    UA_StatusCode retval =
+        UA_Server_addVariableNode(server, varId,
+                                  UA_NODEID_NUMERIC(0, UA_NS0ID_OBJECTSFOLDER),
+                                  UA_NODEID_NUMERIC(0, UA_NS0ID_ORGANIZES),
+                                  UA_QUALIFIEDNAME(1, "CtxTestVar"),
+                                  UA_NODEID_NUMERIC(0, UA_NS0ID_BASEDATAVARIABLETYPE),
+                                  attr, &nodeCtx, NULL);
+    ck_assert_int_eq(retval, UA_STATUSCODE_GOOD);
+
+    /* Get node context - should return what we set */
+    void *ctx = NULL;
+    retval = UA_Server_getNodeContext(server, varId, &ctx);
+    ck_assert_int_eq(retval, UA_STATUSCODE_GOOD);
+    ck_assert_ptr_eq(ctx, &nodeCtx);
+
+    /* Set node context to a different value */
+    int newCtx = 67890;
+    retval = UA_Server_setNodeContext(server, varId, &newCtx);
+    ck_assert_int_eq(retval, UA_STATUSCODE_GOOD);
+
+    /* Verify the context was updated */
+    ctx = NULL;
+    retval = UA_Server_getNodeContext(server, varId, &ctx);
+    ck_assert_int_eq(retval, UA_STATUSCODE_GOOD);
+    ck_assert_ptr_eq(ctx, &newCtx);
+} END_TEST
+
+START_TEST(Context_SetNodeContext_InvalidNodeId) {
+    /* Setting context on a non-existent node should fail */
+    int ctx = 0;
+    UA_StatusCode retval =
+        UA_Server_setNodeContext(server, UA_NODEID_NUMERIC(1, 99999), &ctx);
+    ck_assert_int_eq(retval, UA_STATUSCODE_BADNODEIDINVALID);
+} END_TEST
+
+START_TEST(Context_GetNodeContext_UnknownNodeId) {
+    /* Getting context from a non-existent node should fail */
+    void *ctx = NULL;
+    UA_StatusCode retval =
+        UA_Server_getNodeContext(server, UA_NODEID_NUMERIC(1, 99999), &ctx);
+    ck_assert_int_eq(retval, UA_STATUSCODE_BADNODEIDUNKNOWN);
+} END_TEST
+
+START_TEST(FindChildByBrowsename_NotFound) {
+    /* Look for a child that doesn't exist under the Objects folder */
+    UA_NodeId outChildId;
+    UA_QualifiedName nonExistentName = UA_QUALIFIEDNAME(0, "NonExistentChild_XYZ_123");
+    UA_StatusCode retval =
+        findChildByBrowsename(server, NULL,
+                              UA_NODEID_NUMERIC(0, UA_NS0ID_OBJECTSFOLDER),
+                              UA_NODECLASS_OBJECT,
+                              UA_REFERENCETYPEINDEX_ORGANIZES,
+                              UA_NODEID_NUMERIC(0, UA_NS0ID_ORGANIZES),
+                              &nonExistentName, &outChildId);
+    ck_assert_int_eq(retval, UA_STATUSCODE_BADNOTFOUND);
+} END_TEST
+
+/* ==== Service_AddNodes / Service_DeleteNodes maxNodes guard ==== */
+
+START_TEST(Service_AddNodes_maxNodesPerNodeManagement_exceeded) {
+    /* src/server/ua_services_nodemanagement.c:1703-1706:
+     *   if(maxNodesPerNodeManagement != 0 &&
+     *      request->nodesToAddSize > maxNodesPerNodeManagement) {
+     *     response->responseHeader.serviceResult = UA_STATUSCODE_BADTOOMANYOPERATIONS;
+     *     return true;
+     *   }
+     * White-box: set maxNodesPerNodeManagement = 2 and call
+     * Service_AddNodes directly with 3 items. The early-return
+     * branch is never reached by any existing test (the default
+     * maxNodesPerNodeManagement is 0 = unlimited). */
+    UA_ServerConfig *cfg = UA_Server_getConfig(server);
+    UA_UInt32 origLimit = cfg->maxNodesPerNodeManagement;
+    cfg->maxNodesPerNodeManagement = 2;
+
+    UA_AddNodesRequest request;
+    UA_AddNodesRequest_init(&request);
+    request.nodesToAddSize = 3; /* exceeds 2 */
+    request.nodesToAdd = (UA_AddNodesItem*)
+        UA_Array_new(3, &UA_TYPES[UA_TYPES_ADDNODESITEM]);
+
+    UA_AddNodesResponse response;
+    UA_AddNodesResponse_init(&response);
+
+    lockServer(server);
+    UA_Boolean ok = Service_AddNodes(server, &server->adminSession,
+                                     &request, &response);
+    unlockServer(server);
+
+    ck_assert(ok);
+    ck_assert_uint_eq(response.responseHeader.serviceResult,
+                      UA_STATUSCODE_BADTOOMANYOPERATIONS);
+    /* No items were processed */
+    ck_assert_uint_eq(response.resultsSize, 0);
+
+    /* Restore the limit and clean up */
+    cfg->maxNodesPerNodeManagement = origLimit;
+    UA_Array_delete(request.nodesToAdd, 3, &UA_TYPES[UA_TYPES_ADDNODESITEM]);
+    UA_AddNodesResponse_clear(&response);
+} END_TEST
+
+START_TEST(Service_AddNodes_maxNodesPerNodeManagement_atLimit) {
+    /* The boundary case: exactly maxNodesPerNodeManagement items is
+     * NOT rejected; the check is strictly greater-than. */
+    UA_ServerConfig *cfg = UA_Server_getConfig(server);
+    UA_UInt32 origLimit = cfg->maxNodesPerNodeManagement;
+    cfg->maxNodesPerNodeManagement = 2;
+
+    UA_AddNodesRequest request;
+    UA_AddNodesRequest_init(&request);
+    request.nodesToAddSize = 2; /* exactly at limit */
+    request.nodesToAdd = (UA_AddNodesItem*)
+        UA_Array_new(2, &UA_TYPES[UA_TYPES_ADDNODESITEM]);
+    for(size_t i = 0; i < 2; i++) {
+        UA_AddNodesItem_init(&request.nodesToAdd[i]);
+    }
+
+    UA_AddNodesResponse response;
+    UA_AddNodesResponse_init(&response);
+
+    lockServer(server);
+    UA_Boolean ok = Service_AddNodes(server, &server->adminSession,
+                                     &request, &response);
+    unlockServer(server);
+
+    ck_assert(ok);
+    /* The overall serviceResult is GOOD (no early return); the
+     * per-item results carry the actual add errors. */
+    ck_assert_uint_eq(response.responseHeader.serviceResult,
+                      UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(response.resultsSize, 2);
+
+    cfg->maxNodesPerNodeManagement = origLimit;
+    UA_Array_delete(request.nodesToAdd, 2, &UA_TYPES[UA_TYPES_ADDNODESITEM]);
+    UA_AddNodesResponse_clear(&response);
+} END_TEST
+
+START_TEST(Service_DeleteNodes_maxNodesPerNodeManagement_exceeded) {
+    /* src/server/ua_services_nodemanagement.c:2211-2214: the same
+     * guard for DeleteNodesRequest. */
+    UA_ServerConfig *cfg = UA_Server_getConfig(server);
+    UA_UInt32 origLimit = cfg->maxNodesPerNodeManagement;
+    cfg->maxNodesPerNodeManagement = 2;
+
+    UA_DeleteNodesRequest request;
+    UA_DeleteNodesRequest_init(&request);
+    request.nodesToDeleteSize = 3;
+    request.nodesToDelete = (UA_DeleteNodesItem*)
+        UA_Array_new(3, &UA_TYPES[UA_TYPES_DELETENODESITEM]);
+
+    UA_DeleteNodesResponse response;
+    UA_DeleteNodesResponse_init(&response);
+
+    lockServer(server);
+    UA_Boolean ok = Service_DeleteNodes(server, &server->adminSession,
+                                        &request, &response);
+    unlockServer(server);
+
+    ck_assert(ok);
+    ck_assert_uint_eq(response.responseHeader.serviceResult,
+                      UA_STATUSCODE_BADTOOMANYOPERATIONS);
+    ck_assert_uint_eq(response.resultsSize, 0);
+
+    cfg->maxNodesPerNodeManagement = origLimit;
+    UA_Array_delete(request.nodesToDelete, 3,
+                    &UA_TYPES[UA_TYPES_DELETENODESITEM]);
+    UA_DeleteNodesResponse_clear(&response);
+} END_TEST
+
 int main(void) {
     Suite *s = suite_create("services_nodemanagement");
 
     TCase *tc_addnodes = tcase_create("addnodes");
     tcase_add_checked_fixture(tc_addnodes, setup, teardown);
     tcase_add_test(tc_addnodes, AddVariableNode);
+    tcase_add_test(tc_addnodes, ValueRankConstraintAcceptsEquality);
     tcase_add_test(tc_addnodes, AddVariableNode_ValueRankZero);
     tcase_add_test(tc_addnodes, AddVariableNode_EmptyValueWithNonZeroValueRank);
     tcase_add_test(tc_addnodes, AddVariableNode_Matrix);
@@ -1037,17 +1956,28 @@ int main(void) {
     tcase_add_test(tc_addnodes, InstantiateVariableTypeNode);
     tcase_add_test(tc_addnodes, InstantiateVariableTypeNodeWrongDims);
     tcase_add_test(tc_addnodes, InstantiateVariableTypeNodeLessDims);
+    tcase_add_test(tc_addnodes, VariableTypeRestrictionGetsMatchingDefaultValue);
+    tcase_add_test(tc_addnodes, AddVariableNodeAdjustsEnumWireType);
     tcase_add_test(tc_addnodes, AddComplexTypeWithInheritance);
     tcase_add_test(tc_addnodes, AddNodeTwiceGivesError);
     tcase_add_test(tc_addnodes, AddObjectWithConstructor);
     tcase_add_test(tc_addnodes, InstantiateObjectType);
+    tcase_add_test(tc_addnodes, EarlyConstructorRunsDuringBegin);
+    tcase_add_test(tc_addnodes, EarlyConstructorRunsForInstantiatedChildren);
+    tcase_add_test(tc_addnodes, EarlyConstructorRunsForVariableType);
+    tcase_add_test(tc_addnodes, EarlyConstructorCanPrecreateMandatoryChild);
+    tcase_add_test(tc_addnodes, CopyMethodsOnInstancesIsConfigurable);
+    tcase_add_test(tc_addnodes, RecursiveMandatoryChildDepthIsLimited);
     tcase_add_test(tc_addnodes, ObjectWithDynamicVariableChild);
+    tcase_add_test(tc_addnodes, Service_AddNodes_maxNodesPerNodeManagement_exceeded);
+    tcase_add_test(tc_addnodes, Service_AddNodes_maxNodesPerNodeManagement_atLimit);
     suite_add_tcase(s, tc_addnodes);
 
     TCase *tc_deletenodes = tcase_create("deletenodes");
     tcase_add_checked_fixture(tc_deletenodes, setup, teardown);
     tcase_add_test(tc_deletenodes, DeleteObjectWithDestructor);
     tcase_add_test(tc_deletenodes, DeleteObjectAndReferences);
+    tcase_add_test(tc_deletenodes, Service_DeleteNodes_maxNodesPerNodeManagement_exceeded);
     suite_add_tcase(s, tc_deletenodes);
 
     TCase *tc_addreferences = tcase_create("addreferences");
@@ -1056,6 +1986,13 @@ int main(void) {
     tcase_add_test(tc_addreferences, DeleteReference);
     tcase_add_test(tc_addreferences, AddReference_InvalidRefType);
     tcase_add_test(tc_addreferences, AddReference_InvalidTargetNodeClass);
+    tcase_add_test(tc_addreferences, AddReference_NonRefTypeAsRefType_rejected);
+    tcase_add_test(tc_addreferences, AddReference_SourceNodeUnknown_rejected);
+    tcase_add_test(tc_addreferences, AddReference_TargetNodeUnknown_rejected);
+    tcase_add_test(tc_addreferences, AddReference_SourceEqualsTarget_isNoop);
+    tcase_add_test(tc_addreferences, DeleteReference_InvalidRefType_rejected);
+    tcase_add_test(tc_addreferences, DeleteReference_SourceNodeUnknown_rejected);
+    tcase_add_test(tc_addreferences, DeleteReference_BidirectionalSecondDirection);
     suite_add_tcase(s, tc_addreferences);
 
     TCase *tc_ext = tcase_create("extendedCoverage");
@@ -1071,6 +2008,10 @@ int main(void) {
     tcase_add_test(tc_ext, SetNodeTypeLifecycle);
     tcase_add_test(tc_ext, SetAdminSessionContext);
     tcase_add_test(tc_ext, SetVariableValueSource);
+    tcase_add_test(tc_ext, Context_GetSetNodeContext);
+    tcase_add_test(tc_ext, Context_SetNodeContext_InvalidNodeId);
+    tcase_add_test(tc_ext, Context_GetNodeContext_UnknownNodeId);
+    tcase_add_test(tc_ext, FindChildByBrowsename_NotFound);
     suite_add_tcase(s, tc_ext);
 
     SRunner *sr = srunner_create(s);

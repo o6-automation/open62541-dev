@@ -230,6 +230,13 @@ static TestUdpIntercept *testUdpIntercept;
 static TestUdpIntercept *testUdpInterceptLds;
 static TestUdpIntercept *testUdpInterceptRegister;
 static size_t globalInterceptedMdnsMessages;
+static UA_atomic(UA_UInt32) workerCallbackStatus = UA_STATUSCODE_GOOD;
+
+static void
+recordWorkerCallbackFailure(UA_StatusCode status) {
+    UA_UInt32 expected = UA_STATUSCODE_GOOD;
+    UA_atomic_cmpxchg(&workerCallbackStatus, &expected, status);
+}
 
 static void
 serverDiscoveryNotificationCallback(UA_Server *server,
@@ -405,19 +412,35 @@ interceptingSend(UA_ConnectionManager *cm, uintptr_t connectionId,
     (void)params;
     TestUdpIntercept *intercept =
         (TestUdpIntercept*)TestConnectionManager_getContext(cm);
-    ck_assert_ptr_ne(intercept, NULL);
+    if(!intercept) {
+        recordWorkerCallbackFailure(UA_STATUSCODE_BADINTERNALERROR);
+        UA_ByteString_clear(buf);
+        return UA_STATUSCODE_BADINTERNALERROR;
+    }
 
     intercept->sentMessages++;
     if(buf->length > 0) {
         size_t slot = intercept->recentMessageCursor % TEST_UDP_CAPTURED_MESSAGES;
-        intercept->sentNonEmptyMessages++;
-        globalInterceptedMdnsMessages++;
         UA_ByteString_clear(&intercept->lastMessage);
         UA_ByteString_clear(&intercept->recentMessages[slot]);
-        ck_assert_uint_eq(UA_ByteString_copy(buf, &intercept->lastMessage),
-                          UA_STATUSCODE_GOOD);
-        ck_assert_uint_eq(UA_ByteString_copy(buf, &intercept->recentMessages[slot]),
-                          UA_STATUSCODE_GOOD);
+
+        UA_StatusCode res = UA_ByteString_copy(buf, &intercept->lastMessage);
+        if(res != UA_STATUSCODE_GOOD) {
+            recordWorkerCallbackFailure(res);
+            UA_ByteString_clear(buf);
+            return res;
+        }
+
+        res = UA_ByteString_copy(buf, &intercept->recentMessages[slot]);
+        if(res != UA_STATUSCODE_GOOD) {
+            recordWorkerCallbackFailure(res);
+            UA_ByteString_clear(&intercept->lastMessage);
+            UA_ByteString_clear(buf);
+            return res;
+        }
+
+        intercept->sentNonEmptyMessages++;
+        globalInterceptedMdnsMessages++;
         intercept->recentMessageSequence[slot] = globalInterceptedMdnsMessages;
         intercept->recentMessageCursor++;
     }
@@ -1256,10 +1279,12 @@ serverDiscoveryNotificationCallback(UA_Server *server,
         UA_KeyValueMap_getScalar(&payload, UA_QUALIFIEDNAME(0, "server-updated"),
                                  &UA_TYPES[UA_TYPES_BOOLEAN]);
 
-    ck_assert_ptr_ne(serverOnNetwork, NULL);
-    ck_assert_ptr_ne(serverAdded, NULL);
-    ck_assert_ptr_ne(serverRemoved, NULL);
-    ck_assert_ptr_ne(serverUpdated, NULL);
+    /* This callback runs in a server worker thread. Do not use Check assertion
+     * macros here: they write to per-test state owned by the test thread. */
+    if(!serverOnNetwork || !serverAdded || !serverRemoved || !serverUpdated) {
+        recordWorkerCallbackFailure(UA_STATUSCODE_BADINTERNALERROR);
+        return;
+    }
 
     DiscoveryIntegrationCounters *counters = &discoveryCounters;
     UA_Boolean isServerAnnounce = (*serverAdded || *serverUpdated);
@@ -1756,6 +1781,42 @@ START_TEST(PublicApiFindServersOnNetworkListsRegisteredServers) {
     findServersOnNetworkAndCheck("opc.tcp://localhost:4840",
                                  expectedServerNames, 1,
                                  capsMultipleCustomIgnoreCase, 2);
+}
+END_TEST
+
+START_TEST(PublicApiFindServersOnNetworkAppliesLimitAfterCapabilityFilter) {
+    UA_Server *localServer = UA_Server_newForUnitTest();
+    ck_assert_ptr_ne(localServer, NULL);
+
+    UA_ServerConfig *localConfig = UA_Server_getConfig(localServer);
+    localConfig->serversOnNetworkEnabled = true;
+    ck_assert_uint_eq(UA_Server_run_startup(localServer), UA_STATUSCODE_GOOD);
+
+    const char *capsDa[] = {"DA"};
+    const char *capsLds[] = {"LDS"};
+    registerServerOnNetwork(localServer, "candidate-da",
+                            "opc.tcp://localhost:4841", capsDa, 1);
+    registerServerOnNetwork(localServer, "candidate-lds",
+                            "opc.tcp://localhost:4842", capsLds, 1);
+
+    UA_String filter = UA_STRING("LDS");
+    UA_DateTime lastCounterResetTime = 0;
+    size_t serverOnNetworkSize = 0;
+    UA_ServerOnNetwork *serverOnNetwork = NULL;
+    UA_StatusCode retval =
+        UA_Server_findServersOnNetwork(localServer, UA_STRING_NULL, 0, 1, 1,
+                                       &filter, &lastCounterResetTime,
+                                       &serverOnNetworkSize, &serverOnNetwork);
+
+    ck_assert_uint_eq(retval, UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(serverOnNetworkSize, 1);
+    UA_String expectedName = UA_STRING("candidate-lds");
+    ck_assert(UA_String_equal(&serverOnNetwork[0].serverName, &expectedName));
+
+    UA_Array_delete(serverOnNetwork, serverOnNetworkSize,
+                    &UA_TYPES[UA_TYPES_SERVERONNETWORK]);
+    UA_Server_run_shutdown(localServer);
+    UA_Server_delete(localServer);
 }
 END_TEST
 
@@ -2353,6 +2414,11 @@ testSuite_DiscoveryMdnsd(void) {
     (void)tc_config;
     suite_add_tcase(s, tc_config);
 
+    TCase *tc_public_api_core = tcase_create("Public discovery API core");
+    tcase_add_test(tc_public_api_core,
+                   PublicApiFindServersOnNetworkAppliesLimitAfterCapabilityFilter);
+    suite_add_tcase(s, tc_public_api_core);
+
     TCase *tc_integration = tcase_create("Public discovery API integration");
     tcase_add_unchecked_fixture(tc_integration,
                                 setup_public_api_servers,
@@ -2387,6 +2453,13 @@ main(void) {
     srunner_set_fork_status(sr, CK_NOFORK);
     srunner_run_all(sr, CK_NORMAL);
     int number_failed = srunner_ntests_failed(sr);
+    UA_StatusCode callbackStatus =
+        (UA_StatusCode)UA_atomic_load(&workerCallbackStatus);
+    if(callbackStatus != UA_STATUSCODE_GOOD) {
+        fprintf(stderr, "mDNS worker callback failed with status 0x%08x\n",
+                (unsigned)callbackStatus);
+        number_failed++;
+    }
     srunner_free(sr);
     return (number_failed == 0) ? EXIT_SUCCESS : EXIT_FAILURE;
 }

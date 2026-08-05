@@ -31,7 +31,7 @@
       "items": {
         "type": "string"
       },
-      "description": "List of server URLs"
+      "description": "List of opc.tcp and opc.wss server URLs"
     },
     "tcpEnabled": {
       "type": "boolean",
@@ -42,6 +42,15 @@
       "$ref": "#/definitions/TcpConfiguration",
       "description": "TCP configuration"
     },
+    "webSocketEnabled": {
+      "type": "boolean",
+      "description": "Enable OPC UA Binary over WebSockets",
+      "default": false
+    },
+    "webSocket": {
+      "$ref": "#/definitions/WebSocketConfiguration",
+      "description": "WebSocket transport configuration"
+    },
     "securityPolicyNoneDiscoveryOnly": {
       "type": "boolean",
       "description": "Allow SecurityPolicy None only for discovery",
@@ -50,6 +59,11 @@
     "modellingRulesOnInstances": {
       "type": "boolean",
       "description": "Add modelling rules on instances",
+      "default": false
+    },
+    "copyMethodsOnInstances": {
+      "type": "boolean",
+      "description": "Copy Method declarations into Object instances",
       "default": false
     },
     "maxSecureChannels": {
@@ -301,6 +315,43 @@
           "type": "integer",
           "description": "TCP maximum chunks",
           "minimum": 0
+        }
+      }
+    },
+    "WebSocketConfiguration": {
+      "type": "object",
+      "properties": {
+        "webSocketBufSize": {
+          "type": "integer",
+          "description": "WebSocket chunk buffer size in bytes",
+          "minimum": 0
+        },
+        "webSocketMaxMsgSize": {
+          "type": "integer",
+          "description": "WebSocket maximum OPC UA message size in bytes; zero is unbounded",
+          "minimum": 0
+        },
+        "webSocketMaxChunks": {
+          "type": "integer",
+          "description": "WebSocket maximum OPC UA chunks per message; zero is unbounded",
+          "minimum": 0
+        },
+        "webSocketMaxQueueSize": {
+          "type": "integer",
+          "description": "Maximum bytes queued for a slow WebSocket peer",
+          "minimum": 1
+        },
+        "certificate": {
+          "type": "string",
+          "description": "Path to the WebSocket TLS certificate in DER or PEM format"
+        },
+        "privateKey": {
+          "type": "string",
+          "description": "Path to the WebSocket TLS private key in DER or PEM format"
+        },
+        "privateKeyPassword": {
+          "type": "string",
+          "description": "Optional password for the WebSocket TLS private key"
         }
       }
     },

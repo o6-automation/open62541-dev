@@ -13,6 +13,7 @@
 #include <open62541/types_generated.h>
 #include <open62541/util.h>
 #include <open62541/plugin/log.h>
+#include <open62541/plugin/certificategroup.h>
 
 _UA_BEGIN_DECLS
 
@@ -477,6 +478,36 @@ struct UA_InterruptManager {
 UA_EXPORT UA_EventLoop *
 UA_EventLoop_new_POSIX(const UA_Logger *logger);
 
+#ifdef UA_ENABLE_EVENTLOOP_GLIB
+
+/**
+ * GLib EventLoop Implementation
+ * ------------------------------
+ * A drop-in alternative to ``UA_EventLoop_new_POSIX`` that is driven by a
+ * GLib ``GMainContext`` instead of directly calling select()/epoll_wait().
+ * All ConnectionManagers documented below (TCP, UDP, Ethernet, ...) work
+ * unchanged with this EventLoop.
+ *
+ * Once started, the EventLoop attaches a ``GSource`` to the given
+ * ``GMainContext``. From that point on, sockets and timers are serviced
+ * automatically whenever that context is iterated -- for example by
+ * ``g_main_loop_run()``, ``gtk_main()``, ``g_application_run()``, or any
+ * other GLib-based application main loop. It is therefore not necessary to
+ * call the EventLoop's own ``run`` method at all; the open62541 stack can be
+ * fully driven by GLib. ``run`` is still provided (performing a single
+ * bounded iteration of the ``GMainContext``) for backwards compatibility
+ * with code that pumps the EventLoop itself (e.g. ``UA_Server_run``).
+ *
+ * @param logger The logger for the EventLoop.
+ * @param glibMainContext The ``GMainContext*`` to attach to. If ``NULL``,
+ *        the process-wide default context (``g_main_context_default()``) is
+ *        used -- the same context iterated by a plain
+ *        ``g_main_loop_new(NULL, ...)`` or by GTK/GNOME applications. */
+UA_EXPORT UA_EventLoop *
+UA_EventLoop_new_GLib(const UA_Logger *logger, void *glibMainContext);
+
+#endif /* UA_ENABLE_EVENTLOOP_GLIB */
+
 /**
  * TCP Connection Manager
  * ~~~~~~~~~~~~~~~~~~~~~~
@@ -716,6 +747,142 @@ UA_EXPORT UA_ConnectionManager *
 UA_ConnectionManager_new_POSIX_Ethernet(const UA_String eventSourceName);
 #endif
 
+
+/**
+ * HTTP Connection Manager
+ * ~~~~~~~~~~~~~~~~~~~~~~~
+ *
+ * The HTTP ConnectionManager uses the libwebsockets library to send HTTP requests.
+ *
+ * **Open Connection Parameters:**
+ *
+ * 0:address [string]
+ *    Hostname or IPv4/IPv6 address of the target (required).
+ *
+ * 0:port [uint16]
+ *    Port of the target host (required).
+ *
+ * 0:timeout [uint16]
+ *    Connection timeout in seconds (default: 30).
+ *
+ * 0:useSSL [bool]
+ *    Encrypt the connection with TLS (default: false).
+ *
+ * 0:username [string]
+ *    Username for HTTP Basic authentication. The authorization header is added
+ *    only if both ``username`` and ``password`` are set.
+ *
+ * 0:password [string]
+ *    Password for HTTP Basic authentication. The authorization header is added
+ *    only if both ``username`` and ``password`` are set.
+ *
+ * 0:ca-cert [bytestring]
+ *    DER or PEM encoded CA certificate or certificate bundle used to verify
+ *    the server. If unset, the operating system trust store is used.
+ *
+ * 0:client-cert [bytestring]
+ *    DER or PEM encoded client certificate for mutual TLS.
+ *
+ * 0:client-key [bytestring]
+ *    DER or PEM encoded private key for the client certificate.
+ *
+ * 0:client-key-password [string]
+ *    Password for an encrypted client private key.
+ *
+ * **Send Parameters:**
+ *
+ * 0:path [string]
+ *    Request-target path (default: ``/``).
+ *
+ * 0:method [string]
+ *    HTTP request method (default: ``GET``).
+ *
+ * 0:header [string]
+ *    Additional request headers encoded as ampersand-separated key-value
+ *    pairs, for example ``Accept=application/json&X-Trace=yes``. Header names
+ *    and values therefore cannot contain unescaped ``&`` or ``=`` characters.
+ *
+ * The ``buf`` argument passed to ``sendWithConnection`` is used as the request
+ * body. It may be ``NULL`` for an empty body and, like all ConnectionManager
+ * send buffers, is released internally even if sending fails. */
+UA_EXPORT UA_ConnectionManager *
+UA_ConnectionManager_new_HTTP(const UA_String eventSourceName);
+
+/**
+ * libwebsockets WebSocket Connection Manager
+ * ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+ * Provides WebSocket client and server connections. Each buffer passed to
+ * ``sendWithConnection`` is sent as one binary WebSocket message. Incoming
+ * fragments belonging to one WebSocket message are reassembled and delivered
+ * together in one connection callback.
+ *
+ * **Open Connection Parameters:**
+ *
+ * 0:address [string]
+ *    Remote hostname for clients or local interface for listeners. Listeners
+ *    default to all interfaces.
+ *
+ * 0:port [uint16]
+ *    Remote or listening port (required; zero selects a dynamic server port).
+ *
+ * 0:listen [boolean]
+ *    Create a listening connection (default: false).
+ *
+ * 0:path [string]
+ *    WebSocket request path (default: ``/``). Clients request this path and
+ *    listeners reject upgrade requests for any other path.
+ *
+ * 0:subprotocol [string]
+ *    WebSocket subprotocol to request or accept. By default no subprotocol is
+ *    negotiated. When configured, listeners reject clients that do not
+ *    offer this exact subprotocol. A client may offer additional protocols.
+ *
+ * 0:binary-only [boolean]
+ *    Reject incoming text messages and accept only binary WebSocket messages
+ *    (default: true).
+ *
+ * 0:useSSL [bool]
+ *    Encrypt the connection with TLS (default: false). TLS listeners require
+ *    ``certificate`` and ``private-key``.
+ *
+ * 0:certificate [bytestring]
+ *    DER or PEM encoded local certificate. For listeners this is the server
+ *    certificate. For clients it enables mutual TLS.
+ *
+ * 0:private-key [bytestring]
+ *    DER or PEM encoded private key for ``certificate``.
+ *
+ * 0:private-key-password [string]
+ *    Password for an encrypted private key.
+ *
+ * 0:ca-certificate [bytestring]
+ *    DER or PEM encoded CA certificate used to validate the TLS peer for
+ *    client connections. If omitted, the system trust store is used.
+ *
+ * 0:recv-max-message-size [uint32]
+ *    Maximum size of one reconstructed incoming WebSocket message. Zero or
+ *    omission means unlimited. For ``opcua+uacp`` this is the negotiated
+ *    receive buffer size because each WebSocket message carries one UACP
+ *    MessageChunk.
+ *
+ * 0:send-max-message-size [uint32]
+ *    Maximum size of one outgoing WebSocket message. Zero or omission means
+ *    unlimited. For ``opcua+uacp`` this is the negotiated send buffer size.
+ *
+ * 0:send-max-queue-size [uint32]
+ *    Maximum total payload size queued for sending on one connection. Zero or
+ *    omission means unlimited.
+ *
+ * 0:validate [boolean]
+ *    Validate parameters without opening a connection.
+ *
+ * Listener callbacks provide ``listen-address`` and ``listen-port``. Active
+ * and accepted connections provide ``remote-address``. Secure client
+ * connections validate the server certificate and hostname using either
+ * ``ca-certificate`` or the system trust store. */
+UA_EXPORT UA_ConnectionManager *
+UA_ConnectionManager_new_LWS_WebSocket(const UA_String eventSourceName);
+
 /**
  * MQTT Connection Manager
  * ~~~~~~~~~~~~~~~~~~~~~~~
@@ -741,6 +908,23 @@ UA_ConnectionManager_new_POSIX_Ethernet(const UA_String eventSourceName);
  *
  * 0:password [string]
  *    Password to use (default: none)
+ *
+ * 0:useSSL [bool]
+ *    Encrypt the broker connection with TLS (default: false).
+ *
+ * 0:certificate [bytestring]
+ *    DER or PEM encoded client certificate for mutual TLS.
+ *
+ * 0:private-key [bytestring]
+ *    DER or PEM encoded private key for ``certificate``.
+ *
+ * 0:private-key-password [string]
+ *    Password for an encrypted private key.
+ *
+ * 0:ca-certificate [bytestring]
+ *    DER or PEM encoded CA certificate used to validate the broker
+ *    certificate. If omitted, the system trust store is used. The broker
+ *    certificate and hostname are always validated for TLS connections.
  *
  * 0:keep-alive [uint16]
  *   Number of seconds for the keep-alive (ping) (default: 400).
@@ -772,6 +956,17 @@ UA_EXPORT UA_ConnectionManager *
 UA_ConnectionManager_new_MQTT(const UA_String eventSourceName);
 
 /**
+ * Libwebsockets MQTT Connection Manager
+ * ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+ * Implements the same MQTT ConnectionManager contract and parameters as
+ * ``UA_ConnectionManager_new_MQTT``, using the MQTT client role provided by
+ * libwebsockets. Enable this implementation with ``UA_ENABLE_LWS_MQTT``. The
+ * libwebsockets library must be built with
+ * ``LWS_ROLE_MQTT=ON``. */
+UA_EXPORT UA_ConnectionManager *
+UA_ConnectionManager_new_LWS_MQTT(const UA_String eventSourceName);
+
+/**
  * Signal Interrupt Manager
  * ~~~~~~~~~~~~~~~~~~~~~~~~
  * Create an instance of the interrupt manager that handles POSX signals. This
@@ -779,6 +974,44 @@ UA_ConnectionManager_new_MQTT(const UA_String eventSourceName);
  * for the interruptHandle. */
 UA_EXPORT UA_InterruptManager *
 UA_InterruptManager_new_POSIX(const UA_String eventSourceName);
+
+#ifdef UA_ENABLE_EVENTLOOP_GLIB
+
+/**
+ * GLib Signal Interrupt Manager
+ * ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+ * Same contract as UA_InterruptManager_new_POSIX (interruptHandle is a
+ * <signal.h> signal number), but each interrupt is registered as a native
+ * GLib GSource (g_unix_signal_source_new) attached to the GMainContext of
+ * the owning EventLoop (see UA_EventLoop_new_GLib), instead of installing a
+ * sigaction handler writing to a self-pipe. GLib handles the OS-level signal
+ * reception itself.
+ *
+ * Two behavioral differences from UA_InterruptManager_new_POSIX, both
+ * inherent to GLib:
+ *
+ * - Delivery is asynchronous: GLib forwards a received signal to the
+ *   EventLoop via an internal worker thread. A signal may therefore not yet
+ *   be visible to a single non-blocking EventLoop iteration performed
+ *   immediately after it was raised; callers polling for a specific
+ *   interrupt should use one or more blocking iterations (a nonzero `run`
+ *   timeout), not assume synchronous delivery.
+ * - If the same signal number is registered on two independent GLib-backed
+ *   InterruptManagers (or GSources) in the same process, GLib delivers each
+ *   occurrence to only one of them, not both -- unlike
+ *   UA_InterruptManager_new_POSIX, which fans a signal out to every one of
+ *   its own registered listeners. Use different signal numbers if multiple
+ *   independent GLib InterruptManagers need to run side by side.
+ *
+ * Do not register the same signal on both a UA_InterruptManager_new_POSIX
+ * and a UA_InterruptManager_new_GLib instance in the same process -- they
+ * install the OS-level handler through different, mutually-unaware
+ * mechanisms and will race over it. Only available on Unix (Linux/Darwin),
+ * not Win32. */
+UA_EXPORT UA_InterruptManager *
+UA_InterruptManager_new_GLib(const UA_String eventSourceName);
+
+#endif /* UA_ENABLE_EVENTLOOP_GLIB */
 
 #elif defined(UA_ARCHITECTURE_ZEPHYR)
 

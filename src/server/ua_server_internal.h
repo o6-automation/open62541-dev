@@ -26,7 +26,6 @@
 #include "ua_session.h"
 #include "ua_services.h"
 #include "ua_server_async.h"
-#include "ua_gds_push.h"
 #include "../util/ua_util_internal.h"
 #include "ziptree.h"
 
@@ -103,6 +102,27 @@ typedef struct session_list_entry {
     UA_Session session;
 } session_list_entry;
 
+#ifdef UA_ENABLE_SUBSCRIPTIONS_EVENTS
+
+/* Internal accumulator marker. Reserved ModelChange verb bits must never be
+ * serialized; finalization demultiplexes and removes this bit first. */
+#define UA_CHANGESTRUCTUREVERBMASK_SEMANTIC_INTERNAL ((UA_Byte)0x80u)
+
+/* Changes accumulated for one logical operation or service request. */
+typedef struct {
+    UA_ModelChangeStructureDataType change;
+    UA_NodeId nodeVersionId;
+    UA_Int64 nodeVersion;
+} UA_ChangeEntry;
+
+typedef struct {
+    size_t changesSize;
+    size_t changesCapacity;
+    UA_ChangeEntry *changes;
+} UA_ModelChangeAccumulator;
+
+#endif
+
 struct UA_Server {
     /* Config */
     UA_ServerConfig config;
@@ -119,6 +139,7 @@ struct UA_Server {
      * have direct pointers for fast access below. */
     UA_Driver *drivers; /* linked-list of all SC */
     UA_Driver *binaryDriver;
+    UA_Driver *webSocketDriver;
     UA_Driver *reverseBinaryDriver;
     UA_Driver *discoveryDriver;
     UA_Driver *pubSubDriver;
@@ -153,6 +174,9 @@ struct UA_Server {
      * the parent and member instantiation */
     UA_Boolean bootstrapNS0;
 
+    /* Current depth while recursively instantiating node children */
+    size_t nodeInstantiationDepth;
+
     /* Subscriptions */
 #ifdef UA_ENABLE_SUBSCRIPTIONS
     /* The admin session is initialized with a special subscription. This
@@ -167,6 +191,18 @@ struct UA_Server {
                                                  * from a session. */
     UA_UInt32 lastSubscriptionId; /* To generate unique SubscriptionIds */
 
+#endif
+
+#ifdef UA_ENABLE_SUBSCRIPTIONS_EVENTS
+    /* Generates server-wide NodeVersion values. The representation in the
+     * AddressSpace is the decimal String form of this counter. */
+    UA_Int64 nodeVersionCounter;
+
+    /* Model changes are accumulated across reentrant calls and finalized when
+     * the outermost operation returns. */
+    size_t modelChangeSuppressionDepth;
+    size_t modelChangeDepth;
+    UA_ModelChangeAccumulator modelChanges;
 #endif
 
 #if UA_MULTITHREADING >= 100
@@ -432,6 +468,59 @@ UA_UInt16 addNamespace(UA_Server *server, const UA_String name);
 UA_Boolean
 UA_Node_hasSubTypeOrInstances(const UA_NodeHead *head);
 
+/* Return the NodeVersion Property of the node. HasProperty subtypes are
+ * included. The returned NodeId is a deep copy and has to be cleared by the
+ * caller. */
+UA_StatusCode
+getNodeVersionProperty(UA_Server *server, const UA_NodeHead *head,
+                       UA_NodeId *outPropertyId);
+
+#ifdef UA_ENABLE_SUBSCRIPTIONS_EVENTS
+
+void
+UA_ModelChangeAccumulator_init(UA_ModelChangeAccumulator *acc);
+
+void
+UA_ModelChangeAccumulator_clear(UA_ModelChangeAccumulator *acc);
+
+UA_StatusCode UA_INTERNAL_FUNC_ATTR_WARN_UNUSED_RESULT
+UA_ModelChangeAccumulator_record(UA_Server *server,
+                                 UA_ModelChangeAccumulator *acc,
+                                 const UA_NodeId *affected,
+                                 UA_Byte verb);
+
+/* Emit one GeneralModelChangeEvent for the accumulated changes and clear the
+ * accumulator. Requires the service mutex. An empty accumulator is simply
+ * cleared and does not emit an Event. */
+void
+UA_ModelChangeAccumulator_finalize(UA_Server *server,
+                                   UA_ModelChangeAccumulator *acc);
+
+void beginModelChange(UA_Server *server);
+void endModelChange(UA_Server *server);
+void recordModelChangeEvent(UA_Server *server, const UA_NodeId *affected,
+                            UA_Byte verb);
+void recordSemanticPropertyChange(UA_Server *server,
+                                  const UA_NodeHead *property);
+
+#endif /* UA_ENABLE_SUBSCRIPTIONS_EVENTS */
+
+#ifndef UA_ENABLE_SUBSCRIPTIONS_EVENTS
+static UA_INLINE void beginModelChange(UA_Server *server) { (void)server; }
+static UA_INLINE void endModelChange(UA_Server *server) { (void)server; }
+static UA_INLINE void
+recordModelChangeEvent(UA_Server *server, const UA_NodeId *affected, UA_Byte verb) {
+    (void)server;
+    (void)affected;
+    (void)verb;
+}
+static UA_INLINE void
+recordSemanticPropertyChange(UA_Server *server, const UA_NodeHead *property) {
+    (void)server;
+    (void)property;
+}
+#endif
+
 /* Recursively searches "upwards" in the tree following specific reference types */
 UA_Boolean
 isNodeInTree(UA_Server *server, const UA_NodeId *leafNode,
@@ -592,6 +681,36 @@ readWithSession(UA_Server *server, UA_Session *session,
                 const UA_ReadValueId *item,
                 UA_TimestampsToReturn timestampsToReturn);
 
+/* Execute attribute operations for a node that is already borrowed from the
+ * nodestore. These are the pointer-based cores of Operation_Read and
+ * Operation_Write. The caller must hold the service mutex and keep the node
+ * alive for the duration of the call. */
+UA_Boolean
+Operation_ReadWithNode(UA_Server *server, UA_Session *session,
+                       const UA_Node *node, UA_TimestampsToReturn ttr,
+                       const UA_ReadValueId *rvi, UA_DataValue *dv);
+
+UA_Boolean
+Operation_WriteWithNode(UA_Server *server, UA_Session *session,
+                        UA_Node *node, const UA_WriteValue *wv,
+                        UA_StatusCode *result);
+
+/* Direct asynchronous wrappers for callers that already own a stable node
+ * pointer. They retain the same async-operation storage and callbacks as the
+ * NodeId-based UA_Server_*_async entry points. */
+UA_StatusCode
+readWithNode_async(UA_Server *server, UA_Session *session,
+                   const UA_Node *node, const UA_ReadValueId *operation,
+                   UA_TimestampsToReturn ttr,
+                   UA_ServerAsyncReadResultCallback callback,
+                   void *context, UA_UInt32 timeout);
+
+UA_StatusCode
+writeWithNode_async(UA_Server *server, UA_Session *session,
+                    UA_Node *node, const UA_WriteValue *operation,
+                    UA_ServerAsyncWriteResultCallback callback,
+                    void *context, UA_UInt32 timeout);
+
 UA_StatusCode
 readWithReadValue(UA_Server *server, const UA_NodeId *nodeId,
                   const UA_AttributeId attributeId, void *v);
@@ -603,6 +722,14 @@ readObjectProperty(UA_Server *server, const UA_NodeId objectId,
 
 UA_BrowsePathResult
 translateBrowsePathToNodeIds(UA_Server *server, const UA_BrowsePath *browsePath);
+
+/* Translate from a node that is already borrowed from the nodestore. The
+ * caller must hold the service mutex and keep the node alive for the duration
+ * of the operation. */
+UA_BrowsePathResult
+translateBrowsePathToNodeIdsWithNode(UA_Server *server,
+                                     const UA_Node *startingNode,
+                                     const UA_BrowsePath *browsePath);
 
 /* Returns the "best" configured SecurityPolicy with encryption. The _NONE type
  * is the wildcard for any SecurityPolicy. */
@@ -652,7 +779,57 @@ UA_Driver * UA_DiscoveryManager_new(void);
 void cleanupRegisteredServers(UA_Server *server);
 #endif
 
+/* Binary protocol handling shared by stream-based server transports */
+#define UA_MAXSERVERCONNECTIONS 16
+
+typedef struct {
+    UA_ConnectionState state;
+    uintptr_t connectionId;
+    UA_ConnectionManager *connectionManager;
+} UA_ServerConnection;
+
+typedef struct UA_BinaryProtocolManager UA_BinaryProtocolManager;
+
+typedef UA_StatusCode
+(*UA_BinaryProtocolManagerStartTransport)(UA_BinaryProtocolManager *bpm);
+
+typedef void
+(*UA_BinaryProtocolManagerAddDiscoveryUrl)(UA_BinaryProtocolManager *bpm,
+                                           const UA_KeyValueMap *params);
+
+struct UA_BinaryProtocolManager {
+    UA_Driver drv;
+    const UA_Logger *logging; /* shortcut */
+    UA_String protocolName;   /* Transport name used for logging */
+    UA_UInt64 houseKeepingCallbackId;
+    UA_ConnectionConfig connectionConfig;
+
+    UA_ServerConnection serverConnections[UA_MAXSERVERCONNECTIONS];
+    size_t serverConnectionsSize;
+
+    /* SecureChannels */
+    TAILQ_HEAD(, UA_SecureChannel) channels;
+
+    /* Transport-specific setup and discovery handling */
+    UA_BinaryProtocolManagerStartTransport startTransport;
+    UA_BinaryProtocolManagerAddDiscoveryUrl addDiscoveryUrl;
+};
+
+void
+UA_BinaryProtocolManager_init(UA_BinaryProtocolManager *bpm,
+                              const UA_String name,
+                              const UA_String protocolName,
+                              UA_BinaryProtocolManagerStartTransport startTransport,
+                              UA_BinaryProtocolManagerAddDiscoveryUrl addDiscoveryUrl);
+
+void
+UA_BinaryConnectionConfig_set(UA_ConnectionConfig *connectionConfig,
+                              UA_UInt32 bufSize, UA_UInt32 maxMsgSize,
+                              UA_UInt32 maxChunks);
+
 UA_Driver * UA_BinaryProtocolManager_new(void);
+
+UA_Driver * UA_WebSocketProtocolManager_new(void);
 
 UA_Driver * UA_ReverseBinaryProtocolManager_new(void);
 
@@ -662,7 +839,9 @@ processSecureChannelMessage(UA_Server *server, UA_SecureChannel *channel,
                             UA_ByteString *message);
 
 UA_StatusCode
-createServerSecureChannel(UA_Server *server, UA_ConnectionManager *cm,
+createServerSecureChannel(UA_Server *server,
+                          const UA_ConnectionConfig *connectionConfig,
+                          UA_ConnectionManager *cm,
                           uintptr_t connectionId, const UA_KeyValueMap *params,
                           UA_SecureChannel **outChannel);
 
@@ -793,8 +972,19 @@ struct BrowseOpts {
 };
 
 void
-Operation_Browse(UA_Server *server, UA_Session *session, const UA_UInt32 *maxrefs,
-                 const UA_BrowseDescription *descr, UA_BrowseResult *result);
+Operation_Browse(UA_Server *server, UA_Session *session,
+                 const void *context /* UA_UInt32 */,
+                 const void *request /* UA_BrowseDescription */,
+                 void *response /* UA_BrowseResult */);
+
+/* Browse a node already borrowed from the nodestore. The caller must hold the
+ * service mutex and keep the node alive for the duration of the operation. */
+void
+Operation_BrowseWithNode(UA_Server *server, UA_Session *session,
+                         const UA_Node *node,
+                         const void *context /* UA_UInt32 */,
+                         const void *request /* UA_BrowseDescription */,
+                         void *response /* UA_BrowseResult */);
 
 /* External data either from a datasource callback or with a _beforeRead
  * callback where fresh values get switched in on demand. Variables with an
@@ -847,9 +1037,23 @@ addNode_addRefs(UA_Server *server, UA_Session *session, const UA_NodeId *nodeId,
                 const UA_NodeId *parentNodeId, const UA_NodeId *referenceTypeId,
                 const UA_NodeId *typeDefinitionId);
 
+/* Complete the begin phase for a node already inserted by addNode_raw. Adds
+ * defining references and runs the early constructors. Deletes the raw node
+ * on failure. */
+UA_StatusCode
+addNode_prepare(UA_Server *server, UA_Session *session, const UA_NodeId *nodeId,
+                const UA_NodeId *parentNodeId, const UA_NodeId *referenceTypeId,
+                const UA_NodeId *typeDefinitionId);
+
 /* Type-check type-definition; Run the constructors */
 UA_StatusCode
 addNode_finish(UA_Server *server, UA_Session *session, const UA_NodeId *nodeId);
+
+/* Call the global early constructor after the defining references have been
+ * added and before automatic child instantiation. */
+UA_StatusCode
+callEarlyConstructors(UA_Server *server, UA_Session *session,
+                      const UA_NodeId *nodeId);
 
 /**********************/
 /* Create Namespace 0 */

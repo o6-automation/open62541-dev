@@ -314,6 +314,17 @@ setDefaultConfig(UA_ServerConfig *conf, UA_UInt16 portNumber) {
         if(tcpCM)
             conf->eventLoop->registerEventSource(conf->eventLoop, (UA_EventSource *)tcpCM);
 
+#ifdef UA_ENABLE_LWS
+        /* Add the WebSocket connection manager. A server opens a WebSocket
+         * listener when an opc.wss ServerUrl and TLS credentials are configured. */
+        UA_ConnectionManager *wsCM =
+            UA_ConnectionManager_new_LWS_WebSocket(
+                UA_STRING("websocket connection manager"));
+        if(wsCM)
+            conf->eventLoop->registerEventSource(conf->eventLoop,
+                                                 (UA_EventSource*)wsCM);
+#endif
+
         /* Add the UDP connection manager */
 #if defined(UA_ARCHITECTURE_LWIP)
         UA_ConnectionManager *udpCM =
@@ -366,6 +377,10 @@ setDefaultConfig(UA_ServerConfig *conf, UA_UInt16 portNumber) {
      * Having port reuse enabled is important for development.
      * Otherwise a long TCP TIME_WAIT is required before the port can be used again. */
     conf->tcpReuseAddr = true;
+    conf->tcpEnabled = true;
+#ifdef UA_ENABLE_LWS
+    conf->webSocketEnabled = false;
+#endif
 
     /* --> Start setting the default static config <-- */
 
@@ -459,7 +474,9 @@ setDefaultConfig(UA_ServerConfig *conf, UA_UInt16 portNumber) {
     /* conf->nodeLifecycle.destructor = NULL; */
     /* conf->nodeLifecycle.createOptionalChild = NULL; */
     /* conf->nodeLifecycle.generateChildNodeId = NULL; */
+    /* conf->nodeLifecycle.earlyConstructor = NULL; */
     conf->modellingRulesOnInstances = true;
+    conf->copyMethodsOnInstances = false;
 
     /* Limits for SecureChannels */
     conf->maxSecureChannels = 100;
@@ -477,6 +494,7 @@ setDefaultConfig(UA_ServerConfig *conf, UA_UInt16 portNumber) {
     conf->maxNotificationsPerPublish = 1000;
     conf->enableRetransmissionQueue = true;
     conf->maxRetransmissionQueueSize = 0; /* unlimited */
+    conf->maxPublishReqPerSession = 512; /* limit outstanding publish requests per session */
 # ifdef UA_ENABLE_SUBSCRIPTIONS_EVENTS
     conf->maxEventsPerNode = 0; /* unlimited */
 # endif
@@ -661,8 +679,16 @@ UA_ServerConfig_setMinimalCustomBuffer(UA_ServerConfig *config, UA_UInt16 portNu
         return retval;
     }
 
-    /* Set the TCP settings */
+    /* Set the TCP settings. Only recvBufferSize is stored; it drives both
+     * connConfig.recvBufferSize and connConfig.sendBufferSize. sendBufferSize is
+     * intentionally ignored (see the doxygen note on the declaration). */
+    (void)sendBufferSize;
     config->tcpBufSize = recvBufferSize;
+    config->webSocketBufSize = recvBufferSize;
+    config->webSocketAllowUnencrypted = false;
+    config->webSocketEncryptionMode = UA_WEBSOCKET_ENCRYPTION_OPTIONAL;
+    config->webSocketMaxQueueSize =
+        recvBufferSize > UINT32_MAX / 16 ? UINT32_MAX : recvBufferSize * 16;
 
     /* Allocate the SecurityPolicies */
     retval = UA_ServerConfig_addSecurityPolicyNone(config, certificate);
@@ -2051,6 +2077,8 @@ UA_ClientConfig_setDefault(UA_ClientConfig *config) {
         config->timeout = 5 * 1000; /* 5 seconds */
     if(config->secureChannelLifeTime == 0)
         config->secureChannelLifeTime = 10 * 60 * 1000; /* 10 minutes */
+    if(config->maxAsyncServiceCalls == 0)
+        config->maxAsyncServiceCalls = 32;
 
     if(config->logging == NULL)
         config->logging = UA_Log_Stdout_new(UA_LOGLEVEL_INFO);
@@ -2079,6 +2107,17 @@ UA_ClientConfig_setDefault(UA_ClientConfig *config) {
 #endif
         config->eventLoop->registerEventSource(config->eventLoop, (UA_EventSource *)tcpCM);
 
+#ifdef UA_ENABLE_LWS
+        /* Add the WebSocket connection manager. The client selects it
+         * automatically for opc.wss EndpointUrls. */
+        UA_ConnectionManager *wsCM =
+            UA_ConnectionManager_new_LWS_WebSocket(
+                UA_STRING("websocket connection manager"));
+        if(wsCM)
+            config->eventLoop->registerEventSource(config->eventLoop,
+                                                    (UA_EventSource*)wsCM);
+#endif
+
 #if defined(UA_ARCHITECTURE_LWIP)
         UA_ConnectionManager *udpCM =
             UA_ConnectionManager_new_LWIP_UDP(UA_STRING("udp connection manager"));
@@ -2105,6 +2144,14 @@ UA_ClientConfig_setDefault(UA_ClientConfig *config) {
 
     if(config->localConnectionConfig.recvBufferSize == 0)
         config->localConnectionConfig = UA_ConnectionConfig_default;
+
+#ifdef UA_ENABLE_LWS
+    if(config->webSocketMaxQueueSize == 0) {
+        UA_UInt32 sendBufferSize = config->localConnectionConfig.sendBufferSize;
+        config->webSocketMaxQueueSize = sendBufferSize > UINT32_MAX / 16 ?
+            UINT32_MAX : sendBufferSize * 16;
+    }
+#endif
 
     if(!config->certificateVerification.logging) {
         config->certificateVerification.logging = config->logging;
@@ -2141,6 +2188,27 @@ UA_ClientConfig_setDefault(UA_ClientConfig *config) {
             return retval;
         }
         config->securityPoliciesSize = 1;
+    }
+
+    /* Initialize authSecurityPolicies with the None policy as a fallback.
+     * This is needed so that non-X509 token types (e.g. username/password,
+     * anonymous) can look up a matching SecurityPolicy for authentication.
+     * When UA_ClientConfig_setAuthenticationCert is called later, this gets
+     * replaced with the full set of authentication SecurityPolicies. */
+    if(config->authSecurityPoliciesSize == 0) {
+        config->authSecurityPolicies =
+            (UA_SecurityPolicy*)UA_malloc(sizeof(UA_SecurityPolicy));
+        if(!config->authSecurityPolicies)
+            return UA_STATUSCODE_BADOUTOFMEMORY;
+        UA_StatusCode retval =
+            UA_SecurityPolicy_None(config->authSecurityPolicies,
+                                   UA_BYTESTRING_NULL, config->logging);
+        if(retval != UA_STATUSCODE_GOOD) {
+            UA_free(config->authSecurityPolicies);
+            config->authSecurityPolicies = NULL;
+            return retval;
+        }
+        config->authSecurityPoliciesSize = 1;
     }
 
     if(config->requestedSessionTimeout == 0)

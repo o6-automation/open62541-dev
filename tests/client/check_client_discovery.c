@@ -86,16 +86,20 @@ END_TEST
 
 START_TEST(Client_findServers) {
     UA_Client *client = UA_Client_newForUnitTest();
+    const char *serverUrl = "opc.tcp://127.0.0.1:4840";
+    const UA_String requestedUrl = UA_STRING((char*)(uintptr_t)serverUrl);
 
     size_t serverCount = 0;
     UA_ApplicationDescription *servers = NULL;
     UA_StatusCode retval = UA_Client_findServers(client,
-                                "opc.tcp://localhost:4840",
+                                serverUrl,
                                 0, NULL, 0, NULL,
                                 &serverCount, &servers);
     ck_assert_uint_eq(retval, UA_STATUSCODE_GOOD);
     ck_assert(serverCount > 0);
     ck_assert_ptr_ne(servers, NULL);
+    ck_assert_uint_eq(servers[0].discoveryUrlsSize, 1);
+    ck_assert(UA_String_equal(&servers[0].discoveryUrls[0], &requestedUrl));
 
     UA_Array_delete(servers, serverCount,
                     &UA_TYPES[UA_TYPES_APPLICATIONDESCRIPTION]);
@@ -211,6 +215,37 @@ START_TEST(Client_getEndpoints_badUrl_connected) {
 }
 END_TEST
 
+START_TEST(Client_findServersOnNetwork_paged) {
+    /* Test with maxRecordsToReturn to exercise paging code */
+    UA_Client *client = UA_Client_newForUnitTest();
+    size_t serverOnNetworkSize = 0;
+    UA_ServerOnNetwork *servers = NULL;
+    UA_StatusCode retval = UA_Client_findServersOnNetwork(client, "opc.tcp://localhost:4840",
+                                                            0, 1, 0, NULL,
+                                                            &serverOnNetworkSize, &servers);
+    /* Either success or error - both valid */
+    if(retval == UA_STATUSCODE_GOOD && servers)
+        UA_Array_delete(servers, serverOnNetworkSize,
+                        &UA_TYPES[UA_TYPES_SERVERONNETWORK]);
+    UA_Client_delete(client);
+}
+END_TEST
+
+START_TEST(Client_findServersOnNetwork_disconnected) {
+    /* Test findServersOnNetwork without connecting first */
+    UA_Client *client = UA_Client_newForUnitTest();
+    size_t serverOnNetworkSize = 0;
+    UA_ServerOnNetwork *servers = NULL;
+    UA_StatusCode retval = UA_Client_findServersOnNetwork(client, "opc.tcp://localhost:4840",
+                                                            0, 0, 0, NULL,
+                                                            &serverOnNetworkSize, &servers);
+    if(retval == UA_STATUSCODE_GOOD && servers)
+        UA_Array_delete(servers, serverOnNetworkSize,
+                        &UA_TYPES[UA_TYPES_SERVERONNETWORK]);
+    UA_Client_delete(client);
+}
+END_TEST
+
 static Suite* testSuite_Client(void) {
     Suite *s = suite_create("Client");
     TCase *tc_client = tcase_create("Client Discovery");
@@ -222,6 +257,8 @@ static Suite* testSuite_Client(void) {
     tcase_add_test(tc_client, Client_findServers_connected);
     tcase_add_test(tc_client, Client_findServersOnNetwork);
     tcase_add_test(tc_client, Client_findServersOnNetwork_badUrl_connected);
+    tcase_add_test(tc_client, Client_findServersOnNetwork_paged);
+    tcase_add_test(tc_client, Client_findServersOnNetwork_disconnected);
     tcase_add_test(tc_client, Client_getEndpoints_badUrl_connected);
     suite_add_tcase(s,tc_client);
     return s;

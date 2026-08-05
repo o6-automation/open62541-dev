@@ -112,7 +112,6 @@ process_FindServers(UA_Server *server, UA_Session *session, UA_String endpointUr
     }
 
     /* Direct access to the out-variables */
-    size_t serversSize;
     UA_ApplicationDescription *servers;
 
 #ifndef UA_ENABLE_DISCOVERY
@@ -124,7 +123,6 @@ process_FindServers(UA_Server *server, UA_Session *session, UA_String endpointUr
         return res;
     *outServersSize = 1;
 
-    serversSize = 1;
     servers = *outServers;
 #else
     /* Allocate enough memory, including memory for the "self" response */
@@ -184,32 +182,30 @@ process_FindServers(UA_Server *server, UA_Session *session, UA_String endpointUr
     }
 
     *outServersSize = pos;
-    serversSize = pos;
 #endif /* UA_ENABLE_DISCOVERY */
 
-    /* Mirror back the expected EndpointUrl */
-    if(endpointUrl.length > 0) {
-        for(size_t i = 0; i < serversSize; i++) {
-            UA_ApplicationDescription *ad = &servers[i];
-            UA_Array_delete(ad->discoveryUrls, ad->discoveryUrlsSize,
+    /* Mirror back the expected EndpointUrl for the local server only.
+     * Registered servers retain the DiscoveryUrls they registered with. */
+    if(endpointUrl.length > 0 && foundSelf) {
+        UA_ApplicationDescription *ad = &servers[0];
+        UA_Array_delete(ad->discoveryUrls, ad->discoveryUrlsSize,
+                        &UA_TYPES[UA_TYPES_STRING]);
+        ad->discoveryUrls = NULL;
+        ad->discoveryUrlsSize = 0;
+        res = UA_Array_copy(&endpointUrl, 1, (void**)&ad->discoveryUrls,
                             &UA_TYPES[UA_TYPES_STRING]);
-            ad->discoveryUrls = NULL;
-            ad->discoveryUrlsSize = 0;
-            res = UA_Array_copy(&endpointUrl, 1, (void**)&ad->discoveryUrls,
-                                &UA_TYPES[UA_TYPES_STRING]);
-            if(res != UA_STATUSCODE_GOOD)
-                break;
+        if(res == UA_STATUSCODE_GOOD)
             ad->discoveryUrlsSize = 1;
-        }
     }
 
-    return UA_STATUSCODE_GOOD;
+    return res;
 }
 
 UA_Boolean
 Service_FindServers(UA_Server *server, UA_Session *session,
-                    const UA_FindServersRequest *request,
-                    UA_FindServersResponse *response) {
+                    const void *request_, void *response_) {
+    const UA_FindServersRequest *request = (const UA_FindServersRequest*)request_;
+    UA_FindServersResponse *response = (UA_FindServersResponse*)response_;
     response->responseHeader.serviceResult =
         process_FindServers(server, session, request->endpointUrl,
                             request->localeIdsSize, request->localeIds,
@@ -357,17 +353,16 @@ process_FindServersOnNetwork(UA_Server *server, UA_Session *session,
             break;
     }
 
-    /* Compute the max number of records to return */
+    /* Compute the number of candidate records after the record id cutoff */
     size_t recordCount = server->serversOnNetworkSize - recordOffset;
-    if(maxRecordsToReturn > 0 && maxRecordsToReturn < recordCount)
-        recordCount = maxRecordsToReturn;
     UA_assert(recordCount <= server->serversOnNetworkSize);
 
     /* Nothing to do */
     if(recordCount == 0)
         return UA_STATUSCODE_GOOD;
 
-    /* Iterate over all records and add to filtered list */
+    /* Iterate over all candidate records, apply the capability filter first
+     * and only then enforce the response size limit. */
     UA_UInt32 filteredCount = 0;
     UA_STACKARRAY(UA_ServerOnNetwork*, filtered, recordCount);
     for(size_t i = 0; i < recordCount; i++) {
@@ -376,6 +371,8 @@ process_FindServersOnNetwork(UA_Server *server, UA_Session *session,
                                          serverCapabilityFilter, son))
             continue;
         filtered[filteredCount++] = son;
+        if(maxRecordsToReturn > 0 && filteredCount >= maxRecordsToReturn)
+            break;
     }
 
     /* Nothing to do */
@@ -408,8 +405,9 @@ process_FindServersOnNetwork(UA_Server *server, UA_Session *session,
 
 UA_Boolean
 Service_FindServersOnNetwork(UA_Server *server, UA_Session *session,
-                             const UA_FindServersOnNetworkRequest *request,
-                             UA_FindServersOnNetworkResponse *response) {
+                             const void *request_, void *response_) {
+    const UA_FindServersOnNetworkRequest *request = (const UA_FindServersOnNetworkRequest*)request_;
+    UA_FindServersOnNetworkResponse *response = (UA_FindServersOnNetworkResponse*)response_;
     UA_LOCK_ASSERT(&server->serviceMutex);
     response->responseHeader.serviceResult =
         process_FindServersOnNetwork(server, session,
@@ -702,6 +700,25 @@ updateEndpointUserIdentityToken(UA_Server *server,
 
 /* Also reused to create the EndpointDescription array in the
  * CreateSessionResponse */
+static const UA_String wsBinaryTransportProfile = UA_STRING_STATIC(
+    "http://opcfoundation.org/UA-Profile/Transport/ws-uasc-uabinary");
+static const UA_String wssBinaryTransportProfile = UA_STRING_STATIC(
+    "http://opcfoundation.org/UA-Profile/Transport/wss-uasc-uabinary");
+
+static UA_Boolean
+isSecureWebSocketEndpointUrl(const UA_String *url) {
+    const UA_String prefix = UA_STRING_STATIC("opc.wss://");
+    return url->length >= prefix.length &&
+        memcmp(url->data, prefix.data, prefix.length) == 0;
+}
+
+static UA_Boolean
+isInsecureWebSocketEndpointUrl(const UA_String *url) {
+    const UA_String prefix = UA_STRING_STATIC("opc.ws://");
+    return url->length >= prefix.length &&
+        memcmp(url->data, prefix.data, prefix.length) == 0;
+}
+
 UA_StatusCode
 setCurrentEndpointsArray(UA_Server *server, const UA_String endpointUrl,
                          UA_String *profileUris, size_t profileUrisSize,
@@ -725,19 +742,6 @@ setCurrentEndpointsArray(UA_Server *server, const UA_String endpointUrl,
     for(size_t j = 0; j < sc->endpointsSize; ++j) {
         const UA_EndpointDescription *ep = &sc->endpoints[j];
 
-        /* Test if the supported binary profile shall be returned */
-        UA_Boolean usable = (profileUrisSize == 0);
-        if(!usable) {
-            for(size_t i = 0; i < profileUrisSize; ++i) {
-                if(!UA_String_equal(&profileUris[i], &ep->transportProfileUri))
-                    continue;
-                usable = true;
-                break;
-            }
-        }
-        if(!usable)
-            continue;
-
         /* Get the SecurityPolicy */
         UA_SecurityPolicy *sp =
             getSecurityPolicyByUri(server, &ep->securityPolicyUri);
@@ -750,9 +754,35 @@ setCurrentEndpointsArray(UA_Server *server, const UA_String endpointUrl,
 
         /* Copy into the results */
         for(size_t i = 0; i < clone_times; ++i) {
+            const UA_String *currentEndpointUrl = &endpointUrl;
+            if(endpointUrl.length == 0)
+                currentEndpointUrl = &sc->applicationDescription.discoveryUrls[i];
+
+            const UA_String *transportProfileUri = &ep->transportProfileUri;
+            if(isSecureWebSocketEndpointUrl(currentEndpointUrl))
+                transportProfileUri = &wssBinaryTransportProfile;
+            else if(isInsecureWebSocketEndpointUrl(currentEndpointUrl))
+                transportProfileUri = &wsBinaryTransportProfile;
+
+            /* Test if the effective transport profile shall be returned */
+            UA_Boolean usable = (profileUrisSize == 0);
+            if(!usable) {
+                for(size_t p = 0; p < profileUrisSize; ++p) {
+                    if(!UA_String_equal(&profileUris[p], transportProfileUri))
+                        continue;
+                    usable = true;
+                    break;
+                }
+            }
+            if(!usable)
+                continue;
+
             /* Copy the endpoint with a current ApplicationDescription */
             UA_EndpointDescription *ed = &(*arr)[pos];
             retval |= UA_EndpointDescription_copy(&sc->endpoints[j], ed);
+            UA_String_clear(&ed->transportProfileUri);
+            retval |= UA_String_copy(transportProfileUri,
+                                     &ed->transportProfileUri);
             UA_ApplicationDescription_clear(&ed->server);
             retval |= UA_ApplicationDescription_copy(&sc->applicationDescription,
                                                      &ed->server);
@@ -791,8 +821,7 @@ setCurrentEndpointsArray(UA_Server *server, const UA_String endpointUrl,
             /* Set the EndpointURL */
             UA_String_clear(&ed->endpointUrl);
             if(endpointUrl.length == 0) {
-                retval |= UA_String_copy(&sc->applicationDescription.discoveryUrls[i],
-                                         &ed->endpointUrl);
+                retval |= UA_String_copy(currentEndpointUrl, &ed->endpointUrl);
             } else {
                 /* Mirror back the requested EndpointUrl and also add it to the
                  * array of discovery urls */
@@ -831,8 +860,9 @@ setCurrentEndpointsArray(UA_Server *server, const UA_String endpointUrl,
 
 UA_Boolean
 Service_GetEndpoints(UA_Server *server, UA_Session *session,
-                     const UA_GetEndpointsRequest *request,
-                     UA_GetEndpointsResponse *response) {
+                     const void *request_, void *response_) {
+    const UA_GetEndpointsRequest *request = (const UA_GetEndpointsRequest*)request_;
+    UA_GetEndpointsResponse *response = (UA_GetEndpointsResponse*)response_;
     UA_LOCK_ASSERT(&server->serviceMutex);
 
     UA_LOG_DEBUG_SESSION(server->config.logging, session,
@@ -1065,8 +1095,9 @@ process_RegisterServer(UA_Server *server, UA_Session *session,
 
 UA_Boolean
 Service_RegisterServer(UA_Server *server, UA_Session *session,
-                       const UA_RegisterServerRequest *request,
-                       UA_RegisterServerResponse *response) {
+                       const void *request_, void *response_) {
+    const UA_RegisterServerRequest *request = (const UA_RegisterServerRequest*)request_;
+    UA_RegisterServerResponse *response = (UA_RegisterServerResponse*)response_;
     UA_LOG_DEBUG_SESSION(server->config.logging, session,
                          "Processing RegisterServerRequest");
     UA_LOCK_ASSERT(&server->serviceMutex);
@@ -1078,8 +1109,9 @@ Service_RegisterServer(UA_Server *server, UA_Session *session,
 
 UA_Boolean
 Service_RegisterServer2(UA_Server *server, UA_Session *session,
-                        const UA_RegisterServer2Request *request,
-                        UA_RegisterServer2Response *response) {
+                        const void *request_, void *response_) {
+    const UA_RegisterServer2Request *request = (const UA_RegisterServer2Request*)request_;
+    UA_RegisterServer2Response *response = (UA_RegisterServer2Response*)response_;
     UA_LOG_DEBUG_SESSION(server->config.logging, session,
                          "Processing RegisterServer2Request");
     UA_LOCK_ASSERT(&server->serviceMutex);

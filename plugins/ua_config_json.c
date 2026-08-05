@@ -15,6 +15,8 @@
 #include "open62541/plugin/securitypolicy_default.h"
 #ifdef UA_ENABLE_ENCRYPTION
 #include "open62541/plugin/certificategroup_default.h"
+#endif
+#if defined(UA_ENABLE_ENCRYPTION) || defined(UA_ENABLE_LWS)
 #include <stdio.h>
 #include <errno.h>
 #endif
@@ -48,6 +50,20 @@ getJsonPart(cj5_token tok, const char *json) {
     }
 }
 
+/* Advance to the next token without reading beyond the parser output. A
+ * malformed child count can otherwise desynchronize the token walk. */
+static cj5_token
+nextToken(ParsingCtx *ctx) {
+    if(!ctx->result.tokens || ctx->index + 1 >= ctx->result.num_tokens) {
+        ctx->index = ctx->result.num_tokens;
+        cj5_token empty;
+        memset(&empty, 0, sizeof(empty));
+        return empty;
+    }
+    ctx->index++;
+    return ctx->result.tokens[ctx->index];
+}
+
 /* Forward declarations*/
 #define PARSE_JSON(TYPE) static UA_StatusCode                   \
     TYPE##_parseJson(ParsingCtx *ctx, void *configField, size_t *configFieldSize)
@@ -55,7 +71,7 @@ getJsonPart(cj5_token tok, const char *json) {
 typedef UA_StatusCode
 (*parseJsonSignature)(ParsingCtx *ctx, void *configField, size_t *configFieldSize);
 
-#ifdef UA_ENABLE_ENCRYPTION
+#if defined(UA_ENABLE_ENCRYPTION) || defined(UA_ENABLE_LWS)
 static UA_ByteString
 loadCertificateFile(const char *const path);
 #endif
@@ -63,7 +79,7 @@ loadCertificateFile(const char *const path);
 /*----------------------Basic Types------------------------*/
 #if 0
 PARSE_JSON(Int64Field) {
-    cj5_token tok = ctx->result.tokens[++ctx->index];
+    cj5_token tok = nextToken(ctx);
     UA_ByteString buf = getJsonPart(tok, ctx->json);
     UA_Int64 out;
     UA_StatusCode retval = UA_decodeJson(&buf, &out, &UA_TYPES[UA_TYPES_INT64], NULL);
@@ -75,7 +91,7 @@ PARSE_JSON(Int64Field) {
 }
 #endif
 PARSE_JSON(ByteField) {
-    cj5_token tok = ctx->result.tokens[++ctx->index];
+    cj5_token tok = nextToken(ctx);
     UA_ByteString buf = getJsonPart(tok, ctx->json);
     UA_Byte out;
     UA_StatusCode retval = UA_decodeJson(&buf, &out, &UA_TYPES[UA_TYPES_BYTE], NULL);
@@ -86,7 +102,7 @@ PARSE_JSON(ByteField) {
     return retval;
 }
 PARSE_JSON(UInt16Field) {
-    cj5_token tok = ctx->result.tokens[++ctx->index];
+    cj5_token tok = nextToken(ctx);
     UA_ByteString buf = getJsonPart(tok, ctx->json);
     UA_UInt16 out;
     UA_StatusCode retval = UA_decodeJson(&buf, &out, &UA_TYPES[UA_TYPES_UINT16], NULL);
@@ -97,7 +113,7 @@ PARSE_JSON(UInt16Field) {
     return retval;
 }
 PARSE_JSON(UInt32Field) {
-    cj5_token tok = ctx->result.tokens[++ctx->index];
+    cj5_token tok = nextToken(ctx);
     UA_ByteString buf = getJsonPart(tok, ctx->json);
     UA_UInt32 out;
     UA_StatusCode retval = UA_decodeJson(&buf, &out, &UA_TYPES[UA_TYPES_UINT32], NULL);
@@ -108,7 +124,7 @@ PARSE_JSON(UInt32Field) {
     return retval;
 }
 PARSE_JSON(UInt64Field) {
-    cj5_token tok = ctx->result.tokens[++ctx->index];
+    cj5_token tok = nextToken(ctx);
     UA_ByteString buf = getJsonPart(tok, ctx->json);
     UA_UInt64 out;
     UA_StatusCode retval = UA_decodeJson(&buf, &out, &UA_TYPES[UA_TYPES_UINT64], NULL);
@@ -119,7 +135,7 @@ PARSE_JSON(UInt64Field) {
     return retval;
 }
 PARSE_JSON(Int32Field) {
-    cj5_token tok = ctx->result.tokens[++ctx->index];
+    cj5_token tok = nextToken(ctx);
     UA_ByteString buf = getJsonPart(tok, ctx->json);
     UA_Int32 out;
     UA_StatusCode retval = UA_decodeJson(&buf, &out, &UA_TYPES[UA_TYPES_INT32], NULL);
@@ -130,7 +146,7 @@ PARSE_JSON(Int32Field) {
     return retval;
 }
 PARSE_JSON(StringField) {
-    cj5_token tok = ctx->result.tokens[++ctx->index];
+    cj5_token tok = nextToken(ctx);
     UA_ByteString buf = getJsonPart(tok, ctx->json);
     UA_String out;
     UA_StatusCode retval = UA_decodeJson(&buf, &out, &UA_TYPES[UA_TYPES_STRING], NULL);
@@ -144,7 +160,7 @@ PARSE_JSON(StringField) {
     return retval;
 }
 PARSE_JSON(ByteStringField) {
-    cj5_token tok = ctx->result.tokens[++ctx->index];
+    cj5_token tok = nextToken(ctx);
     UA_ByteString buf = getJsonPart(tok, ctx->json);
     UA_ByteString out;
     UA_StatusCode retval = UA_decodeJson(&buf, &out, &UA_TYPES[UA_TYPES_BYTESTRING], NULL);
@@ -161,19 +177,19 @@ PARSE_JSON(LocalizedTextField) {
         text: "Test text"
     }
      */
-    cj5_token tok = ctx->result.tokens[++ctx->index];
+    cj5_token tok = nextToken(ctx);
     UA_StatusCode retval = UA_STATUSCODE_GOOD;
     UA_String locale = {.length = 0, .data = NULL};
     UA_String text = {.length = 0, .data = NULL};
     for(size_t j = tok.size/2; j > 0; j--) {
-        tok = ctx->result.tokens[++ctx->index];
+        tok = nextToken(ctx);
         switch (tok.type) {
         case CJ5_TOKEN_STRING: {
             char *field = (char*)UA_malloc(tok.size + 1);
             unsigned int str_len = 0;
             cj5_get_str(&ctx->result, (unsigned int)ctx->index, field, &str_len);
 
-            tok = ctx->result.tokens[++ctx->index];
+            tok = nextToken(ctx);
             UA_ByteString buf = getJsonPart(tok, ctx->json);
             if(strcmp(field, "locale") == 0)
                 retval |= UA_decodeJson(&buf, &locale, &UA_TYPES[UA_TYPES_STRING], NULL);
@@ -202,7 +218,7 @@ PARSE_JSON(LocalizedTextField) {
     return retval;
 }
 PARSE_JSON(DoubleField) {
-    cj5_token tok = ctx->result.tokens[++ctx->index];
+    cj5_token tok = nextToken(ctx);
     UA_ByteString buf = getJsonPart(tok, ctx->json);
     UA_Double out;
     UA_StatusCode retval = UA_decodeJson(&buf, &out, &UA_TYPES[UA_TYPES_DOUBLE], NULL);
@@ -213,7 +229,7 @@ PARSE_JSON(DoubleField) {
     return retval;
 }
 PARSE_JSON(BooleanField) {
-    cj5_token tok = ctx->result.tokens[++ctx->index];
+    cj5_token tok = nextToken(ctx);
     UA_ByteString buf = getJsonPart(tok, ctx->json);
     UA_Boolean out;
     if(tok.type != CJ5_TOKEN_BOOL) {
@@ -244,9 +260,9 @@ PARSE_JSON(DurationField) {
 PARSE_JSON(DurationRangeField) {
     UA_DurationRange *field = (UA_DurationRange*)configField;
     UA_StatusCode retval = UA_STATUSCODE_GOOD;
-    cj5_token tok = ctx->result.tokens[++ctx->index];
+    cj5_token tok = nextToken(ctx);
     for(size_t j = tok.size/2; j > 0; j--) {
-        tok = ctx->result.tokens[++ctx->index];
+        tok = nextToken(ctx);
         switch (tok.type) {
         case CJ5_TOKEN_STRING: {
             char *field_str = (char*)UA_malloc(tok.size + 1);
@@ -274,9 +290,9 @@ PARSE_JSON(DurationRangeField) {
 PARSE_JSON(UInt32RangeField) {
     UA_UInt32Range *field = (UA_UInt32Range*)configField;
     UA_StatusCode retval = UA_STATUSCODE_GOOD;
-    cj5_token tok = ctx->result.tokens[++ctx->index];
+    cj5_token tok = nextToken(ctx);
     for(size_t j = tok.size/2; j > 0; j--) {
-        tok = ctx->result.tokens[++ctx->index];
+        tok = nextToken(ctx);
         switch (tok.type) {
         case CJ5_TOKEN_STRING: {
             char *field_str = (char*)UA_malloc(tok.size + 1);
@@ -309,7 +325,7 @@ PARSE_JSON(StringArrayField) {
         UA_LOG_ERROR(ctx->logging, UA_LOGCATEGORY_APPLICATION, "Pointer to the array size is not set.");
         return UA_STATUSCODE_BADARGUMENTSMISSING;
     }
-    cj5_token tok = ctx->result.tokens[++ctx->index];
+    cj5_token tok = nextToken(ctx);
     UA_String *stringArray = (UA_String*)UA_malloc(sizeof(UA_String) * tok.size);
     size_t stringArraySize = 0;
     for(size_t j = tok.size; j > 0; j--) {
@@ -341,7 +357,7 @@ PARSE_JSON(StringArrayField) {
     return retval;
 }
 PARSE_JSON(DateTimeField) {
-    cj5_token tok = ctx->result.tokens[++ctx->index];
+    cj5_token tok = nextToken(ctx);
     UA_ByteString buf = getJsonPart(tok, ctx->json);
     UA_DateTime out;
     UA_DateTime_init(&out);
@@ -355,9 +371,9 @@ PARSE_JSON(DateTimeField) {
 PARSE_JSON(BuildInfo) {
     UA_BuildInfo *field = (UA_BuildInfo*)configField;
     UA_StatusCode retval = UA_STATUSCODE_GOOD;
-    cj5_token tok = ctx->result.tokens[++ctx->index];
+    cj5_token tok = nextToken(ctx);
     for(size_t j = tok.size/2; j > 0; j--) {
-        tok = ctx->result.tokens[++ctx->index];
+        tok = nextToken(ctx);
         switch (tok.type) {
         case CJ5_TOKEN_STRING: {
             char *field_str = (char*)UA_malloc(tok.size + 1);
@@ -392,7 +408,7 @@ PARSE_JSON(BuildInfo) {
 }
 
 PARSE_JSON(ApplicationTypeField) {
-    cj5_token tok = ctx->result.tokens[++ctx->index];
+    cj5_token tok = nextToken(ctx);
     UA_ByteString rawToken = getJsonPart(tok, ctx->json);
     UA_ApplicationType *field = (UA_ApplicationType*)configField;
     char *fieldStr = (char*)UA_malloc(tok.size + 1);
@@ -441,9 +457,9 @@ GenericApplicationDescriptionField_parseJson(ParsingCtx *ctx, void *configField,
 {
     UA_ApplicationDescription *field = (UA_ApplicationDescription*)configField;
     UA_StatusCode retval = UA_STATUSCODE_GOOD;
-    cj5_token tok = ctx->result.tokens[++ctx->index];
+    cj5_token tok = nextToken(ctx);
     for(size_t j = tok.size/2; j > 0; j--) {
-        tok = ctx->result.tokens[++ctx->index];
+        tok = nextToken(ctx);
         switch (tok.type) {
         case CJ5_TOKEN_STRING: {
             char *field_str = (char*)UA_malloc(tok.size + 1);
@@ -531,9 +547,9 @@ PARSE_JSON(MessageSecurityMode) {
 PARSE_JSON(SubscriptionConfigurationField) {
     UA_ServerConfig *config = (UA_ServerConfig*)configField;
     UA_StatusCode retval = UA_STATUSCODE_GOOD;
-    cj5_token tok = ctx->result.tokens[++ctx->index];
+    cj5_token tok = nextToken(ctx);
     for(size_t j = tok.size/2; j > 0; j--) {
-        tok = ctx->result.tokens[++ctx->index];
+        tok = nextToken(ctx);
         switch (tok.type) {
         case CJ5_TOKEN_STRING: {
             char *field_str = (char*)UA_malloc(tok.size + 1);
@@ -589,9 +605,9 @@ PARSE_JSON(SubscriptionConfigurationField) {
 PARSE_JSON(TcpConfigurationField) {
     UA_ServerConfig *config = (UA_ServerConfig*)configField;
     UA_StatusCode retval = UA_STATUSCODE_GOOD;
-    cj5_token tok = ctx->result.tokens[++ctx->index];
+    cj5_token tok = nextToken(ctx);
     for(size_t j = tok.size/2; j > 0; j--) {
-        tok = ctx->result.tokens[++ctx->index];
+        tok = nextToken(ctx);
         switch (tok.type) {
         case CJ5_TOKEN_STRING: {
             char *field_str = (char*)UA_malloc(tok.size + 1);
@@ -623,9 +639,9 @@ PARSE_JSON(TcpConfigurationField) {
 PARSE_JSON(PubsubConfigurationField) {
     UA_PubSubConfiguration *field = (UA_PubSubConfiguration*)configField;
     UA_StatusCode retval = UA_STATUSCODE_GOOD;
-    cj5_token tok = ctx->result.tokens[++ctx->index];
+    cj5_token tok = nextToken(ctx);
     for(size_t j = tok.size/2; j > 0; j--) {
-        tok = ctx->result.tokens[++ctx->index];
+        tok = nextToken(ctx);
         switch (tok.type) {
         case CJ5_TOKEN_STRING: {
             char *field_str = (char*)UA_malloc(tok.size + 1);
@@ -658,9 +674,9 @@ PARSE_JSON(PubsubConfigurationField) {
 PARSE_JSON(HistorizingConfigurationField) {
     UA_ServerConfig *config = (UA_ServerConfig*)configField;
     UA_StatusCode retval = UA_STATUSCODE_GOOD;
-    cj5_token tok = ctx->result.tokens[++ctx->index];
+    cj5_token tok = nextToken(ctx);
     for(size_t j = tok.size/2; j > 0; j--) {
-        tok = ctx->result.tokens[++ctx->index];
+        tok = nextToken(ctx);
         switch (tok.type) {
         case CJ5_TOKEN_STRING: {
             char *field_str = (char*)UA_malloc(tok.size + 1);
@@ -778,7 +794,7 @@ PARSE_JSON(CertificateFileField) {
     UA_StatusCode retval = StringField_parseJson(ctx, &filename, NULL);
     if(retval == UA_STATUSCODE_GOOD) {
         if (filename.length > 0) {
-#ifdef UA_ENABLE_ENCRYPTION
+#if defined(UA_ENABLE_ENCRYPTION) || defined(UA_ENABLE_LWS)
             char *certfile = (char *)UA_malloc(filename.length + 1);
             memcpy(certfile, filename.data, filename.length);
             certfile[filename.length] = '\0';
@@ -795,6 +811,53 @@ PARSE_JSON(CertificateFileField) {
     return retval;
 }
 
+#ifdef UA_ENABLE_LWS
+PARSE_JSON(WebSocketConfigurationField) {
+    UA_ServerConfig *config = (UA_ServerConfig*)configField;
+    UA_StatusCode retval = UA_STATUSCODE_GOOD;
+    cj5_token tok = nextToken(ctx);
+    for(size_t j = tok.size / 2; j > 0; j--) {
+        tok = nextToken(ctx);
+        if(tok.type != CJ5_TOKEN_STRING)
+            continue;
+
+        char *field = (char*)UA_malloc(tok.size + 1);
+        if(!field)
+            return UA_STATUSCODE_BADOUTOFMEMORY;
+        unsigned int strLen = 0;
+        cj5_get_str(&ctx->result, (unsigned int)ctx->index, field, &strLen);
+
+        if(strcmp(field, "webSocketBufSize") == 0) {
+            retval = UInt32Field_parseJson(ctx, &config->webSocketBufSize, NULL);
+        } else if(strcmp(field, "webSocketMaxMsgSize") == 0) {
+            retval = UInt32Field_parseJson(ctx, &config->webSocketMaxMsgSize, NULL);
+        } else if(strcmp(field, "webSocketMaxChunks") == 0) {
+            retval = UInt32Field_parseJson(ctx, &config->webSocketMaxChunks, NULL);
+        } else if(strcmp(field, "webSocketMaxQueueSize") == 0) {
+            retval = UInt32Field_parseJson(ctx, &config->webSocketMaxQueueSize, NULL);
+        } else if(strcmp(field, "certificate") == 0) {
+            UA_ByteString_clear(&config->webSocketCertificate);
+            retval = CertificateFileField_parseJson(
+                ctx, &config->webSocketCertificate, NULL);
+        } else if(strcmp(field, "privateKey") == 0) {
+            UA_ByteString_clear(&config->webSocketPrivateKey);
+            retval = CertificateFileField_parseJson(
+                ctx, &config->webSocketPrivateKey, NULL);
+        } else if(strcmp(field, "privateKeyPassword") == 0) {
+            UA_String_clear(&config->webSocketPrivateKeyPassword);
+            retval = StringField_parseJson(
+                ctx, &config->webSocketPrivateKeyPassword, NULL);
+        } else {
+            LOG_UNKNOWN_FIELD(ctx, field);
+        }
+        UA_free(field);
+        if(retval != UA_STATUSCODE_GOOD)
+            return retval;
+    }
+    return UA_STATUSCODE_GOOD;
+}
+#endif
+
 static UA_StatusCode
 SecurityPolicyField_parseJson(ParsingCtx *ctx, UA_SecurityPolicy *field,
                               UA_ApplicationType applicationType,
@@ -804,9 +867,9 @@ SecurityPolicyField_parseJson(ParsingCtx *ctx, UA_SecurityPolicy *field,
     UA_ByteString privateKey = {.length = 0, .data = NULL};
     UA_StatusCode retval = UA_STATUSCODE_GOOD;
 
-    cj5_token tok = ctx->result.tokens[++ctx->index];
+    cj5_token tok = nextToken(ctx);
     for(size_t i = tok.size / 2; i > 0 && retval == UA_STATUSCODE_GOOD; i--) {
-        tok = ctx->result.tokens[++ctx->index];
+        tok = nextToken(ctx);
         switch(tok.type) {
         case CJ5_TOKEN_STRING: {
             char *field_str = (char *)UA_malloc(tok.size + 1);
@@ -850,7 +913,7 @@ SecurityPoliciesField_parseJson(ParsingCtx *ctx, void *configField, size_t *conf
     UA_StatusCode retval = UA_STATUSCODE_GOOD;
     UA_SecurityPolicy **securityPoliciesField = (UA_SecurityPolicy**)configField;
 
-    cj5_token tok = ctx->result.tokens[++ctx->index];
+    cj5_token tok = nextToken(ctx);
     for(size_t j = tok.size; j > 0; j--) {
         UA_SecurityPolicy *tmp = (UA_SecurityPolicy*)
             UA_realloc(*securityPoliciesField, sizeof(UA_SecurityPolicy) * (*configFieldSize + 1));
@@ -878,7 +941,7 @@ PARSE_JSON(SecurityPkiField) {
     UA_ServerConfig *config = (UA_ServerConfig*)configField;
     UA_String pkiFolder = {.length = 0, .data = NULL};
 
-    cj5_token tok = ctx->result.tokens[++ctx->index];
+    cj5_token tok = nextToken(ctx);
     UA_ByteString buf = getJsonPart(tok, ctx->json);
     UA_StatusCode retval = UA_decodeJson(&buf, &pkiFolder, &UA_TYPES[UA_TYPES_STRING], NULL);
     if(retval != UA_STATUSCODE_GOOD)
@@ -976,7 +1039,7 @@ parseJSONServerConfig(UA_ServerConfig *config, UA_ByteString json_config) {
     if(ctx.result.tokens)
         serverConfigSize = (ctx.result.tokens[ctx.index-1].size/2);
     UA_StatusCode retval = UA_STATUSCODE_GOOD;
-    for (size_t j = serverConfigSize; j > 0; j--) {
+    for (size_t j = serverConfigSize; j > 0 && ctx.index < ctx.result.num_tokens; j--) {
         cj5_token tok = ctx.result.tokens[ctx.index];
         switch (tok.type) {
             case CJ5_TOKEN_STRING: {
@@ -1008,10 +1071,18 @@ parseJSONServerConfig(UA_ServerConfig *config, UA_ByteString json_config) {
                     retval = BooleanField_parseJson(&ctx, &config->tcpEnabled, NULL);
                 else if(strcmp(field, "tcp") == 0)
                     retval = TcpConfigurationField_parseJson(&ctx, config, NULL);
+#ifdef UA_ENABLE_LWS
+                else if(strcmp(field, "webSocketEnabled") == 0)
+                    retval = BooleanField_parseJson(&ctx, &config->webSocketEnabled, NULL);
+                else if(strcmp(field, "webSocket") == 0)
+                    retval = WebSocketConfigurationField_parseJson(&ctx, config, NULL);
+#endif
                 else if(strcmp(field, "securityPolicyNoneDiscoveryOnly") == 0)
                     retval = BooleanField_parseJson(&ctx, &config->securityPolicyNoneDiscoveryOnly, NULL);
                 else if(strcmp(field, "modellingRulesOnInstances") == 0)
                     retval = BooleanField_parseJson(&ctx, &config->modellingRulesOnInstances, NULL);
+                else if(strcmp(field, "copyMethodsOnInstances") == 0)
+                    retval = BooleanField_parseJson(&ctx, &config->copyMethodsOnInstances, NULL);
                 else if(strcmp(field, "maxSecureChannels") == 0)
                     retval = UInt16Field_parseJson(&ctx, &config->maxSecureChannels, NULL);
                 else if(strcmp(field, "maxSecurityTokenLifetime") == 0)
@@ -1135,9 +1206,9 @@ UA_ServerConfig_loadFromFile(UA_ServerConfig *config, const UA_ByteString jsonCo
 PARSE_JSON(ConnectionConfig) {
     UA_ConnectionConfig *field = (UA_ConnectionConfig*)configField;
     UA_StatusCode retval = UA_STATUSCODE_GOOD;
-    cj5_token tok = ctx->result.tokens[++ctx->index];
+    cj5_token tok = nextToken(ctx);
     for(size_t j = tok.size/2; j > 0; j--) {
-        tok = ctx->result.tokens[++ctx->index];
+        tok = nextToken(ctx);
         switch (tok.type) {
         case CJ5_TOKEN_STRING: {
             char *field_str = (char*)UA_malloc(tok.size + 1);
@@ -1174,7 +1245,7 @@ PARSE_JSON(ConnectionConfig) {
 }
 
 PARSE_JSON(UserTokenType) {
-    cj5_token tok = ctx->result.tokens[++ctx->index];
+    cj5_token tok = nextToken(ctx);
     UA_ByteString rawToken = getJsonPart(tok, ctx->json);
     UA_UserTokenType *field = (UA_UserTokenType*)configField;
     char *fieldStr = (char*)UA_malloc(tok.size + 1);
@@ -1218,7 +1289,7 @@ PARSE_JSON(UserTokenType) {
  * the presence of other fields. */
 PARSE_JSON(UserIdentityToken) {
     UA_ExtensionObject *field = (UA_ExtensionObject*)configField;
-    cj5_token tok = ctx->result.tokens[++ctx->index];
+    cj5_token tok = nextToken(ctx);
 
     /* Variables to track which fields are encountered */
     UA_Int32 detectedType = -1; /* -1 indicates no type detected yet */
@@ -1235,7 +1306,7 @@ PARSE_JSON(UserIdentityToken) {
     UA_StatusCode retval = UA_STATUSCODE_GOOD;
 
     for(size_t j = tok.size/2; j > 0 && retval == UA_STATUSCODE_GOOD; j--) {
-        tok = ctx->result.tokens[++ctx->index];
+        tok = nextToken(ctx);
         switch (tok.type) {
         case CJ5_TOKEN_STRING: {
             char *field_str = (char*)UA_malloc(tok.size + 1);
@@ -1255,7 +1326,7 @@ PARSE_JSON(UserIdentityToken) {
 
                 if (retval == UA_STATUSCODE_GOOD) {
                     /* Parse the type field */
-                    cj5_token typeToken = ctx->result.tokens[++ctx->index];
+                    cj5_token typeToken = nextToken(ctx);
                     char *typeStr = (char*)UA_malloc(typeToken.size + 1);
                     unsigned int typeLen = 0;
 
@@ -1382,9 +1453,9 @@ PARSE_JSON(UserTokenPolicy) {
 
     UA_UserTokenPolicy *field = (UA_UserTokenPolicy*)configField;
     UA_StatusCode retval = UA_STATUSCODE_GOOD;
-    cj5_token tok = ctx->result.tokens[++ctx->index];
+    cj5_token tok = nextToken(ctx);
     for(size_t j = tok.size/2; j > 0; j--) {
-        tok = ctx->result.tokens[++ctx->index];
+        tok = nextToken(ctx);
         switch (tok.type) {
         case CJ5_TOKEN_STRING: {
             char *field_str = (char*)UA_malloc(tok.size + 1);
@@ -1431,7 +1502,7 @@ PARSE_JSON(UserTokenPolicyArrayField) {
         UA_LOG_ERROR(ctx->logging, UA_LOGCATEGORY_APPLICATION, "Pointer to the array size is not set.");
         return UA_STATUSCODE_BADARGUMENTSMISSING;
     }
-    cj5_token tok = ctx->result.tokens[++ctx->index];
+    cj5_token tok = nextToken(ctx);
     UA_UserTokenPolicy *policyArray = (UA_UserTokenPolicy*)UA_malloc(sizeof(UA_UserTokenPolicy) * tok.size);
     size_t policyArraySize = 0;
     for(size_t j = tok.size; j > 0; j--) {
@@ -1468,9 +1539,9 @@ PARSE_JSON(UserTokenPolicyArrayField) {
 PARSE_JSON(EndpointDescription) {
     UA_EndpointDescription *field = (UA_EndpointDescription*)configField;
     UA_StatusCode retval = UA_STATUSCODE_GOOD;
-    cj5_token tok = ctx->result.tokens[++ctx->index];
+    cj5_token tok = nextToken(ctx);
     for(size_t j = tok.size/2; j > 0; j--) {
-        tok = ctx->result.tokens[++ctx->index];
+        tok = nextToken(ctx);
         switch (tok.type) {
         case CJ5_TOKEN_STRING: {
             char *field_str = (char*)UA_malloc(tok.size + 1);
@@ -1515,6 +1586,10 @@ parseJSONClientConfig(UA_ClientConfig *config, UA_ByteString json_config) {
     cj5_token tokens[MAX_TOKENS];
     cj5_result r = cj5_parse(json, (unsigned int)json_config.length, tokens, MAX_TOKENS, NULL);
 
+    if(r.error != CJ5_ERROR_NONE || r.num_tokens < 2 ||
+       r.tokens[0].type != CJ5_TOKEN_OBJECT)
+        return UA_STATUSCODE_BADDECODINGERROR;
+
     ParsingCtx ctx;
     ctx.json = json;
     ctx.result = r;
@@ -1526,7 +1601,7 @@ parseJSONClientConfig(UA_ClientConfig *config, UA_ByteString json_config) {
     if(ctx.result.tokens)
         clientConfigSize = (ctx.result.tokens[ctx.index-1].size/2);
     UA_StatusCode retval = UA_STATUSCODE_GOOD;
-    for (size_t j = clientConfigSize; j > 0; j--) {
+    for (size_t j = clientConfigSize; j > 0 && ctx.index < ctx.result.num_tokens; j--) {
         cj5_token tok = ctx.result.tokens[ctx.index];
         switch (tok.type) {
             case CJ5_TOKEN_STRING: {
@@ -1560,8 +1635,22 @@ parseJSONClientConfig(UA_ClientConfig *config, UA_ByteString json_config) {
                     retval = ConnectionConfig_parseJson(&ctx, &config->localConnectionConfig, NULL);
                 else if(strcmp(field, "connectivityCheckInterval") == 0)
                     retval = UInt32Field_parseJson(&ctx, &config->connectivityCheckInterval, NULL);
+                else if(strcmp(field, "maxAsyncServiceCalls") == 0)
+                    retval = UInt32Field_parseJson(&ctx, &config->maxAsyncServiceCalls, NULL);
+                else if(strcmp(field, "asyncServiceCallRule") == 0)
+                    retval = RuleHandlingField_parseJson(&ctx, &config->asyncServiceCallRule, NULL);
                 else if(strcmp(field, "tcpReuseAddr") == 0)
                     retval = BooleanField_parseJson(&ctx, &config->tcpReuseAddr, NULL);
+#ifdef UA_ENABLE_LWS
+                else if(strcmp(field, "webSocketMaxQueueSize") == 0)
+                    retval = UInt32Field_parseJson(
+                        &ctx, &config->webSocketMaxQueueSize, NULL);
+                else if(strcmp(field, "webSocketCaCertificate") == 0) {
+                    UA_ByteString_clear(&config->webSocketCaCertificate);
+                    retval = CertificateFileField_parseJson(
+                        &ctx, &config->webSocketCaCertificate, NULL);
+                }
+#endif
                 else if(strcmp(field, "endpoint") == 0)
                     retval = EndpointDescription_parseJson(&ctx, &config->endpoint, NULL);
                 else if(strcmp(field, "userTokenPolicy") == 0)
@@ -1641,7 +1730,7 @@ UA_ClientConfig_loadFromFile(UA_ClientConfig *config, const UA_ByteString jsonCo
     return res;
 }
 
-#ifdef UA_ENABLE_ENCRYPTION
+#if defined(UA_ENABLE_ENCRYPTION) || defined(UA_ENABLE_LWS)
 static UA_ByteString
 loadCertificateFile(const char *const path) {
     UA_ByteString fileContents = UA_BYTESTRING_NULL;

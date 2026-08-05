@@ -120,6 +120,20 @@ UA_EXPORT UA_THREADSAFE UA_StatusCode
 UA_Client_readUserAccessLevelAttribute(UA_Client *client, const UA_NodeId nodeId,
                                        UA_Byte *out);
 
+/* Returns a variant with a UA_RolePermissionType array */
+UA_EXPORT UA_THREADSAFE UA_StatusCode
+UA_Client_readRolePermissionsAttribute(UA_Client *client, const UA_NodeId nodeId,
+                                       UA_Variant *out);
+
+/* Returns a variant with a UA_RolePermissionType array */
+UA_EXPORT UA_THREADSAFE UA_StatusCode
+UA_Client_readUserRolePermissionsAttribute(UA_Client *client, const UA_NodeId nodeId,
+                                           UA_Variant *out);
+
+UA_EXPORT UA_THREADSAFE UA_StatusCode
+UA_Client_readAccessRestrictionsAttribute(UA_Client *client, const UA_NodeId nodeId,
+                                          UA_AccessRestrictionType *out);
+
 UA_EXPORT UA_THREADSAFE UA_StatusCode
 UA_Client_readMinimumSamplingIntervalAttribute(UA_Client *client,
                                                const UA_NodeId nodeId,
@@ -293,6 +307,15 @@ UA_Client_writeUserAccessLevelAttribute(UA_Client *client, const UA_NodeId nodeI
                                         const UA_Byte *newUserAccessLevel);
 
 UA_EXPORT UA_THREADSAFE UA_StatusCode
+UA_Client_writeRolePermissionsAttribute(UA_Client *client, const UA_NodeId nodeId,
+                                        const UA_Variant *newRolePermissions);
+
+UA_EXPORT UA_THREADSAFE UA_StatusCode
+UA_Client_writeAccessRestrictionsAttribute(
+    UA_Client *client, const UA_NodeId nodeId,
+    const UA_AccessRestrictionType *newAccessRestrictions);
+
+UA_EXPORT UA_THREADSAFE UA_StatusCode
 UA_Client_writeMinimumSamplingIntervalAttribute(UA_Client *client,
                                                 const UA_NodeId nodeId,
                                                 const UA_Double *newMinInterval);
@@ -442,19 +465,16 @@ UA_StatusCode UA_EXPORT UA_THREADSAFE
 UA_Client_NamespaceGetIndex(UA_Client *client, UA_String *namespaceUri,
                             UA_UInt16 *namespaceIndex);
 
-#ifndef HAVE_NODEITER_CALLBACK
-#define HAVE_NODEITER_CALLBACK
 /* Iterate over all nodes referenced by parentNodeId by calling the callback
  * function for each child node */
 typedef UA_StatusCode
-(*UA_NodeIteratorCallback)(UA_NodeId childId, UA_Boolean isInverse,
-                           UA_NodeId referenceTypeId, void *handle);
-#endif
+(*UA_ClientNodeIteratorCallback)(UA_NodeId childId, UA_Boolean isInverse,
+                                 UA_NodeId referenceTypeId, void *handle);
 
 UA_StatusCode UA_EXPORT
 UA_Client_forEachChildNodeCall(
     UA_Client *client, UA_NodeId parentNodeId,
-    UA_NodeIteratorCallback callback, void *handle);
+    UA_ClientNodeIteratorCallback callback, void *handle);
 
 _UA_END_DECLS
 
