@@ -792,7 +792,13 @@ if((CMAKE_COMPILER_IS_GNUCC OR CMAKE_C_COMPILER_ID MATCHES "Clang") AND
        CMAKE_C_COMPILER_ID MATCHES "Clang" AND NOT UA_ENABLE_UNIT_TESTS_MEMCHECK)
         # Add default sanitizer settings when using clang and Debug build.
         # This allows e.g. CLion to find memory locations for SegFaults
-        set(SANITIZER_FLAGS "-g -fno-omit-frame-pointer -fsanitize=address,undefined")
+        set(SANITIZER_FLAGS "-g -fno-omit-frame-pointer -fsanitize=address")
+        # -fsanitize=undefined fails to link with clang on OpenBSD. Skip it there
+        # so the AddressSanitizer build still works instead of the whole-string
+        # check below disabling all sanitizers.
+        if(NOT ${CMAKE_SYSTEM_NAME} MATCHES "OpenBSD")
+            set(SANITIZER_FLAGS "${SANITIZER_FLAGS} -fsanitize=undefined")
+        endif()
         if(CMAKE_CXX_COMPILER_VERSION AND CMAKE_CXX_COMPILER_VERSION VERSION_LESS 10.0)
             set(SANITIZER_FLAGS "${SANITIZER_FLAGS} -fsanitize-coverage=trace-pc-guard")
         endif()
