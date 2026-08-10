@@ -630,7 +630,8 @@ addIdentityMethodCallback(UA_Server *server,
     }
     role.identityMappingRulesSize++;
 
-    res = UA_Server_updateRole(server, &role);
+    res = UA_Server_updateRoleFromMethod(server, &role, sessionId, methodId,
+                                         inputSize, input);
     UA_Role_clear(&role);
     return res;
 }
@@ -683,7 +684,8 @@ removeIdentityMethodCallback(UA_Server *server,
                 sizeof(UA_IdentityMappingRuleType));
     role.identityMappingRulesSize--;
 
-    res = UA_Server_updateRole(server, &role);
+    res = UA_Server_updateRoleFromMethod(server, &role, sessionId, methodId,
+                                         inputSize, input);
     UA_Role_clear(&role);
     return res;
 }
@@ -722,7 +724,8 @@ addApplicationMethodCallback(UA_Server *server,
     }
     role.applicationsSize++;
 
-    res = UA_Server_updateRole(server, &role);
+    res = UA_Server_updateRoleFromMethod(server, &role, sessionId, methodId,
+                                         inputSize, input);
     UA_Role_clear(&role);
     return res;
 }
@@ -765,7 +768,8 @@ removeApplicationMethodCallback(UA_Server *server,
                 (role.applicationsSize - idx - 1) * sizeof(UA_String));
     role.applicationsSize--;
 
-    res = UA_Server_updateRole(server, &role);
+    res = UA_Server_updateRoleFromMethod(server, &role, sessionId, methodId,
+                                         inputSize, input);
     UA_Role_clear(&role);
     return res;
 }
@@ -809,7 +813,8 @@ addEndpointMethodCallback(UA_Server *server,
     }
     role.endpointsSize++;
 
-    res = UA_Server_updateRole(server, &role);
+    res = UA_Server_updateRoleFromMethod(server, &role, sessionId, methodId,
+                                         inputSize, input);
     UA_Role_clear(&role);
     return res;
 }
@@ -857,7 +862,8 @@ removeEndpointMethodCallback(UA_Server *server,
                 (role.endpointsSize - idx - 1) * sizeof(UA_EndpointType));
     role.endpointsSize--;
 
-    res = UA_Server_updateRole(server, &role);
+    res = UA_Server_updateRoleFromMethod(server, &role, sessionId, methodId,
+                                         inputSize, input);
     UA_Role_clear(&role);
     return res;
 }
