@@ -56,7 +56,8 @@ UA_Client_NamespaceGetIndex(UA_Client *client, UA_String *namespaceUri,
 
 UA_StatusCode
 UA_Client_forEachChildNodeCall(UA_Client *client, UA_NodeId parentNodeId,
-                               UA_ClientNodeIteratorCallback callback, void *handle) {
+                               UA_ClientNodeIteratorCallback callback, void *handle,
+                               const UA_BrowseOptions *options) {
     UA_BrowseRequest bReq;
     UA_BrowseRequest_init(&bReq);
     bReq.requestedMaxReferencesPerNode = 0;
@@ -66,7 +67,15 @@ UA_Client_forEachChildNodeCall(UA_Client *client, UA_NodeId parentNodeId,
     bReq.nodesToBrowseSize = 1;
     UA_NodeId_copy(&parentNodeId, &bReq.nodesToBrowse[0].nodeId);
     bReq.nodesToBrowse[0].resultMask = UA_BROWSERESULTMASK_ALL; //return everything
-    bReq.nodesToBrowse[0].browseDirection = UA_BROWSEDIRECTION_BOTH;
+    if(options) {
+        bReq.nodesToBrowse[0].browseDirection = options->browseDirection;
+        bReq.nodesToBrowse[0].includeSubtypes = options->includeSubtypes;
+        UA_NodeId_copy(&options->referenceTypeId,
+                       &bReq.nodesToBrowse[0].referenceTypeId);
+    } else {
+        /* Legacy default: browse in both directions over all reference types */
+        bReq.nodesToBrowse[0].browseDirection = UA_BROWSEDIRECTION_BOTH;
+    }
 
     UA_BrowseResponse bResp = UA_Client_Service_browse(client, bReq);
 

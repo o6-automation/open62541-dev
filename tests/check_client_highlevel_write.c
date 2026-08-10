@@ -403,7 +403,7 @@ START_TEST(hl_forEachChildNode) {
     UA_Client *client = connectClient();
     UA_UInt32 count = 0;
     UA_StatusCode res = UA_Client_forEachChildNodeCall(client,
-        UA_NODEID_NUMERIC(0, UA_NS0ID_OBJECTSFOLDER), childCallback, &count);
+        UA_NODEID_NUMERIC(0, UA_NS0ID_OBJECTSFOLDER), childCallback, &count, NULL);
     ck_assert_uint_eq(res, UA_STATUSCODE_GOOD);
     ck_assert_uint_gt(count, 0);
     disconnectClient(client);

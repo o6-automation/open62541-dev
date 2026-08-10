@@ -471,10 +471,23 @@ typedef UA_StatusCode
 (*UA_ClientNodeIteratorCallback)(UA_NodeId childId, UA_Boolean isInverse,
                                  UA_NodeId referenceTypeId, void *handle);
 
+/* Options to control which references UA_Client_forEachChildNodeCall follows.
+ * When a NULL options pointer is passed the legacy default is used: browse in
+ * both directions over all reference types. When options is non-NULL its
+ * fields are applied as-is (note that browseDirection UA_BROWSEDIRECTION_FORWARD
+ * is the zero value). */
+typedef struct {
+    UA_BrowseDirection browseDirection; /* Direction to browse */
+    UA_Boolean includeSubtypes;         /* Also follow subtypes of referenceTypeId */
+    UA_NodeId referenceTypeId;          /* Restrict to this reference type
+                                         * (UA_NODEID_NULL for all) */
+} UA_BrowseOptions;
+
 UA_StatusCode UA_EXPORT
 UA_Client_forEachChildNodeCall(
     UA_Client *client, UA_NodeId parentNodeId,
-    UA_ClientNodeIteratorCallback callback, void *handle);
+    UA_ClientNodeIteratorCallback callback, void *handle,
+    const UA_BrowseOptions *options);
 
 _UA_END_DECLS
 

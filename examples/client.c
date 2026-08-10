@@ -112,7 +112,7 @@ int main(int argc, char *argv[]) {
     UA_NodeId *parent = UA_NodeId_new();
     *parent = UA_NS0ID(OBJECTSFOLDER);
     UA_Client_forEachChildNodeCall(client, UA_NS0ID(OBJECTSFOLDER),
-                                   nodeIter, (void *) parent);
+                                   nodeIter, (void *) parent, NULL);
     UA_NodeId_delete(parent);
 
 #ifdef UA_ENABLE_SUBSCRIPTIONS

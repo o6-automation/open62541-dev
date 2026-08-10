@@ -73,6 +73,41 @@ START_TEST(Misc_NamespaceGetIndex) {
     ck_assert_uint_eq(retval, UA_STATUSCODE_BADNOTFOUND);
 } END_TEST
 
+static UA_StatusCode
+countingIter(UA_NodeId childId, UA_Boolean isInverse,
+             UA_NodeId referenceTypeId, void *handle) {
+    (void)childId;
+    (void)isInverse;
+    (void)referenceTypeId;
+    (*(unsigned int*)handle)++;
+    return UA_STATUSCODE_GOOD;
+}
+
+START_TEST(Misc_ForEachChildNodeOptions) {
+    /* Browsing the Server object with the default (NULL) options follows both
+     * directions over all reference types. */
+    unsigned int bothCount = 0;
+    UA_StatusCode retval =
+        UA_Client_forEachChildNodeCall(client, UA_NODEID_NUMERIC(0, UA_NS0ID_SERVER),
+                                       countingIter, &bothCount, NULL);
+    ck_assert_uint_eq(retval, UA_STATUSCODE_GOOD);
+    ck_assert_uint_gt(bothCount, 0);
+
+    /* Restricting to forward hierarchical references only must not yield more
+     * references than the unrestricted browse, and still find children. */
+    UA_BrowseOptions options;
+    options.browseDirection = UA_BROWSEDIRECTION_FORWARD;
+    options.includeSubtypes = true;
+    options.referenceTypeId = UA_NODEID_NUMERIC(0, UA_NS0ID_HIERARCHICALREFERENCES);
+
+    unsigned int forwardCount = 0;
+    retval = UA_Client_forEachChildNodeCall(client, UA_NODEID_NUMERIC(0, UA_NS0ID_SERVER),
+                                            countingIter, &forwardCount, &options);
+    ck_assert_uint_eq(retval, UA_STATUSCODE_GOOD);
+    ck_assert_uint_gt(forwardCount, 0);
+    ck_assert_uint_le(forwardCount, bothCount);
+} END_TEST
+
 UA_NodeId newReferenceTypeId;
 UA_NodeId newObjectTypeId;
 UA_NodeId newDataTypeId;
@@ -506,7 +541,7 @@ START_TEST(Node_AddReadWriteNodes) {
     }
 
     // iterate over children
-    retval = UA_Client_forEachChildNodeCall(client, nodeReadWriteUnitTest, nodeIter, NULL);
+    retval = UA_Client_forEachChildNodeCall(client, nodeReadWriteUnitTest, nodeIter, NULL, NULL);
     ck_assert_uint_eq(retval, UA_STATUSCODE_GOOD);
 
     UA_Boolean found = false;
@@ -1135,7 +1170,7 @@ START_TEST(Highlevel_ForEachChildNode_InvalidNode) {
      * The server may return GOOD with empty results for unknown nodes. */
     UA_NodeId invalidNode = UA_NODEID_NUMERIC(99, 99999);
     unsigned int prevCount = iteratedNodeCount;
-    UA_Client_forEachChildNodeCall(client, invalidNode, nodeIter, NULL);
+    UA_Client_forEachChildNodeCall(client, invalidNode, nodeIter, NULL, NULL);
     /* No children should have been iterated */
     ck_assert_uint_eq(iteratedNodeCount, prevCount);
 }
@@ -1369,6 +1404,7 @@ static Suite *testSuite_Client(void) {
     tcase_add_checked_fixture(tc_misc, setup, teardown);
     tcase_add_test(tc_misc, Misc_State);
     tcase_add_test(tc_misc, Misc_NamespaceGetIndex);
+    tcase_add_test(tc_misc, Misc_ForEachChildNodeOptions);
     suite_add_tcase(s, tc_misc);
 
     TCase *tc_nodes = tcase_create("Client Highlevel Node Management");
