@@ -2407,6 +2407,12 @@ struct UA_ServerConfig {
     /* Limits for TrustList */
     UA_UInt32 maxTrustListSize; /* in bytes, 0 => unlimited */
     UA_UInt32 maxRejectedListSize; /* 0 => unlimited */
+
+    /* If true, the private key update is skipped during GDS Push certificate
+     * renewal (UpdateCertificate / ApplyChanges). This is useful when the
+     * private key is managed externally (e.g. stored in a TPM or HSM) and must
+     * not be overwritten by the GDS. Default: false */
+    UA_Boolean skipPrivateKeyUpdateOnGDSPush;
 #endif
 
     /* Discovery

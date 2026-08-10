@@ -1287,10 +1287,17 @@ applyCertificateToPolicies(UA_ServerConfig *sc,
             policies[policiesSize++] = sp;
     }
 
+    /* If configured, skip the private key update during GDS Push. This is
+     * useful when the private key is managed externally (e.g. stored in a TPM
+     * or HSM) and must not be overwritten by the GDS. */
+    UA_ByteString appliedPrivateKey = privateKey;
+    if(sc->skipPrivateKeyUpdateOnGDSPush)
+        appliedPrivateKey = UA_BYTESTRING_NULL;
+
     /* Endpoint resolution and allocations cannot fail from here onwards. */
     for(size_t i = 0; i < policiesSize; i++) {
         res = policies[i]->updateCertificate(policies[i], certificate,
-                                              privateKey);
+                                              appliedPrivateKey);
         if(res != UA_STATUSCODE_GOOD) {
             UA_LOG_ERROR(sc->logging, UA_LOGCATEGORY_SECURITYPOLICY,
                          "Updating the certificate failed after %u of %u "
