@@ -169,6 +169,22 @@ UA_EXPORT UA_StatusCode
 UA_FileTransferBackend_localFilesystem(const UA_String rootPath,
                                        UA_FileTransferBackend *out);
 
+/* Built-in flat in-memory backend. It holds a small set of files (no
+ * directory hierarchy) keyed by path. The directory operations
+ * (createDirectory) return Bad_NotSupported; the file operations are fully
+ * supported. It is suitable for tests, as the default temporary store for
+ * temporary file transfers, and for consumers that need an ephemeral byte
+ * store (e.g. the GDS Receiver trust lists) without touching the local
+ * filesystem.
+ *
+ * The backend is not thread-safe and must only be accessed from the server's
+ * eventloop thread.
+ *
+ * @param out The backend to initialize
+ * @return The StatusCode of the operation */
+UA_EXPORT UA_StatusCode
+UA_FileTransferBackend_inMemory(UA_FileTransferBackend *out);
+
 /**
  * Mount Options
  * ~~~~~~~~~~~~~ */

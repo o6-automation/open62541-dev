@@ -112,6 +112,7 @@ typedef struct FileTransferDriver {
 /* driver.c -- top-level helpers and lifecycle */
 FileTransferDriver *findFileTransferDriver(UA_Server *server);
 UA_Boolean backendComplete(const UA_FileTransferBackend *b);
+UA_Boolean backendSupportsDirOps(const UA_FileTransferBackend *b);
 UA_StatusCode registerFileTransferMethodCallbacks(UA_Server *server);
 
 /* driver.c -- registry and handle primitives, used across all sub-files */
@@ -260,8 +261,8 @@ UA_UInt32 pathDepth(const UA_String path);
  * with the localfs backend so the traversal-safety policy lives in one place. */
 UA_Boolean validEntryName(const UA_String name);
 
-/* backend_memory.c (used by temporary.c) */
-UA_StatusCode inMemoryBackend(UA_FileTransferBackend *out);
+/* backend_memory.c (used by temporary.c) -- now exposed publicly via
+ * UA_FileTransferBackend_inMemory in include/open62541/driver/file_transfer.h */
 
 /* temporary.c -- method callbacks (registered in driver.c) and sweep */
 void temporaryTimeoutSweep(UA_Server *server, void *data);

@@ -399,7 +399,7 @@ addTemporaryFileTransfer(UA_FileTransferDriver *driver,
         }
         backend = options->backend;
     } else {
-        UA_StatusCode memRes = inMemoryBackend(&backend);
+        UA_StatusCode memRes = UA_FileTransferBackend_inMemory(&backend);
         if(memRes != UA_STATUSCODE_GOOD)
             return memRes;
     }

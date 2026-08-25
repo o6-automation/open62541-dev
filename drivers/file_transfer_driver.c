@@ -223,8 +223,16 @@ registerFileTransferMethodCallbacks(UA_Server *server) {
 UA_Boolean
 backendComplete(const UA_FileTransferBackend *b) {
     return b->openFile && b->closeFile && b->read && b->write &&
-        b->getPosition && b->setPosition && b->getAttributes &&
-        b->listDirectory && b->createFile && b->createDirectory &&
+        b->getPosition && b->setPosition && b->getAttributes;
+}
+
+/* Directory operations (createFile, createDirectory, listDirectory, remove,
+ * rename) are optional: a file-only backend may leave them NULL. A FileSystem
+ * mount (addFileSystem) needs them to mirror the backend tree; a standalone
+ * file (addFile) does not. copy is always optional (NULL => driver emulates). */
+UA_Boolean
+backendSupportsDirOps(const UA_FileTransferBackend *b) {
+    return b->listDirectory && b->createFile && b->createDirectory &&
         b->remove && b->rename;
 }
 
@@ -299,8 +307,9 @@ addFileSystem(UA_FileTransferDriver *driver, const UA_NodeId requestedNodeId,
     UA_Driver *drv = &driver->drv;
 
     /* The driver takes ownership of the backend. On failure the backend is
-     * cleared before returning. */
-    if(!backendComplete(&backend)) {
+     * cleared before returning. A FileSystem mount needs directory operations
+     * to mirror the backend tree; a file-only backend is rejected here. */
+    if(!backendComplete(&backend) || !backendSupportsDirOps(&backend)) {
         if(backend.clear)
             backend.clear(&backend);
         return UA_STATUSCODE_BADINVALIDARGUMENT;

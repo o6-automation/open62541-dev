@@ -227,7 +227,7 @@ memBackendClear(UA_FileTransferBackend *b) {
 }
 
 UA_StatusCode
-inMemoryBackend(UA_FileTransferBackend *out) {
+UA_FileTransferBackend_inMemory(UA_FileTransferBackend *out) {
     MemBackendContext *ctx =
         (MemBackendContext*)UA_calloc(1, sizeof(MemBackendContext));
     if(!ctx)

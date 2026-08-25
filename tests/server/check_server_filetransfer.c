@@ -934,6 +934,51 @@ START_TEST(fileMaxByteStringLength) {
     UA_Server_delete(server);
 } END_TEST
 
+/* A file-only backend (directory ops NULL) is accepted by addFile but rejected
+ * by addFileSystem, which needs directory operations to mirror the tree. */
+START_TEST(fileOnlyBackendAcceptedByAddFile) {
+    UA_FileTransferBackend b = memBackendWithFile("f.bin", "hello");
+    /* Strip directory operations to simulate a file-only backend */
+    b.listDirectory = NULL;
+    b.createFile = NULL;
+    b.createDirectory = NULL;
+    b.remove = NULL;
+    b.rename = NULL;
+
+    /* addFile succeeds — only file primitives are required */
+    UA_NodeId fileId = UA_NODEID_NULL;
+    UA_StatusCode res = ftDriver->addFile(
+        ftDriver, UA_NODEID_NULL, UA_NS0ID(OBJECTSFOLDER),
+        UA_QUALIFIEDNAME(0, "FileOnly"), b, UA_STRING("f.bin"), NULL, &fileId);
+    ck_assert_uint_eq(res, UA_STATUSCODE_GOOD);
+
+    /* The file is usable: open, read, close */
+    UA_UInt32 handle = callOpen(fileId, UA_OPENFILEMODE_READ, UA_STATUSCODE_GOOD);
+    ck_assert_uint_ne(handle, 0);
+    UA_ByteString content = callRead(fileId, handle, 5, UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(content.length, 5);
+    ck_assert_int_eq(memcmp(content.data, "hello", 5), 0);
+    UA_ByteString_clear(&content);
+    callClose(fileId, handle, UA_STATUSCODE_GOOD);
+
+    /* addFileSystem rejects the file-only backend */
+    UA_FileTransferBackend b2 = memBackendWithFile("root", "");
+    b2.listDirectory = NULL;
+    b2.createFile = NULL;
+    b2.createDirectory = NULL;
+    b2.remove = NULL;
+    b2.rename = NULL;
+    UA_NodeId fsId = UA_NODEID_NULL;
+    res = ftDriver->addFileSystem(
+        ftDriver, UA_NODEID_NULL, UA_NS0ID(OBJECTSFOLDER),
+        UA_QUALIFIEDNAME(0, "FileSystem"), b2, NULL, &fsId);
+    ck_assert_uint_ne(res, UA_STATUSCODE_GOOD);
+
+    /* Clean up the file added via addFile */
+    ck_assert_uint_eq(ftDriver->removeFile(ftDriver, fileId), UA_STATUSCODE_GOOD);
+    UA_NodeId_clear(&fileId);
+} END_TEST
+
 #ifndef _WIN32
 /* MimeType is inferred from the extension by the local filesystem backend */
 START_TEST(fileMimeType) {
@@ -2114,6 +2159,7 @@ int main(void) {
     tcase_add_test(tc_file, fileHandleLimits);
     tcase_add_test(tc_file, removeFileClosesHandles);
     tcase_add_test(tc_file, fileMaxByteStringLength);
+    tcase_add_test(tc_file, fileOnlyBackendAcceptedByAddFile);
 # ifndef _WIN32
     tcase_add_test(tc_file, fileMimeType);
 # endif
