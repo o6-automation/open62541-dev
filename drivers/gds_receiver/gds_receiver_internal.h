@@ -10,6 +10,7 @@
 #define UA_DRIVER_GDS_RECEIVER_INTERNAL_H_
 
 #include <open62541/driver/gds_receiver.h>
+#include <open62541/driver/file_transfer.h>
 
 #ifdef UA_ENABLE_DRIVER_GDS_RECEIVER
 

@@ -45,12 +45,10 @@ typedef struct {
 
 typedef struct UA_FileContext {
     LIST_ENTRY(UA_FileContext) listEntry;
-    UA_ByteString file;
-    UA_ByteString dataToWrite;
     UA_UInt32 fileHandle;
     UA_NodeId sessionId;
-    UA_UInt64 currentPos;
     UA_Byte openFileMode;
+    void *backendFileContext;  /* Per-open backend context; closed on Close */
 } UA_FileContext;
 
 typedef struct UA_FileInfo {
@@ -58,6 +56,8 @@ typedef struct UA_FileInfo {
     UA_NodeId certificateGroupId;
     UA_UInt16 openCount;
     UA_UtcTime lastUpdateTime;
+    UA_FileTransferBackend backend;  /* In-memory store for the trust-list bytes */
+    UA_String path;                   /* Fixed backend path for this cert group */
     LIST_HEAD(, UA_FileContext) fileContext;
 } UA_FileInfo;
 
@@ -102,6 +102,72 @@ getFileContext(UA_FileInfo *fileInfo, const UA_NodeId *sessionId,
         }
     }
     return NULL;
+}
+
+/********************/
+/* Backend helpers  */
+/********************/
+
+/* (Re)create the in-memory backend file at the cert-group path and populate it
+ * with the encoded trust list bytes. Used on open-read to serve a fresh
+ * snapshot of the current trust list. The in-memory backend is a flat keyed
+ * store: createFile fails if the entry already exists, so an existing entry is
+ * removed first (best effort). */
+static UA_StatusCode
+syncBackendFile(UA_FileInfo *fileInfo, const UA_ByteString encTrustList) {
+    UA_FileTransferBackend *b = &fileInfo->backend;
+    /* Remove a possibly stale staged file from a previous open */
+    b->remove(b, fileInfo->path);
+    UA_StatusCode res = b->createFile(b, fileInfo->path);
+    if(res != UA_STATUSCODE_GOOD)
+        return res;
+    if(encTrustList.length == 0)
+        return UA_STATUSCODE_GOOD;
+    /* Open write, write the encoded bytes, close */
+    void *fc = NULL;
+    res = b->openFile(b, fileInfo->path,
+                      UA_OPENFILEMODE_WRITE | UA_OPENFILEMODE_ERASEEXISTING, &fc);
+    if(res != UA_STATUSCODE_GOOD)
+        return res;
+    res = b->write(b, fc, encTrustList);
+    UA_StatusCode closeRes = b->closeFile(b, fc);
+    if(res == UA_STATUSCODE_GOOD)
+        res = closeRes;
+    return res;
+}
+
+/* Read the entire content of the staged backend file back into out. The caller
+ * frees out. Used by CloseAndUpdate to retrieve the staged write bytes. */
+static UA_StatusCode
+readFullBackendFile(UA_FileInfo *fileInfo, UA_ByteString *out) {
+    UA_FileTransferBackend *b = &fileInfo->backend;
+    UA_ByteString_init(out);
+    void *fc = NULL;
+    UA_StatusCode res = b->openFile(b, fileInfo->path, UA_OPENFILEMODE_READ, &fc);
+    if(res != UA_STATUSCODE_GOOD)
+        return res;
+    /* Read in a single large chunk; the backend returns whatever is available
+     * (up to the file size). An empty result means EOF (empty file). */
+    res = b->read(b, fc, UA_INT32_MAX, out);
+    UA_StatusCode closeRes = b->closeFile(b, fc);
+    if(res == UA_STATUSCODE_GOOD)
+        res = closeRes;
+    return res;
+}
+
+/* Close the backend file context of a FileContext. For a write-open, also
+ * remove the staged backend file so abandoned writes do not leave stale bytes.
+ * Does NOT free the UA_FileContext itself (the caller does that). */
+static void
+releaseFileContextBackend(UA_FileInfo *fileInfo, UA_FileContext *fileContext) {
+    UA_FileTransferBackend *b = &fileInfo->backend;
+    if(fileContext->backendFileContext) {
+        b->closeFile(b, fileContext->backendFileContext);
+        fileContext->backendFileContext = NULL;
+    }
+    if(fileContext->openFileMode ==
+       (UA_OPENFILEMODE_WRITE | UA_OPENFILEMODE_ERASEEXISTING))
+        b->remove(b, fileInfo->path);  /* Best effort */
 }
 
 /********************/
@@ -315,25 +381,48 @@ UA_GDSReceiver_getFileInfo(UA_GDSReceiverContext *ctx,
     return NULL;
 }
 
-UA_StatusCode
-UA_GDSReceiver_initFileInfos(UA_GDSReceiverContext *ctx, UA_UtcTime lastUpdateTime) {
+/* Initialize a FileInfo with an in-memory backend and a fixed backend path.
+ * Returns NULL on allocation/init failure. The caller links the result into
+ * the fileInfos list. */
+static UA_FileInfo *
+newFileInfo(UA_NodeId certificateGroupId, UA_UtcTime lastUpdateTime,
+            const char *pathStr) {
     UA_FileInfo *fi = (UA_FileInfo*)UA_calloc(1, sizeof(UA_FileInfo));
     if(!fi)
+        return NULL;
+    fi->certificateGroupId = certificateGroupId;
+    fi->lastUpdateTime = lastUpdateTime;
+    LIST_INIT(&fi->fileContext);
+    UA_String path = UA_STRING((char*)(uintptr_t)pathStr);
+    if(UA_FileTransferBackend_inMemory(&fi->backend) != UA_STATUSCODE_GOOD ||
+       UA_String_copy(&path, &fi->path) != UA_STATUSCODE_GOOD) {
+        if(fi->backend.clear)
+            fi->backend.clear(&fi->backend);
+        UA_String_clear(&fi->path);
+        UA_free(fi);
+        return NULL;
+    }
+    return fi;
+}
+
+UA_StatusCode
+UA_GDSReceiver_initFileInfos(UA_GDSReceiverContext *ctx, UA_UtcTime lastUpdateTime) {
+    UA_FileInfo *fi = newFileInfo(
+        UA_NS0ID(SERVERCONFIGURATION_CERTIFICATEGROUPS_DEFAULTAPPLICATIONGROUP),
+        lastUpdateTime, "app");
+    if(!fi)
         return UA_STATUSCODE_BADOUTOFMEMORY;
-    UA_FileInfo *fi2 = (UA_FileInfo*)UA_calloc(1, sizeof(UA_FileInfo));
+    UA_FileInfo *fi2 = newFileInfo(
+        UA_NS0ID(SERVERCONFIGURATION_CERTIFICATEGROUPS_DEFAULTUSERTOKENGROUP),
+        lastUpdateTime, "user");
     if(!fi2) {
+        if(fi->backend.clear)
+            fi->backend.clear(&fi->backend);
+        UA_String_clear(&fi->path);
         UA_free(fi);
         return UA_STATUSCODE_BADOUTOFMEMORY;
     }
     fi->next = fi2;
-    fi->certificateGroupId =
-        UA_NS0ID(SERVERCONFIGURATION_CERTIFICATEGROUPS_DEFAULTAPPLICATIONGROUP);
-    LIST_INIT(&fi->fileContext);
-    fi->lastUpdateTime = lastUpdateTime;
-    fi2->certificateGroupId =
-        UA_NS0ID(SERVERCONFIGURATION_CERTIFICATEGROUPS_DEFAULTUSERTOKENGROUP);
-    LIST_INIT(&fi2->fileContext);
-    fi2->lastUpdateTime = lastUpdateTime;
     ctx->fileInfos = fi;
     return UA_STATUSCODE_GOOD;
 }
@@ -425,8 +514,8 @@ checkSessionActive(UA_Server *server, void *data) {
             LIST_REMOVE(fileContext, listEntry);
             fi->openCount -= 1;
 
-            UA_ByteString_clear(&fileContext->file);
-            UA_ByteString_clear(&fileContext->dataToWrite);
+            releaseFileContextBackend(fi, fileContext);
+            UA_NodeId_clear(&fileContext->sessionId);
             UA_free(fileContext);
 
             /* Updating OpenCount Variable in the information model */
@@ -456,8 +545,13 @@ UA_GDSReceiver_getPositionTrustList(UA_GDSReceiverContext *ctx, UA_CertificateGr
     if(!fileContext)
         return UA_STATUSCODE_BADINTERNALERROR;
 
-    return UA_Variant_setScalarCopy(output, &fileContext->currentPos,
-                                    &UA_TYPES[UA_TYPES_UINT64]);
+    UA_UInt64 position = 0;
+    UA_StatusCode res =
+        fileInfo->backend.getPosition(&fileInfo->backend,
+                                       fileContext->backendFileContext, &position);
+    if(res != UA_STATUSCODE_GOOD)
+        return res;
+    return UA_Variant_setScalarCopy(output, &position, &UA_TYPES[UA_TYPES_UINT64]);
 }
 
 UA_StatusCode
@@ -474,13 +568,10 @@ UA_GDSReceiver_setPositionTrustList(UA_GDSReceiverContext *ctx, UA_CertificateGr
     if(!fileContext)
         return UA_STATUSCODE_BADINTERNALERROR;
 
-    if(fileContext->file.length < position) {
-        fileContext->currentPos = fileContext->file.length;
-    } else {
-        fileContext->currentPos = position;
-    }
-
-    return UA_STATUSCODE_GOOD;
+    /* The backend clamps positions beyond the file size to the file size
+     * (Part 20, 4.2.7) — matching the previous hand-rolled clamp behavior. */
+    return fileInfo->backend.setPosition(&fileInfo->backend,
+                                          fileContext->backendFileContext, position);
 }
 
 UA_StatusCode
@@ -505,15 +596,24 @@ UA_GDSReceiver_writeTrustList(UA_GDSReceiverContext *ctx, UA_CertificateGroup *c
         return UA_STATUSCODE_BADINVALIDSTATE;
 
     /* Abort when TrustList size would exceed the maximum allowed value (0 =
-     * unlimited) */
-    size_t newLen = fileContext->dataToWrite.length + data.length;
-    if(sc->maxTrustListSize != 0 && newLen > sc->maxTrustListSize) {
-        UA_LOG_WARNING(sc->logging, UA_LOGCATEGORY_SERVER,
-                       "Write on trust list exceeds limit");
-        return UA_STATUSCODE_BADREQUESTTOOLARGE;
+     * unlimited). The backend write context's position tracks the bytes
+     * written so far, so the prospective new size is position + data.length. */
+    if(sc->maxTrustListSize != 0) {
+        UA_UInt64 pos = 0;
+        UA_StatusCode res =
+            fileInfo->backend.getPosition(&fileInfo->backend,
+                                          fileContext->backendFileContext, &pos);
+        if(res != UA_STATUSCODE_GOOD)
+            return res;
+        if(pos + data.length > sc->maxTrustListSize) {
+            UA_LOG_WARNING(sc->logging, UA_LOGCATEGORY_SERVER,
+                           "Write on trust list exceeds limit");
+            return UA_STATUSCODE_BADREQUESTTOOLARGE;
+        }
     }
 
-    return UA_String_append(&fileContext->dataToWrite, data);
+    return fileInfo->backend.write(&fileInfo->backend,
+                                   fileContext->backendFileContext, data);
 }
 
 UA_StatusCode
@@ -543,10 +643,16 @@ UA_GDSReceiver_closeAndUpdateTrustList(UA_GDSReceiverContext *ctx,
     if(!transactionCertGroup)
         return UA_STATUSCODE_BADINTERNALERROR;
 
+    /* Read the staged write bytes back from the backend file */
+    UA_ByteString staged = UA_BYTESTRING_NULL;
+    UA_StatusCode retval = readFullBackendFile(fileInfo, &staged);
+    if(retval != UA_STATUSCODE_GOOD)
+        return retval;
+
     UA_TrustListDataType trustList;
-    UA_StatusCode retval =
-        UA_decodeBinary(&fileContext->dataToWrite, &trustList,
-                        &UA_TYPES[UA_TYPES_TRUSTLISTDATATYPE], NULL);
+    retval = UA_decodeBinary(&staged, &trustList,
+                             &UA_TYPES[UA_TYPES_TRUSTLISTDATATYPE], NULL);
+    UA_ByteString_clear(&staged);
     if(retval != UA_STATUSCODE_GOOD) {
         UA_TrustListDataType_clear(&trustList);
         return UA_STATUSCODE_BADINTERNALERROR;
@@ -560,8 +666,8 @@ UA_GDSReceiver_closeAndUpdateTrustList(UA_GDSReceiverContext *ctx,
     LIST_REMOVE(fileContext, listEntry);
     fileInfo->openCount -= 1;
 
-    UA_ByteString_clear(&fileContext->file);
-    UA_ByteString_clear(&fileContext->dataToWrite);
+    releaseFileContextBackend(fileInfo, fileContext);
+    UA_NodeId_clear(&fileContext->sessionId);
     UA_free(fileContext);
 
     /* Updating OpenCount Variable in the information model */
@@ -600,8 +706,8 @@ UA_GDSReceiver_closeTrustList(UA_GDSReceiverContext *ctx,
     LIST_REMOVE(fileContext, listEntry);
     fileInfo->openCount -= 1;
 
-    UA_ByteString_clear(&fileContext->file);
-    UA_ByteString_clear(&fileContext->dataToWrite);
+    releaseFileContextBackend(fileInfo, fileContext);
+    UA_NodeId_clear(&fileContext->sessionId);
     UA_free(fileContext);
 
     /* Updating OpenCount Variable in the information model */
@@ -627,24 +733,19 @@ UA_GDSReceiver_readTrustList(UA_GDSReceiverContext *ctx, UA_CertificateGroup *ce
     if(fileContext->openFileMode != UA_OPENFILEMODE_READ)
         return UA_STATUSCODE_BADINVALIDSTATE;
 
-    /* check boundaries */
-    if((size_t)length >= fileContext->file.length)
-        length = (UA_Int32)fileContext->file.length;
-
-    if((size_t)length >= (fileContext->file.length - fileContext->currentPos))
-        length = (UA_Int32)(fileContext->file.length - fileContext->currentPos);
-
+    /* The backend handles boundaries and position advancement. An empty result
+     * indicates EOF. The backend allocates the output buffer; the variant copy
+     * duplicates it and the caller frees the backend buffer. */
     UA_ByteString readBuffer = UA_BYTESTRING_NULL;
-    if(length > 0) {
-        readBuffer.length = (size_t)length;
-        readBuffer.data = fileContext->file.data+fileContext->currentPos;
-    }
+    UA_StatusCode res = fileInfo->backend.read(&fileInfo->backend,
+                                               fileContext->backendFileContext,
+                                               length, &readBuffer);
+    if(res != UA_STATUSCODE_GOOD)
+        return res;
 
-    UA_StatusCode res =
-        UA_Variant_setScalarCopy(output, &readBuffer,
-                                 &UA_TYPES[UA_TYPES_BYTESTRING]);
-    if(res == UA_STATUSCODE_GOOD)
-        fileContext->currentPos += (UA_UInt64)length;
+    res = UA_Variant_setScalarCopy(output, &readBuffer,
+                                   &UA_TYPES[UA_TYPES_BYTESTRING]);
+    UA_ByteString_clear(&readBuffer);
     return res;
 }
 
@@ -1039,21 +1140,33 @@ UA_GDSReceiver_openTrustListWithMask(UA_GDSReceiverContext *ctx, UA_CertificateG
         return retval;
     }
 
+    /* (Re)create the backend file with the current encoded trust list so the
+     * read-open serves a fresh snapshot. */
+    retval = syncBackendFile(fileInfo, encTrustList);
+    UA_ByteString_clear(&encTrustList);
+    if(retval != UA_STATUSCODE_GOOD)
+        return retval;
+
     UA_FileContext *fileContext = (UA_FileContext*)
         UA_calloc(1, sizeof(UA_FileContext));
-    if(!fileContext) {
-        UA_ByteString_clear(&encTrustList);
+    if(!fileContext)
         return UA_STATUSCODE_BADOUTOFMEMORY;
-    }
-        
-    fileContext->file = encTrustList;
+
     fileContext->sessionId = *sessionId;
     fileContext->openFileMode = UA_OPENFILEMODE_READ;
-    fileContext->currentPos = 0;
-    fileContext->dataToWrite = UA_BYTESTRING_NULL;
     retval = createFileHandleId(fileInfo, &fileContext->fileHandle);
     if(retval != UA_STATUSCODE_GOOD) {
-        UA_ByteString_clear(&fileContext->file);
+        UA_NodeId_clear(&fileContext->sessionId);
+        UA_free(fileContext);
+        return retval;
+    }
+
+    /* Open the backend file in read mode */
+    retval = fileInfo->backend.openFile(&fileInfo->backend, fileInfo->path,
+                                         UA_OPENFILEMODE_READ,
+                                         &fileContext->backendFileContext);
+    if(retval != UA_STATUSCODE_GOOD) {
+        UA_NodeId_clear(&fileContext->sessionId);
         UA_free(fileContext);
         return retval;
     }
@@ -1061,7 +1174,8 @@ UA_GDSReceiver_openTrustListWithMask(UA_GDSReceiverContext *ctx, UA_CertificateG
     retval = UA_Variant_setScalarCopy(output, &fileContext->fileHandle,
                                       &UA_TYPES[UA_TYPES_UINT32]);
     if(retval != UA_STATUSCODE_GOOD) {
-        UA_ByteString_clear(&fileContext->file);
+        releaseFileContextBackend(fileInfo, fileContext);
+        UA_NodeId_clear(&fileContext->sessionId);
         UA_free(fileContext);
         return retval;
     }
@@ -1120,37 +1234,57 @@ UA_GDSReceiver_openTrustList(UA_GDSReceiverContext *ctx, UA_CertificateGroup *ce
             return retval;
     }
 
-    UA_TrustListDataType trustList;
-    memset(&trustList, 0, sizeof(UA_TrustListDataType));
-    trustList.specifiedLists = UA_TRUSTLISTMASKS_ALL;
-    retval = certGroup->getTrustList(certGroup, &trustList);
-    if(retval != UA_STATUSCODE_GOOD) {
-        UA_TrustListDataType_clear(&trustList);
-        return retval;
-    }
+    /* For read mode: encode the current trust list and (re)create the backend
+     * file so the read-open serves a fresh snapshot. For write+erase mode: the
+     * backend file is truncated to empty on open; the client provides the new
+     * content via Write, so the current trust list is not needed. */
+    if(fileOpenMode == UA_OPENFILEMODE_READ) {
+        UA_TrustListDataType trustList;
+        memset(&trustList, 0, sizeof(UA_TrustListDataType));
+        trustList.specifiedLists = UA_TRUSTLISTMASKS_ALL;
+        retval = certGroup->getTrustList(certGroup, &trustList);
+        if(retval != UA_STATUSCODE_GOOD) {
+            UA_TrustListDataType_clear(&trustList);
+            return retval;
+        }
 
-    UA_ByteString encTrustList = UA_BYTESTRING_NULL;
-    retval = UA_encodeBinary(&trustList, &UA_TYPES[UA_TYPES_TRUSTLISTDATATYPE],
-                             &encTrustList, NULL);
-    UA_TrustListDataType_clear(&trustList);
-    if(retval != UA_STATUSCODE_GOOD) {
+        UA_ByteString encTrustList = UA_BYTESTRING_NULL;
+        retval = UA_encodeBinary(&trustList, &UA_TYPES[UA_TYPES_TRUSTLISTDATATYPE],
+                                 &encTrustList, NULL);
+        UA_TrustListDataType_clear(&trustList);
+        if(retval != UA_STATUSCODE_GOOD) {
+            UA_ByteString_clear(&encTrustList);
+            return retval;
+        }
+        retval = syncBackendFile(fileInfo, encTrustList);
         UA_ByteString_clear(&encTrustList);
-        return retval;
+        if(retval != UA_STATUSCODE_GOOD)
+            return retval;
+    } else {
+        /* Write+erase: create a fresh empty backend file */
+        retval = syncBackendFile(fileInfo, UA_BYTESTRING_NULL);
+        if(retval != UA_STATUSCODE_GOOD)
+            return retval;
     }
 
     UA_FileContext *fileContext = (UA_FileContext*)UA_calloc(1, sizeof(UA_FileContext));
-    if(!fileContext) {
-        UA_ByteString_clear(&encTrustList);
+    if(!fileContext)
         return UA_STATUSCODE_BADOUTOFMEMORY;
-    }
-    fileContext->file = encTrustList;
     fileContext->sessionId = *sessionId;
     fileContext->openFileMode = fileOpenMode;
-    fileContext->currentPos = 0;
-    fileContext->dataToWrite = UA_BYTESTRING_NULL;
     retval = createFileHandleId(fileInfo, &fileContext->fileHandle);
     if(retval != UA_STATUSCODE_GOOD) {
-        UA_ByteString_clear(&fileContext->file);
+        UA_NodeId_clear(&fileContext->sessionId);
+        UA_free(fileContext);
+        return retval;
+    }
+
+    /* Open the backend file in the requested mode */
+    retval = fileInfo->backend.openFile(&fileInfo->backend, fileInfo->path,
+                                         fileOpenMode,
+                                         &fileContext->backendFileContext);
+    if(retval != UA_STATUSCODE_GOOD) {
+        UA_NodeId_clear(&fileContext->sessionId);
         UA_free(fileContext);
         return retval;
     }
@@ -1158,7 +1292,8 @@ UA_GDSReceiver_openTrustList(UA_GDSReceiverContext *ctx, UA_CertificateGroup *ce
     retval = UA_Variant_setScalarCopy(output, &fileContext->fileHandle,
                                       &UA_TYPES[UA_TYPES_UINT32]);
     if(retval != UA_STATUSCODE_GOOD) {
-        UA_ByteString_clear(&fileContext->file);
+        releaseFileContextBackend(fileInfo, fileContext);
+        UA_NodeId_clear(&fileContext->sessionId);
         UA_free(fileContext);
         return retval;
     }
@@ -1794,12 +1929,16 @@ UA_GDSReceiver_free(UA_Driver *drv) {
 
         /* free all fileContexts in this fileInfo */
         LIST_FOREACH_SAFE(fileContext, &fi->fileContext, listEntry, fileContextTmp) {
-            UA_ByteString_clear(&fileContext->file);
-            UA_ByteString_clear(&fileContext->dataToWrite);
+            releaseFileContextBackend(fi, fileContext);
+            UA_NodeId_clear(&fileContext->sessionId);
             LIST_REMOVE(fileContext, listEntry);
             UA_free(fileContext);
         }
 
+        /* Clear the per-group in-memory backend and its fixed path */
+        if(fi->backend.clear)
+            fi->backend.clear(&fi->backend);
+        UA_String_clear(&fi->path);
         UA_free(fi);
         fi = next;
     }
