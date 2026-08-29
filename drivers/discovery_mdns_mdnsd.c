@@ -39,7 +39,6 @@
 #endif
 
 #define UA_MAXMDNSRECVSOCKETS 8
-#define UA_MAXMDNSSENDSOCKETS 8
 #define UA_MDNS_POLL_INTERVAL_MS 1000
 #define UA_MDNS_MAX_RECORD_NAME_LENGTH 256
 #define UA_MDNS_OPCUA_TCP_LOCAL "_opcua-tcp._tcp.local."
@@ -114,6 +113,11 @@ typedef struct ServerOnNetworkRecord {
     UA_UInt32 ttl;          /* Local: the interval before sending again */
 } ServerOnNetworkRecord;
 
+typedef struct MdnsSendConnection {
+    LIST_ENTRY(MdnsSendConnection) listPointers;
+    uintptr_t connectionId;
+} MdnsSendConnection;
+
 typedef struct {
     UA_MdnsDriver mdns;
 
@@ -122,7 +126,7 @@ typedef struct {
     mdns_daemon_t *mdnsDaemon;
 
     UA_ConnectionManager *cm;
-    uintptr_t mdnsSendConnections[UA_MAXMDNSSENDSOCKETS];
+    LIST_HEAD(, MdnsSendConnection) mdnsSendConnections;
     size_t mdnsSendConnectionsSize;
     uintptr_t mdnsRecvConnections[UA_MAXMDNSRECVSOCKETS];
     size_t mdnsRecvConnectionsSize;
@@ -525,17 +529,17 @@ flushMulticastMessages(MdnsdDriver *md) {
         char* buf = (char*)message_packet(&mm);
         if(len <= 0)
             continue;
-        for(size_t i = 0; i < UA_MAXMDNSSENDSOCKETS; i++) {
-            if(md->mdnsSendConnections[i] == 0)
-                continue;
+        MdnsSendConnection *sendConnection;
+        LIST_FOREACH(sendConnection, &md->mdnsSendConnections, listPointers) {
+            uintptr_t connectionId = sendConnection->connectionId;
             UA_ByteString sendBuf = UA_BYTESTRING_NULL;
-            UA_StatusCode rv = cm->allocNetworkBuffer(cm, md->mdnsSendConnections[i],
+            UA_StatusCode rv = cm->allocNetworkBuffer(cm, connectionId,
                                                       &sendBuf, (size_t)len);
             if(rv != UA_STATUSCODE_GOOD)
                 continue;
             memcpy(sendBuf.data, buf, sendBuf.length);
-            cm->sendWithConnection(cm, md->mdnsSendConnections[i],
-                                   &UA_KEYVALUEMAP_NULL, &sendBuf);
+            cm->sendWithConnection(cm, connectionId, &UA_KEYVALUEMAP_NULL,
+                                   &sendBuf);
         }
     }
 }
@@ -924,17 +928,23 @@ static void
 addConnection(MdnsdDriver *md, uintptr_t connectionId,
               UA_Boolean recv) {
     if(!recv) {
-        size_t freeSendIdx = UA_MAXMDNSSENDSOCKETS;
-        for(size_t i = 0; i < UA_MAXMDNSSENDSOCKETS; i++) {
-            uintptr_t sendConn = md->mdnsSendConnections[i];
-            if(sendConn == connectionId)
+        MdnsSendConnection *sendConnection;
+        LIST_FOREACH(sendConnection, &md->mdnsSendConnections, listPointers) {
+            if(sendConnection->connectionId == connectionId)
                 return;
-            if(sendConn == 0 && freeSendIdx == UA_MAXMDNSSENDSOCKETS)
-                freeSendIdx = i;
         }
-        if(freeSendIdx == UA_MAXMDNSSENDSOCKETS)
+
+        sendConnection = (MdnsSendConnection*)
+            UA_malloc(sizeof(MdnsSendConnection));
+        if(!sendConnection) {
+            UA_LOG_ERROR(md->logging, UA_LOGCATEGORY_DISCOVERY,
+                         "mDNS: Could not track UDP multicast send connection");
+            md->cm->closeConnection(md->cm, connectionId);
             return;
-        md->mdnsSendConnections[freeSendIdx] = connectionId;
+        }
+
+        sendConnection->connectionId = connectionId;
+        LIST_INSERT_HEAD(&md->mdnsSendConnections, sendConnection, listPointers);
         md->mdnsSendConnectionsSize++;
         return;
     }
@@ -955,10 +965,12 @@ addConnection(MdnsdDriver *md, uintptr_t connectionId,
 
 static void
 removeConnection(MdnsdDriver *md, uintptr_t connectionId) {
-    for(size_t i = 0; i < UA_MAXMDNSSENDSOCKETS; i++) {
-        if(md->mdnsSendConnections[i] != connectionId)
+    MdnsSendConnection *sendConnection;
+    LIST_FOREACH(sendConnection, &md->mdnsSendConnections, listPointers) {
+        if(sendConnection->connectionId != connectionId)
             continue;
-        md->mdnsSendConnections[i] = 0;
+        LIST_REMOVE(sendConnection, listPointers);
+        UA_free(sendConnection);
         md->mdnsSendConnectionsSize--;
         return;
     }
@@ -1467,9 +1479,11 @@ MdnsdDriver_stop(UA_Driver *drv) {
 
     /* Close the sockets (async) */
     if(md->cm) {
-        for(size_t i = 0; i < UA_MAXMDNSSENDSOCKETS; i++)
-            if(md->mdnsSendConnections[i] != 0)
-                md->cm->closeConnection(md->cm, md->mdnsSendConnections[i]);
+        MdnsSendConnection *sendConnection, *sendConnectionTmp;
+        LIST_FOREACH_SAFE(sendConnection, &md->mdnsSendConnections,
+                          listPointers, sendConnectionTmp) {
+            md->cm->closeConnection(md->cm, sendConnection->connectionId);
+        }
         for(size_t i = 0; i < UA_MAXMDNSRECVSOCKETS; i++)
             if(md->mdnsRecvConnections[i] != 0)
                 md->cm->closeConnection(md->cm, md->mdnsRecvConnections[i]);
@@ -1647,6 +1661,8 @@ UA_MdnsDriver_Mdnsd(const UA_KeyValueMap params) {
         UA_calloc(1, sizeof(MdnsdDriver));
     if(!md)
         return NULL;
+
+    LIST_INIT(&md->mdnsSendConnections);
 
     /* Copy over the parameters */
     UA_StatusCode res =
