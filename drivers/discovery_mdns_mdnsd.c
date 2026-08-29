@@ -24,7 +24,6 @@
 # include <winsock2.h>
 # include <iphlpapi.h>
 # include <ws2tcpip.h>
-# define ADDR_BUFFER_SIZE 15000 /* recommended size in the MSVC docs */
 #else
 # include <unistd.h>
 # include <sys/types.h>
@@ -1039,12 +1038,29 @@ createMultiSendConnections(MdnsdDriver *md, UA_KeyValueMap *kvm) {
     kvm->mapSize++;
     kvm->map[ifaceIdx].key = UA_QUALIFIEDNAME(0, "interface");
 #ifdef UA_ARCHITECTURE_WIN32
-    ULONG outBufLen = ADDR_BUFFER_SIZE;
-    char addrBuf[ADDR_BUFFER_SIZE];
-    PIP_ADAPTER_ADDRESSES ifaddr = (IP_ADAPTER_ADDRESSES *)addrBuf;
+    ULONG outBufLen = 0;
     ULONG flags = GAA_FLAG_SKIP_ANYCAST | GAA_FLAG_SKIP_MULTICAST |
                   GAA_FLAG_SKIP_DNS_SERVER | GAA_FLAG_SKIP_FRIENDLY_NAME;
-    GetAdaptersAddresses(AF_INET, flags, NULL, ifaddr, &outBufLen);
+    ULONG result = GetAdaptersAddresses(AF_INET, flags, NULL, NULL, &outBufLen);
+    if(result != ERROR_BUFFER_OVERFLOW || outBufLen == 0) {
+        kvm->mapSize--;
+        return;
+    }
+
+    PIP_ADAPTER_ADDRESSES ifaddr =
+        (PIP_ADAPTER_ADDRESSES)UA_malloc(outBufLen);
+    if(!ifaddr) {
+        kvm->mapSize--;
+        return;
+    }
+
+    result = GetAdaptersAddresses(AF_INET, flags, NULL, ifaddr, &outBufLen);
+    if(result != NO_ERROR) {
+        UA_free(ifaddr);
+        kvm->mapSize--;
+        return;
+    }
+
     for(PIP_ADAPTER_ADDRESSES ifa = ifaddr; ifa != NULL; ifa = ifa->Next) {
         for(PIP_ADAPTER_UNICAST_ADDRESS u = ifa->FirstUnicastAddress; u; u = u->Next) {
             LPSOCKADDR addr = u->Address.lpSockaddr;
@@ -1089,6 +1105,7 @@ createMultiSendConnections(MdnsdDriver *md, UA_KeyValueMap *kvm) {
             }
         }
     }
+    UA_free(ifaddr);
 #elif defined(UA_HAS_GETIFADDR)
         }
     }
