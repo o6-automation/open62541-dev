@@ -197,6 +197,8 @@ static THREAD_HANDLE serverThreadRegister;
 typedef struct {
     size_t openedListenConnections;
     size_t openedSendConnections;
+    size_t openedSendConnectionsWithInterface;
+    size_t openedSendConnectionsWithoutInterface;
     size_t sentMessages;
     size_t sentNonEmptyMessages;
     UA_ByteString lastMessage;
@@ -419,17 +421,25 @@ interceptingOpen(UA_ConnectionManager *cm, const UA_KeyValueMap *params,
     if(!intercept || !listen)
         return UA_STATUSCODE_BADINTERNALERROR;
 
-    if(*listen)
-        intercept->openedListenConnections++;
-    else
-        intercept->openedSendConnections++;
-
     uintptr_t connectionId;
     UA_StatusCode res =
         TestConnectionManager_createConnection(cm, application, context,
                                                callback, &connectionId);
     if(res != UA_STATUSCODE_GOOD)
         return res;
+
+    if(*listen) {
+        intercept->openedListenConnections++;
+    } else {
+        intercept->openedSendConnections++;
+        const UA_String *interfaceName = (const UA_String*)
+            UA_KeyValueMap_getScalar(params, UA_QUALIFIEDNAME(0, "interface"),
+                                     &UA_TYPES[UA_TYPES_STRING]);
+        if(interfaceName && interfaceName->length > 0)
+            intercept->openedSendConnectionsWithInterface++;
+        else
+            intercept->openedSendConnectionsWithoutInterface++;
+    }
 
     return TestConnectionManager_inject(cm, connectionId,
                                         UA_CONNECTIONSTATE_ESTABLISHED,
@@ -1665,9 +1675,33 @@ START_TEST(MdnsStartupTriggersSendPath) {
 }
 END_TEST
 
-START_TEST(MdnsStartupOpensReceiveAndSendConnections) {
+START_TEST(MdnsStartupOpensAndUsesSendConnections) {
     ck_assert_uint_eq(testUdpIntercept->openedListenConnections, 1);
-    ck_assert_uint_eq(testUdpIntercept->openedSendConnections, 1);
+    ck_assert_uint_gt(testUdpIntercept->openedSendConnections, 0);
+    ck_assert_uint_eq(testUdpIntercept->openedSendConnections,
+                      testUdpIntercept->openedSendConnectionsWithInterface +
+                      testUdpIntercept->openedSendConnectionsWithoutInterface);
+
+    /* Use interface-specific connections when enumeration succeeds. If it is
+     * unavailable or yields no usable address, retain one default connection. */
+    if(testUdpIntercept->openedSendConnectionsWithInterface > 0) {
+        ck_assert_uint_eq(
+            testUdpIntercept->openedSendConnectionsWithoutInterface, 0);
+    } else {
+        ck_assert_uint_eq(
+            testUdpIntercept->openedSendConnectionsWithoutInterface, 1);
+    }
+
+    /* The receive connection is opened first. Every subsequent connection is
+     * a send connection and must have transmitted the startup announcement. */
+    for(size_t i = 0; i < testUdpIntercept->openedSendConnections; i++) {
+        size_t txCount = 0;
+        ck_assert_uint_eq(TestConnectionManager_getCounters(
+                              testUdpCm, TEST_MDNS_RECV_CONNECTION_ID + 1 + i,
+                              NULL, &txCount),
+                          UA_STATUSCODE_GOOD);
+        ck_assert_uint_gt(txCount, 0);
+    }
 }
 END_TEST
 
@@ -2506,7 +2540,7 @@ testSuite_DiscoveryMdnsd(void) {
 #if defined(UA_ENABLE_DISCOVERY_MULTICAST_MDNSD)
     TCase *tc = tcase_create("Send path scaffolding");
     tcase_add_unchecked_fixture(tc, setup_server, teardown_server);
-    tcase_add_test(tc, MdnsStartupOpensReceiveAndSendConnections);
+    tcase_add_test(tc, MdnsStartupOpensAndUsesSendConnections);
     tcase_add_test(tc, MdnsStartupTriggersSendPath);
     tcase_add_test(tc, MdnsShutdownSendsSelfGoodbyeAndDrainsQueue);
     tcase_add_test(tc, MdnsUpdateOnlineOfflineTriggersSendPath);
