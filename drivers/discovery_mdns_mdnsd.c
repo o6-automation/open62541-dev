@@ -1006,6 +1006,8 @@ MulticastDiscoverySendCallback(UA_ConnectionManager *cm, uintptr_t connectionId,
                                state, params, msg, false);
 }
 
+#if defined(UA_ARCHITECTURE_WIN32) || defined(UA_HAS_GETIFADDR)
+
 static bool
 #ifdef UA_ARCHITECTURE_WIN32
 isAddressValid(LPSOCKADDR addr) {
@@ -1030,10 +1032,40 @@ isAddressValid(struct ifaddrs *ifa) {
     return false;
 }
 
-/* Open a send connection on every usable IPv4 interface */
-static void
+static UA_Boolean
+openSendConnectionForInterface(MdnsdDriver *md, UA_KeyValueMap *kvm,
+                               size_t ifaceIdx, const char *sourceAddr) {
+    UA_String ifaceAddr = UA_String_fromChars(sourceAddr);
+    UA_Variant_setScalar(&kvm->map[ifaceIdx].value, &ifaceAddr,
+                         &UA_TYPES[UA_TYPES_STRING]);
+    UA_StatusCode res = md->cm->openConnection(
+        md->cm, kvm, md->mdns.drv.server, md,
+        MulticastDiscoverySendCallback);
+    if(res == UA_STATUSCODE_GOOD)
+        UA_LOG_INFO(md->logging, UA_LOGCATEGORY_DISCOVERY,
+                    "mDNS: UDP multicast send connection created for '%S'",
+                    ifaceAddr);
+    else
+        UA_LOG_ERROR(md->logging, UA_LOGCATEGORY_DISCOVERY,
+                     "mDNS: Could not create the UDP multicast send "
+                     "connection for '%S'", ifaceAddr);
+    UA_String_clear(&ifaceAddr);
+    return res == UA_STATUSCODE_GOOD;
+}
+
+#endif
+
+/* Open a send connection on every usable IPv4 interface. Returns the number
+ * of connections whose opening was successfully initiated. */
+static size_t
 createMultiSendConnections(MdnsdDriver *md, UA_KeyValueMap *kvm) {
+#if !defined(UA_ARCHITECTURE_WIN32) && !defined(UA_HAS_GETIFADDR)
+    (void)md;
+    (void)kvm;
+    return 0;
+#else
     char sourceAddr[NI_MAXHOST];
+    size_t opened = 0;
     size_t ifaceIdx = kvm->mapSize;
     kvm->mapSize++;
     kvm->map[ifaceIdx].key = UA_QUALIFIEDNAME(0, "interface");
@@ -1044,21 +1076,21 @@ createMultiSendConnections(MdnsdDriver *md, UA_KeyValueMap *kvm) {
     ULONG result = GetAdaptersAddresses(AF_INET, flags, NULL, NULL, &outBufLen);
     if(result != ERROR_BUFFER_OVERFLOW || outBufLen == 0) {
         kvm->mapSize--;
-        return;
+        return 0;
     }
 
     PIP_ADAPTER_ADDRESSES ifaddr =
         (PIP_ADAPTER_ADDRESSES)UA_malloc(outBufLen);
     if(!ifaddr) {
         kvm->mapSize--;
-        return;
+        return 0;
     }
 
     result = GetAdaptersAddresses(AF_INET, flags, NULL, ifaddr, &outBufLen);
     if(result != NO_ERROR) {
         UA_free(ifaddr);
         kvm->mapSize--;
-        return;
+        return 0;
     }
 
     for(PIP_ADAPTER_ADDRESSES ifa = ifaddr; ifa != NULL; ifa = ifa->Next) {
@@ -1067,10 +1099,18 @@ createMultiSendConnections(MdnsdDriver *md, UA_KeyValueMap *kvm) {
             if(isAddressValid(addr)) {
                 inet_ntop(AF_INET, &((struct sockaddr_in *)addr)->sin_addr, sourceAddr,
                           sizeof(sourceAddr));
-#elif defined(UA_HAS_GETIFADDR)
+                opened += openSendConnectionForInterface(md, kvm, ifaceIdx,
+                                                         sourceAddr);
+            }
+        }
+    }
+    UA_free(ifaddr);
+#else
     struct ifaddrs *ifaddr;
-    if(getifaddrs(&ifaddr) == -1)
-        return;
+    if(getifaddrs(&ifaddr) == -1) {
+        kvm->mapSize--;
+        return 0;
+    }
     for(struct ifaddrs *ifa = ifaddr; ifa != NULL; ifa = ifa->ifa_next) {
         if(!ifa->ifa_addr)
             continue;
@@ -1080,41 +1120,15 @@ createMultiSendConnections(MdnsdDriver *md, UA_KeyValueMap *kvm) {
                             ? sizeof(struct sockaddr_in)
                             : sizeof(struct sockaddr_in6),
                         sourceAddr, NI_MAXHOST, NULL, 0, NI_NUMERICHOST);
-#else
-    if(false) {
-        {
-#endif
-#if defined(UA_ARCHITECTURE_WIN32) || defined(UA_HAS_GETIFADDR)
-                UA_String ifaceAddr = UA_String_fromChars(sourceAddr);
-                UA_Variant_setScalar(&kvm->map[ifaceIdx].value, &ifaceAddr,
-                                     &UA_TYPES[UA_TYPES_STRING]);
-                UA_StatusCode res = md->cm->openConnection(
-                    md->cm, kvm, md->mdns.drv.server, md,
-                    MulticastDiscoverySendCallback);
-                if(res == UA_STATUSCODE_GOOD)
-                    UA_LOG_INFO(md->logging, UA_LOGCATEGORY_DISCOVERY,
-                                "mDNS: UDP multicast send connection created for '%S'",
-                                ifaceAddr);
-                else
-                    UA_LOG_ERROR(md->logging, UA_LOGCATEGORY_DISCOVERY,
-                                 "mDNS: Could not create the UDP multicast send "
-                                 "connection for '%S'", ifaceAddr);
-                UA_String_clear(&ifaceAddr);
-#endif
-#ifdef UA_ARCHITECTURE_WIN32
-            }
-        }
-    }
-    UA_free(ifaddr);
-#elif defined(UA_HAS_GETIFADDR)
+            opened += openSendConnectionForInterface(md, kvm, ifaceIdx,
+                                                     sourceAddr);
         }
     }
     freeifaddrs(ifaddr);
-#else
-        }
-    }
 #endif
     kvm->mapSize--;
+    return opened;
+#endif
 }
 
 /* Create multicast 224.0.0.251:5353 socket */
@@ -1189,9 +1203,13 @@ createMulticastSocket(MdnsdDriver *md) {
     listen = false;
     if((md->announce || md->queryPresence || md->queryDetails) &&
        md->mdnsSendConnectionsSize == 0) {
-        if(md->interfaceName.length == 0) {
-            createMultiSendConnections(md, &kvm);
-        } else {
+        size_t opened = 0;
+        if(md->interfaceName.length == 0)
+            opened = createMultiSendConnections(md, &kvm);
+
+        /* Fall back to the ConnectionManager's default interface if explicit
+         * enumeration is unavailable or no per-interface connection opened. */
+        if(md->interfaceName.length > 0 || opened == 0) {
             res = md->cm->openConnection(md->cm, &kvm, md->mdns.drv.server, md,
                                          MulticastDiscoverySendCallback);
             if(res != UA_STATUSCODE_GOOD)
