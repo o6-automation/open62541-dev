@@ -8,7 +8,9 @@
 #include "ua_types_encoding_xml.h"
 
 #include <float.h>
+#include <limits.h>
 #include <math.h>
+#include <stdint.h>
 
 #include "../deps/itoa.h"
 #include "../deps/parse_num.h"
@@ -60,6 +62,9 @@ xml_tokenize(const char *xml, unsigned int len,
     memset(stack[top], 0, sizeof(xml_token));
 
     unsigned val_begin = 0;
+    unsigned lastContentPos[32];
+    for(size_t i = 0; i < 32; i++)
+        lastContentPos[i] = UINT_MAX;
     unsigned pos = 0;
     for(; pos < len; pos++) {
 #ifdef __clang_analyzer__
@@ -99,14 +104,46 @@ xml_tokenize(const char *xml, unsigned int len,
             stack[top]->start = (unsigned)(start - xml);
             tokenPos++;
             val_begin = 0; /* if the previous non-leaf element started to collect content */
+            lastContentPos[top] = UINT_MAX;
             break;
         }
         case YXML_CONTENT:
-        case YXML_ATTRVAL:
+        case YXML_ATTRVAL: {
+            unsigned eventBegin = pos;
+
+            /* yxml emits a single decoded CONTENT / ATTRVAL event when the
+             * semicolon of a character reference is consumed. Locate the
+             * ampersand so the raw token range includes the full reference.
+             * An ampersand in CDATA has already emitted a content event and
+             * therefore cannot be mistaken for a reference here. */
+            if(xml[pos] == ';') {
+                unsigned refBegin = pos;
+                while(refBegin > 0) {
+                    unsigned char c = (unsigned char)xml[refBegin - 1];
+                    if(c == '&') {
+                        refBegin--;
+                        break;
+                    }
+                    if((c < 'a' || c > 'z') && (c < 'A' || c > 'Z') &&
+                       (c < '0' || c > '9') && c != '#')
+                        break;
+                    refBegin--;
+                }
+                if(xml[refBegin] == '&' && refBegin < pos &&
+                   (lastContentPos[top] == UINT_MAX ||
+                    refBegin > lastContentPos[top])) {
+                    eventBegin = refBegin;
+                    if(xml_status == YXML_CONTENT)
+                        stack[top]->contentEscaped = true;
+                }
+            }
+
             if(val_begin == 0)
-                val_begin = pos;
+                val_begin = eventBegin;
             stack[top]->end = pos;
+            lastContentPos[top] = pos;
             break;
+        }
         case YXML_ELEMEND:
         case YXML_ATTREND:
             if(top == 0)
@@ -149,6 +186,72 @@ xml_tokenize(const char *xml, unsigned int len,
     return res;
 }
 
+/* Decode character references in an element token with yxml. This is done
+ * only for tokens marked by the first tokenization pass. Reparse the complete
+ * element so references in normal content are decoded while CDATA remains
+ * literal. */
+static status
+decodeEscapedTokenContent(const char *xml, xml_token *token) {
+    size_t decodedLength = 0;
+    UA_String decoded = UA_STRING_NULL;
+
+    for(unsigned pass = 0; pass < 2; pass++) {
+        yxml_t parser;
+        char parserStack[512];
+        yxml_init(&parser, parserStack, sizeof(parserStack));
+        unsigned depth = 0;
+        size_t outPos = 0;
+
+        for(unsigned pos = token->start; pos < token->end; pos++) {
+            yxml_ret_t event = yxml_parse(&parser, xml[pos]);
+            if(event < YXML_OK)
+                goto errout;
+            if(event == YXML_ELEMSTART) {
+                depth++;
+            } else if(event == YXML_ELEMEND) {
+                if(depth == 0)
+                    goto errout;
+                depth--;
+            } else if(event == YXML_CONTENT && depth == 1) {
+                size_t eventLength = strlen(parser.data);
+                if(pass == 1)
+                    memcpy(&decoded.data[outPos], parser.data, eventLength);
+                outPos += eventLength;
+            }
+        }
+        if(yxml_eof(&parser) != YXML_OK)
+            goto errout;
+
+        if(pass == 0) {
+            decodedLength = outPos;
+            if(decodedLength == 0) {
+                decoded.data = (UA_Byte*)UA_EMPTY_ARRAY_SENTINEL;
+                decoded.length = 0;
+            } else {
+                status ret = UA_ByteString_allocBuffer(&decoded, decodedLength);
+                if(ret != UA_STATUSCODE_GOOD)
+                    return ret;
+            }
+        }
+    }
+
+    token->content = decoded;
+    token->contentDecoded = true;
+    return UA_STATUSCODE_GOOD;
+
+ errout:
+    UA_String_clear(&decoded);
+    return UA_STATUSCODE_BADDECODINGERROR;
+}
+
+static void
+clearDecodedTokenContent(xml_token *tokens, size_t tokensSize) {
+    for(size_t i = 0; i < tokensSize; i++) {
+        if(tokens[i].contentDecoded)
+            UA_String_clear(&tokens[i].content);
+    }
+}
+
 /* Map for decoding a XML complex object type. An array of this is passed to the
  * decodeXmlFields function. If the xml element with name "fieldName" is found
  * in the xml complex object (mark as found) decode the value with the "function"
@@ -189,9 +292,16 @@ typedef struct {
 
 static status UA_INTERNAL_FUNC_ATTR_WARN_UNUSED_RESULT
 xmlEncodeWriteChars(CtxXml *ctx, const char *c, size_t len) {
-    if(ctx->pos + len > ctx->end)
+    if(ctx->calcOnly) {
+        uintptr_t pos = (uintptr_t)ctx->pos;
+        if(len > UINTPTR_MAX - pos)
+            return UA_STATUSCODE_BADENCODINGLIMITSEXCEEDED;
+        ctx->pos = (uint8_t*)(pos + len);
+        return UA_STATUSCODE_GOOD;
+    }
+    if(len > (size_t)(ctx->end - ctx->pos))
         return UA_STATUSCODE_BADENCODINGLIMITSEXCEEDED;
-    if(!ctx->calcOnly && len)
+    if(len)
         memcpy(ctx->pos, c, len);
     ctx->pos += len;
     return UA_STATUSCODE_GOOD;
@@ -1548,6 +1658,22 @@ UA_decodeXml(const UA_ByteString *src, void *dst, const UA_DataType *type,
         return UA_STATUSCODE_BADDECODINGERROR;
     }
 
+    /* Replace raw content containing character references with yxml's decoded
+     * representation before handing the tokens to datatype decoders. */
+    xml_token *parsedTokens = tokens + 1;
+    for(size_t i = 0; i < res.num_tokens; i++) {
+        if(!parsedTokens[i].contentEscaped)
+            continue;
+        UA_StatusCode ret = decodeEscapedTokenContent((char*)src->data,
+                                                      &parsedTokens[i]);
+        if(ret != UA_STATUSCODE_GOOD) {
+            clearDecodedTokenContent(parsedTokens, res.num_tokens);
+            if(tokens != tokenbuf)
+                UA_free(tokens);
+            return ret;
+        }
+    }
+
     /* Set up the context */
     ParseCtxXml ctx;
     memset(&ctx, 0, sizeof(ParseCtxXml));
@@ -1582,6 +1708,7 @@ UA_decodeXml(const UA_ByteString *src, void *dst, const UA_DataType *type,
         UA_clear(dst, type);
 
     /* Clean up */
+    clearDecodedTokenContent(parsedTokens, res.num_tokens);
     if(tokens != tokenbuf)
         UA_free(tokens);
     return ret;

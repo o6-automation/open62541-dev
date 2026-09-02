@@ -26,6 +26,8 @@ typedef struct {
     xml_token_type type;
     UA_String name;
     UA_String content;
+    UA_Boolean contentEscaped; /* Content contains an XML character reference */
+    UA_Boolean contentDecoded; /* Content is allocated and owned by the token */
     unsigned attributes; // For elements only: the number of attributes
     unsigned children;   // For elements only: the number of child elements
     unsigned start;      // First character of the token in the xml

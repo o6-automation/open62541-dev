@@ -364,6 +364,22 @@ START_TEST(xml_variant_array) {
     UA_Variant_clear(&dst);
 } END_TEST
 
+START_TEST(xml_variant_large_array_token_restart) {
+    UA_Variant src, dst;
+    UA_Variant_init(&src);
+    UA_Variant_init(&dst);
+    UA_Int32 arr[100];
+    for(size_t i = 0; i < 100; i++)
+        arr[i] = (UA_Int32)i;
+    UA_Variant_setArrayCopy(&src, arr, 100, &UA_TYPES[UA_TYPES_INT32]);
+    ck_assert_uint_eq(roundtripXml(&src, &UA_TYPES[UA_TYPES_VARIANT], &dst),
+                      UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(dst.arrayLength, 100);
+    ck_assert_int_eq(((UA_Int32*)dst.data)[99], 99);
+    UA_Variant_clear(&src);
+    UA_Variant_clear(&dst);
+} END_TEST
+
 START_TEST(xml_variant_double) {
     UA_Variant src, dst;
     UA_Variant_init(&src);
@@ -549,6 +565,24 @@ START_TEST(xml_decode_string) {
     UA_String_clear(&dst);
 } END_TEST
 
+START_TEST(xml_decode_character_references) {
+    UA_ByteString xml = UA_BYTESTRING(
+        "<String><![CDATA[&amp;]]> &#x20AC; &amp; goodbye</String>");
+    UA_String dst;
+    UA_String_init(&dst);
+    UA_StatusCode res = UA_decodeXml(&xml, &dst, &UA_TYPES[UA_TYPES_STRING], NULL);
+    ck_assert_uint_eq(res, UA_STATUSCODE_GOOD);
+    UA_String expected = UA_STRING("&amp; \xE2\x82\xAC & goodbye");
+    ck_assert(UA_String_equal(&dst, &expected));
+    UA_String_clear(&dst);
+
+    xml = UA_BYTESTRING("<Int32>&#52;2</Int32>");
+    UA_Int32 number = 0;
+    res = UA_decodeXml(&xml, &number, &UA_TYPES[UA_TYPES_INT32], NULL);
+    ck_assert_uint_eq(res, UA_STATUSCODE_GOOD);
+    ck_assert_int_eq(number, 42);
+} END_TEST
+
 int main(void) {
     Suite *s = suite_create("XML Encoding Ext");
 
@@ -594,6 +628,7 @@ int main(void) {
     tcase_add_test(tc_complex, xml_variant_string);
     tcase_add_test(tc_complex, xml_variant_empty);
     tcase_add_test(tc_complex, xml_variant_array);
+    tcase_add_test(tc_complex, xml_variant_large_array_token_restart);
     tcase_add_test(tc_complex, xml_variant_double);
     tcase_add_test(tc_complex, xml_variant_bool);
     tcase_add_test(tc_complex, xml_variant_nodeid);
@@ -613,6 +648,7 @@ int main(void) {
     tcase_add_test(tc_misc, xml_decode_double_neginf);
     tcase_add_test(tc_misc, xml_decode_double_nan);
     tcase_add_test(tc_misc, xml_decode_string);
+    tcase_add_test(tc_misc, xml_decode_character_references);
     suite_add_tcase(s, tc_misc);
 
     SRunner *sr = srunner_create(s);
