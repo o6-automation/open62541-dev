@@ -5,6 +5,8 @@
 #ifndef UA_CHECK_COMPAT_H_
 #define UA_CHECK_COMPAT_H_
 
+/* Set architecture feature macros before Check includes any system headers. */
+#include <open62541/config.h>
 #include <check.h>
 #include <string.h>
 
