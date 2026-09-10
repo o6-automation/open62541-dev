@@ -371,7 +371,8 @@ void
 notifyMonitoredItem(UA_Server *server, UA_MonitoredItem *mon,
                     UA_ApplicationNotificationType type) {
     /* Set up the key-value map */
-    UA_STATIC_THREAD_LOCAL UA_KeyValuePair notifyMonData[13] = {
+    /* Borrowed values belong to this notification only, including absent filters. */
+    UA_KeyValuePair notifyMonData[13] = {
         {{0, UA_STRING_STATIC("session-id")}, {0}},
         {{0, UA_STRING_STATIC("subscription-id")}, {0}},
         {{0, UA_STRING_STATIC("monitoreditem-id")}, {0}},

@@ -2329,6 +2329,39 @@ START_TEST(SubscribedDataSetUpdateRefreshesTargetVariables) {
     UA_NodeId_clear(&variable);
 } END_TEST
 
+START_TEST(HeartbeatWriterViaInformationModel) {
+    UA_NodeId connection = addPubSubConnection();
+    UA_WriterGroupConfig group = {0};
+    group.name = UA_STRING("HeartbeatGroup");
+    group.publishingInterval = 100;
+    group.encodingMimeType = UA_PUBSUB_ENCODING_UADP;
+    UA_NodeId groupId;
+    ck_assert_uint_eq(UA_Server_addWriterGroup(server, connection, &group, &groupId),
+                      UA_STATUSCODE_GOOD);
+    for(unsigned i = 0; i < 4; i++) {
+        UA_DataSetWriterDataType writer = {0};
+        writer.name = UA_STRING("Heartbeat");
+        writer.dataSetWriterId = 1;
+        writer.keyFrameCount = (i == 3) ? 1 : i;
+        if(i == 3)
+            writer.dataSetName = UA_STRING("MissingDataSet");
+        UA_Variant input;
+        UA_Variant_setScalar(&input, &writer, &UA_TYPES[UA_TYPES_DATASETWRITERDATATYPE]);
+        UA_CallMethodRequest request = {0};
+        request.objectId = groupId;
+        request.methodId = UA_NS0ID(WRITERGROUPTYPE_ADDDATASETWRITER);
+        request.inputArguments = &input;
+        request.inputArgumentsSize = 1;
+        UA_CallMethodResult result = UA_Server_call(server, &request);
+        UA_StatusCode expected = (i == 1) ? UA_STATUSCODE_GOOD :
+            ((i == 3) ? UA_STATUSCODE_BADPARENTNODEIDINVALID : UA_STATUSCODE_BADCONFIGURATIONERROR);
+        ck_assert_uint_eq(result.statusCode, expected);
+        UA_CallMethodResult_clear(&result);
+    }
+    UA_NodeId_clear(&groupId);
+    UA_NodeId_clear(&connection);
+} END_TEST
+
 START_TEST(WriterGroupTransport2PreservesAddress) {
     UA_NodeId connection = addPubSubConnection();
     UA_NetworkAddressUrlDataType address = {UA_STRING_NULL, UA_STRING("opc.udp://127.0.0.1:4841/")};
@@ -2415,6 +2448,7 @@ START_TEST(DataSetReaderAllowsNullSubscribedDataSet) {
 int main(void) {
     TCase *tc_add_pubsub_informationmodel_methods_connection = tcase_create("PubSub connection delete and creation using the information model methods");
     tcase_add_checked_fixture(tc_add_pubsub_informationmodel_methods_connection, setup, teardown);
+    tcase_add_test(tc_add_pubsub_informationmodel_methods_connection, HeartbeatWriterViaInformationModel);
     tcase_add_test(tc_add_pubsub_informationmodel_methods_connection, WriterGroupTransport2PreservesAddress);
     tcase_add_test(tc_add_pubsub_informationmodel_methods_connection, DataSetReaderAllowsNullSubscribedDataSet);
     tcase_add_test(tc_add_pubsub_informationmodel_methods_connection, FailedConnectionCreationRemovesEarlierGroups);

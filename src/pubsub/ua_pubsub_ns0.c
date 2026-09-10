@@ -568,16 +568,19 @@ addDataSetWriterConfig(UA_Server *server, const UA_NodeId *writerGroupId,
         return UA_STATUSCODE_BADINTERNALERROR;
 
     UA_NodeId publishedDataSetId = UA_NODEID_NULL;
-    UA_PublishedDataSet *tmpPDS;
-    TAILQ_FOREACH(tmpPDS, &psm->publishedDataSets, listEntry){
-        if(UA_String_equal(&dataSetWriter->dataSetName, &tmpPDS->config.name)) {
-            publishedDataSetId = tmpPDS->head.identifier;
-            break;
+    /* An empty DataSetName denotes a heartbeat writer with no PublishedDataSet.
+     * The core validates its KeyFrameCount. Resolve only named datasets here. */
+    if(dataSetWriter->dataSetName.length > 0) {
+        UA_PublishedDataSet *tmpPDS;
+        TAILQ_FOREACH(tmpPDS, &psm->publishedDataSets, listEntry) {
+            if(UA_String_equal(&dataSetWriter->dataSetName, &tmpPDS->config.name)) {
+                publishedDataSetId = tmpPDS->head.identifier;
+                break;
+            }
         }
+        if(UA_NodeId_isNull(&publishedDataSetId))
+            return UA_STATUSCODE_BADPARENTNODEIDINVALID;
     }
-
-    if(UA_NodeId_isNull(&publishedDataSetId))
-        return UA_STATUSCODE_BADPARENTNODEIDINVALID;
 
     /* We need now a DataSetWriter within the WriterGroup. This means we must
      * create a new DataSetWriterConfig and add call the addWriterGroup function. */

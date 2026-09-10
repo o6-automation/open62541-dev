@@ -139,6 +139,43 @@ monitoredItemLifecycleCallback(UA_Server *thisServer,
         UA_Server_deleteMonitoredItem(thisServer, *monitoredItemId);
 }
 
+static UA_Boolean expectNotificationFilter;
+static unsigned filterNotifications;
+static void
+checkNotificationFilter(UA_Server *thisServer, UA_ApplicationNotificationType type,
+                        const UA_KeyValueMap payload) {
+    if(type != UA_APPLICATIONNOTIFICATIONTYPE_MONITOREDITEM_CREATED &&
+       type != UA_APPLICATIONNOTIFICATIONTYPE_MONITOREDITEM_DELETED)
+        return;
+    const UA_Variant *filter = &payload.map[10].value;
+    if(expectNotificationFilter)
+        ck_assert(UA_Variant_hasScalarType(filter, &UA_TYPES[UA_TYPES_DATACHANGEFILTER]));
+    else
+        ck_assert_ptr_null(filter->type);
+    filterNotifications++;
+}
+
+START_TEST(Server_NotificationFilterDoesNotOutliveItem) {
+    UA_Server_getConfig(server)->globalNotificationCallback = checkNotificationFilter;
+    filterNotifications = 0;
+    for(unsigned i = 0; i < 2; i++) {
+        expectNotificationFilter = (i == 0);
+        UA_MonitoredItemCreateRequest request =
+            UA_MonitoredItemCreateRequest_default(outNodeId);
+        UA_DataChangeFilter filter = {0};
+        filter.trigger = UA_DATACHANGETRIGGER_STATUSVALUE;
+        if(expectNotificationFilter)
+            UA_ExtensionObject_setValueNoDelete(&request.requestedParameters.filter,
+                &filter, &UA_TYPES[UA_TYPES_DATACHANGEFILTER]);
+        UA_MonitoredItemCreateResult result = UA_Server_createDataChangeMonitoredItem(
+            server, UA_TIMESTAMPSTORETURN_BOTH, request, NULL, dataChangeNotificationCallback);
+        ck_assert_uint_eq(result.statusCode, UA_STATUSCODE_GOOD);
+        ck_assert_uint_eq(UA_Server_deleteMonitoredItem(server, result.monitoredItemId), UA_STATUSCODE_GOOD);
+        UA_MonitoredItemCreateResult_clear(&result);
+    }
+    ck_assert_uint_eq(filterNotifications, 4);
+} END_TEST
+
 START_TEST(Server_LocalMonitoredItem_deleteFromCreatedNotification) {
     UA_ServerConfig *config = UA_Server_getConfig(server);
     config->globalNotificationCallback = monitoredItemLifecycleCallback;
@@ -603,6 +640,7 @@ static Suite * testSuite_Client(void) {
     Suite *s = suite_create("Local Monitored Item");
     TCase *tc_server = tcase_create("Local Monitored Item Basic");
     tcase_add_checked_fixture(tc_server, setup, teardown);
+    tcase_add_test(tc_server, Server_NotificationFilterDoesNotOutliveItem);
     tcase_add_test(tc_server, Server_LocalMonitoredItem);
     tcase_add_test(tc_server,
                    Server_LocalMonitoredItem_deleteFromCreatedNotification);
