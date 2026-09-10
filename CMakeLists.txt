@@ -160,6 +160,8 @@ mark_as_advanced(UA_ENABLE_INLINABLE_EXPORT)
 # Drivers
 option(UA_ENABLE_DRIVER_GDS_PUSH "Enable the GDS Push driver" OFF)
 mark_as_advanced(UA_ENABLE_DRIVER_GDS_PUSH)
+option(UA_ENABLE_DRIVER_GDS_PULL "Enable the GDS Pull driver" OFF)
+mark_as_advanced(UA_ENABLE_DRIVER_GDS_PULL)
 option(UA_ENABLE_DRIVER_MDNS_AVAHI "Enable the Avahi mDNS discovery driver" OFF)
 mark_as_advanced(UA_ENABLE_DRIVER_MDNS_AVAHI)
 set(UA_ENABLE_DISCOVERY_MULTICAST_MDNSD OFF)
@@ -1003,6 +1005,13 @@ set(lib_sources ${PROJECT_SOURCE_DIR}/src/ua_types.c
                 ${PROJECT_SOURCE_DIR}/src/server/ua_services_securechannel.c
                 ${PROJECT_SOURCE_DIR}/src/server/ua_services_nodemanagement.c)
 
+if(UA_ENABLE_DRIVER_GDS_PULL)
+    list(APPEND lib_headers
+         ${PROJECT_SOURCE_DIR}/drivers/gds_common/gds_certificates.h)
+    list(APPEND lib_sources
+         ${PROJECT_SOURCE_DIR}/drivers/gds_common/gds_certificates.c)
+endif()
+
 if(UA_ENABLE_DRIVER_GDS_PUSH)
     list(APPEND exported_headers
          ${PROJECT_SOURCE_DIR}/include/open62541/driver/gds_push.h)
@@ -1013,6 +1022,13 @@ if(UA_ENABLE_DRIVER_GDS_PUSH)
          ${PROJECT_SOURCE_DIR}/drivers/gds_common/gds_core.c
          ${PROJECT_SOURCE_DIR}/drivers/gds_push/gds_push.c
          ${PROJECT_SOURCE_DIR}/drivers/gds_push/gds_push_ns0.c)
+endif()
+
+if(UA_ENABLE_DRIVER_GDS_PULL)
+    list(APPEND exported_headers
+         ${PROJECT_SOURCE_DIR}/include/open62541/driver/gds_pull.h)
+    list(APPEND lib_sources
+         ${PROJECT_SOURCE_DIR}/drivers/gds_pull/gds_pull.c)
 endif()
 
 if(UA_ENABLE_RBAC)

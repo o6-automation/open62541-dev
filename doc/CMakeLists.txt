@@ -96,6 +96,7 @@ generate_rst(${PROJECT_SOURCE_DIR}/include/open62541/plugin/securitypolicy.h ${D
 generate_rst(${PROJECT_SOURCE_DIR}/include/open62541/driver/mdns.h ${DOC_SRC_DIR}/driver_mdns.rst)
 generate_rst(${PROJECT_SOURCE_DIR}/include/open62541/driver/alarms_conditions.h ${DOC_SRC_DIR}/driver_alarms_conditions.rst)
 generate_rst(${PROJECT_SOURCE_DIR}/include/open62541/driver/gds_push.h ${DOC_SRC_DIR}/driver_gds_push.rst)
+generate_rst(${PROJECT_SOURCE_DIR}/include/open62541/driver/gds_pull.h ${DOC_SRC_DIR}/driver_gds_pull.rst)
 generate_rst(${PROJECT_SOURCE_DIR}/include/open62541/driver/file_transfer.h ${DOC_SRC_DIR}/driver_file_transfer.rst)
 
 # Doc from tutorial code
