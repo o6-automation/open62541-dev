@@ -14,6 +14,20 @@
 
 /* Defined by the GDS core of the GDS Push driver */
 #ifndef UA_ENABLE_DRIVER_GDS_PUSH
+UA_CertificateGroup *
+UA_GDS_getCertificateGroup(UA_ServerConfig *sc,
+                           const UA_NodeId *certificateGroupId) {
+    UA_NodeId applicationGroup =
+        UA_NS0ID(SERVERCONFIGURATION_CERTIFICATEGROUPS_DEFAULTAPPLICATIONGROUP);
+    UA_NodeId userTokenGroup =
+        UA_NS0ID(SERVERCONFIGURATION_CERTIFICATEGROUPS_DEFAULTUSERTOKENGROUP);
+    if(UA_NodeId_equal(certificateGroupId, &applicationGroup))
+        return &sc->secureChannelPKI;
+    if(UA_NodeId_equal(certificateGroupId, &userTokenGroup))
+        return &sc->sessionPKI;
+    return NULL;
+}
+
 UA_SecurityPolicy *
 UA_GDS_getSecPolicyByUri(UA_ServerConfig *sc, const UA_String *securityPolicyUri) {
     for(size_t i = 0; i < sc->securityPoliciesSize; i++) {
