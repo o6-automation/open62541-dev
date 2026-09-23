@@ -266,6 +266,14 @@ callWithMethodAndObject(UA_Server *server, UA_Session *session,
     /* Verify access rights */
     UA_Boolean executable = method->executable;
     if(session != &server->adminSession) {
+        /* getUserExecutableOnObject is documented as ADDITIONAL access control
+         * on top of getUserExecutable. Check the base callback as well, so a
+         * policy that denies there is honored and the UserExecutable attribute
+         * a client reads cannot disagree with what Call does. */
+        executable = executable && server->config.accessControl.
+            getUserExecutable(server, &server->config.accessControl,
+                              &session->sessionId, session->sessionHandle,
+                              &request->methodId, method->head.context);
         executable = executable && server->config.accessControl.
             getUserExecutableOnObject(server, &server->config.accessControl,
                                       &session->sessionId, session->sessionHandle,
