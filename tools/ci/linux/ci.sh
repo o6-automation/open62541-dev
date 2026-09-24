@@ -61,6 +61,18 @@ function ctest_args {
     printf '%s' "${args}"
 }
 
+# Evaluate the coverage data of the build directory for the Codecov upload.
+# Since GCC 8, gcov appends "*" to the count of an executed line that also
+# contains a never-executed block (e.g. "8*" for "if(!ctx) return err;").
+# Codecov's gcov parser cannot read such a count and drops the line. The line
+# then only shows up as a miss from jobs that do not run it at all, so adding
+# a job can lower the project coverage for code the change never touched.
+# Removing the marker counts these lines as executed, like lcov and gcovr do.
+function gcov_reports {
+    make gcov
+    find . -name '*.gcov' -exec sed -i -E 's/^( *)([0-9]+)\*:/ \1\2:/' {} +
+}
+
 #####################################
 # Build Documentation including PDF #
 #####################################
@@ -277,7 +289,7 @@ function unit_tests {
     set_capabilities
     make test ARGS="-V"
     if [ "$COVERAGE" = "ON" ]; then
-        make gcov
+        gcov_reports
     fi
 }
 
@@ -452,7 +464,7 @@ function unit_tests_nosub {
     make ${MAKEOPTS}
     set_capabilities
     make test ARGS="-V"
-    make gcov
+    gcov_reports
 }
 
 function unit_tests_diag {
@@ -472,7 +484,7 @@ function unit_tests_diag {
     make ${MAKEOPTS}
     set_capabilities
     make test ARGS="-V"
-    make gcov
+    gcov_reports
 }
 
 function unit_tests_mdnsd {
@@ -502,7 +514,7 @@ function unit_tests_mt {
     make ${MAKEOPTS}
     set_capabilities
     make test ARGS="-V"
-    make gcov
+    gcov_reports
 }
 
 function unit_tests_glib {
@@ -522,7 +534,7 @@ function unit_tests_glib {
     make ${MAKEOPTS}
     set_capabilities
     make test ARGS="-V"
-    make gcov
+    gcov_reports
 }
 
 function unit_tests_alarms {
@@ -540,7 +552,7 @@ function unit_tests_alarms {
     make ${MAKEOPTS}
     set_capabilities
     make test ARGS="-V"
-    make gcov
+    gcov_reports
 }
 
 function unit_tests_alarms_memcheck {
@@ -575,7 +587,7 @@ function unit_tests_encryption {
     make ${MAKEOPTS}
     set_capabilities
     make test ARGS="-V"
-    make gcov
+    gcov_reports
 }
 
 function unit_tests_encryption_mbedtls_pubsub {
@@ -592,7 +604,7 @@ function unit_tests_encryption_mbedtls_pubsub {
     make ${MAKEOPTS}
     set_capabilities
     make test ARGS="-V"
-    make gcov
+    gcov_reports
 }
 
 function unit_tests_pubsub_sks {
@@ -613,7 +625,7 @@ function unit_tests_pubsub_sks {
     # Never sharded: "-I" would index into the unfiltered list, not into "-R sks"
     local args; args="$(CTEST_SHARDS=1 ctest_args)"
     sudo -E bash -c "make test ARGS=\"${args} -R sks\""
-    make gcov
+    gcov_reports
 }
 
 ##########################################
