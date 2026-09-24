@@ -3,6 +3,22 @@ refactorings and bug fixes are not reported here.
 
 # Development
 
+### Optional Nodestore callbacks for single-reference edits
+
+`UA_Nodestore` has three new optional callbacks. `editReference` adds or
+removes one reference of a node, so AddReferences and DeleteReferences no
+longer need the editable node with its references. `beginReferenceEdit` and
+`finishReferenceEdit` take a checkpoint of the AddReferences source node and
+restore it if the inverse reference cannot be added. A Nodestore that leaves
+the callbacks NULL keeps the previous behavior. Nodestores that fill the
+`UA_Nodestore` structure field by field must set the new members to NULL.
+`UA_NODESTORE_HAS_EDITREFERENCE` is defined for code that builds against
+versions with and without the callbacks.
+
+The attribute mask and the references selected for `getEditNode` are a
+contract: the server accesses only the selected attributes and references
+through the returned node.
+
 ### A CertificateGroup without verifyCertificate accepts all certificates
 
 `UA_CertificateGroup_AcceptAll` now leaves `verifyCertificate` NULL, and the
