@@ -2450,10 +2450,25 @@ Operation_WriteWithNode(UA_Server *server, UA_Session *session,
 UA_Boolean
 Operation_Write(UA_Server *server, UA_Session *session,
                 const UA_WriteValue *wv, UA_StatusCode *result) {
+    /* Validating the written value reads DataType, ValueRank, ArrayDimensions,
+     * AccessLevel and WriteMask besides the attribute itself, so the editable
+     * node is requested with its complete attribute set. Writing the DataType,
+     * ValueRank or ArrayDimensions also checks the node against its type
+     * (forward HasTypeDefinition of a Variable, inverse HasSubtype of a
+     * VariableType), and a VariableType for subtypes and instances. */
+    UA_ReferenceTypeSet refs = UA_REFERENCETYPESET_NONE;
+    UA_BrowseDirection refDirection = UA_BROWSEDIRECTION_INVALID;
+    if(wv->attributeId == UA_ATTRIBUTEID_DATATYPE ||
+       wv->attributeId == UA_ATTRIBUTEID_VALUERANK ||
+       wv->attributeId == UA_ATTRIBUTEID_ARRAYDIMENSIONS) {
+        refs = UA_ReferenceTypeSet_union(
+            UA_REFTYPESET(UA_REFERENCETYPEINDEX_HASTYPEDEFINITION),
+            UA_REFTYPESET(UA_REFERENCETYPEINDEX_HASSUBTYPE));
+        refDirection = UA_BROWSEDIRECTION_BOTH;
+    }
     UA_Node *node =
-        UA_NODESTORE_GET_EDIT_SELECTIVE(server, &wv->nodeId, wv->attributeId,
-                                        UA_REFERENCETYPESET_NONE,
-                                        UA_BROWSEDIRECTION_INVALID);
+        UA_NODESTORE_GET_EDIT_SELECTIVE(server, &wv->nodeId, UA_NODEATTRIBUTESMASK_ALL,
+                                        refs, refDirection);
     if(!node) {
         *result = UA_STATUSCODE_BADNODEIDUNKNOWN;
         return true;
