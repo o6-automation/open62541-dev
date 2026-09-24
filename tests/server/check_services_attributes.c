@@ -2264,6 +2264,86 @@ START_TEST(ReadRequestsAttributeFromNodestore) {
     ns->getNode = originalGetNode;
 } END_TEST
 
+/* Records the selection with which Write gets the editable node */
+static UA_Node *
+(*originalGetEditNode)(UA_Nodestore *ns, const UA_NodeId *nodeId,
+                       UA_UInt32 attributeMask, UA_ReferenceTypeSet references,
+                       UA_BrowseDirection referenceDirections);
+static UA_Boolean editSelectionRecorded;
+static UA_UInt32 recordedEditMask;
+static UA_ReferenceTypeSet recordedEditReferences;
+static UA_BrowseDirection recordedEditDirection;
+
+static UA_Node *
+recordEditSelectionGetEditNode(UA_Nodestore *ns, const UA_NodeId *nodeId,
+                               UA_UInt32 attributeMask,
+                               UA_ReferenceTypeSet references,
+                               UA_BrowseDirection referenceDirections) {
+    const UA_NodeId answer = UA_NODEID_STRING(1, "the.answer");
+    if(!editSelectionRecorded && UA_NodeId_equal(nodeId, &answer)) {
+        recordedEditMask = attributeMask;
+        recordedEditReferences = references;
+        recordedEditDirection = referenceDirections;
+        editSelectionRecorded = true;
+    }
+    return originalGetEditNode(ns, nodeId, attributeMask, references,
+                               referenceDirections);
+}
+
+/* Validating a write reads several attributes of the node. Writing the
+ * DataType, ValueRank or ArrayDimensions also checks the node against its type,
+ * which is found through the HasTypeDefinition (Variable) or HasSubtype
+ * (VariableType) reference. A nodestore that honours the selection must be
+ * asked for those. */
+START_TEST(WriteRequestsTypeReferencesFromNodestore) {
+    UA_Nodestore *ns = UA_Server_getConfig(server)->nodestore;
+    originalGetEditNode = ns->getEditNode;
+    ns->getEditNode = recordEditSelectionGetEditNode;
+
+    UA_Int32 valueRank = -1;
+    UA_NodeId dataType = UA_NODEID_NUMERIC(0, UA_NS0ID_INT32);
+    UA_UInt32 arrayDimensions[] = {1};
+    UA_WriteValue wv;
+    UA_WriteValue_init(&wv);
+    wv.nodeId = UA_NODEID_STRING(1, "the.answer");
+    wv.value.hasValue = true;
+    for(size_t i = 0; i < 3; i++) {
+        if(i == 0) {
+            wv.attributeId = UA_ATTRIBUTEID_VALUERANK;
+            UA_Variant_setScalar(&wv.value.value, &valueRank, &UA_TYPES[UA_TYPES_INT32]);
+        } else if(i == 1) {
+            wv.attributeId = UA_ATTRIBUTEID_DATATYPE;
+            UA_Variant_setScalar(&wv.value.value, &dataType, &UA_TYPES[UA_TYPES_NODEID]);
+        } else {
+            wv.attributeId = UA_ATTRIBUTEID_ARRAYDIMENSIONS;
+            UA_Variant_setArray(&wv.value.value, arrayDimensions, 1,
+                                &UA_TYPES[UA_TYPES_UINT32]);
+        }
+        editSelectionRecorded = false;
+        UA_Server_write(server, &wv); /* the result is not the point here */
+        ck_assert(editSelectionRecorded);
+        ck_assert_uint_eq(recordedEditMask, UA_NODEATTRIBUTESMASK_ALL);
+        ck_assert(UA_ReferenceTypeSet_contains(&recordedEditReferences,
+                                               UA_REFERENCETYPEINDEX_HASTYPEDEFINITION));
+        ck_assert(UA_ReferenceTypeSet_contains(&recordedEditReferences,
+                                               UA_REFERENCETYPEINDEX_HASSUBTYPE));
+        ck_assert_int_eq(recordedEditDirection, UA_BROWSEDIRECTION_BOTH);
+    }
+
+    /* Writing the Value needs no references */
+    UA_Int32 value = 42;
+    wv.attributeId = UA_ATTRIBUTEID_VALUE;
+    UA_Variant_setScalar(&wv.value.value, &value, &UA_TYPES[UA_TYPES_INT32]);
+    editSelectionRecorded = false;
+    ck_assert_uint_eq(UA_Server_write(server, &wv), UA_STATUSCODE_GOOD);
+    ck_assert(editSelectionRecorded);
+    ck_assert_uint_eq(recordedEditMask, UA_NODEATTRIBUTESMASK_ALL);
+    ck_assert(!UA_ReferenceTypeSet_contains(&recordedEditReferences,
+                                            UA_REFERENCETYPEINDEX_HASTYPEDEFINITION));
+
+    ns->getEditNode = originalGetEditNode;
+} END_TEST
+
 /* AccessLevel vs. UserAccessLevel precedence. The admin session bypasses both
  * checks, so these tests go through a regular (non-admin) session. The
  * UserAccessLevel returned by the AccessControl plugin is set per test. */
@@ -2577,6 +2657,7 @@ static Suite * testSuite_services_attributes(void) {
     TCase *tc_attributeMask = tcase_create("attributeMask");
     tcase_add_checked_fixture(tc_attributeMask, setup, teardown);
     tcase_add_test(tc_attributeMask, ReadRequestsAttributeFromNodestore);
+    tcase_add_test(tc_attributeMask, WriteRequestsTypeReferencesFromNodestore);
     suite_add_tcase(s, tc_attributeMask);
 
     TCase *tc_accessLevel = tcase_create("accessLevel");
