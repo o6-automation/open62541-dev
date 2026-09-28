@@ -621,13 +621,14 @@ function unit_tests_pubsub_sks {
           -DUA_ENABLE_PUBSUB=ON \
           -DUA_ENABLE_PUBSUB_INFORMATIONMODEL=ON \
           -DUA_ENABLE_PUBSUB_SKS=ON \
+          -DUA_ENABLE_PUBSUB_FILE_CONFIG=ON \
           -DUA_ENABLE_UNIT_TESTS_MEMCHECK=ON \
           -DUA_FORCE_WERROR=ON \
           ..
     make ${MAKEOPTS}
-    # Never sharded: "-I" would index into the unfiltered list, not into "-R sks"
+    # Never sharded: "-I" would index into the unfiltered list, not into "-R"
     local args; args="$(CTEST_SHARDS=1 ctest_args)"
-    sudo -E bash -c "make test ARGS=\"${args} -R sks\""
+    sudo -E bash -c "make test ARGS=\"${args} -R 'sks|config2_filetype'\""
     make gcov
 }
 

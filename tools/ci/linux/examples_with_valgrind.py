@@ -38,6 +38,7 @@ server_needed_examples = {
         "client_event_filter":"ci_server 4840 server.cert.der server.key.der client.cert.der",
         "client_historical":"tutorial_server_historicaldata",
         "client_method_async":"ci_server 4840 server.cert.der server.key.der client.cert.der",
+        "client_pubsub_config2_update":"server_pubsub_file_configuration",
         "client_subscription_loop":"ci_server 4840 server.cert.der server.key.der client.cert.der",
         "custom_datatype_client":"custom_datatype_server",
         "discovery_client_find_servers":"discovery_server_lds",
