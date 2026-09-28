@@ -33,9 +33,13 @@ the file format:
   created by the new `UA_PubSubConfiguration_createReferences`. The top-level
   Enabled field is ignored as for CloseAndUpdate; the added components are
   enabled according to their own enabled flags.
-- The vendor-defined method "PubSub configuration" below PublishSubscribe
-  replaces the configuration with the elements of the file in one complete
-  update.
+- The standard `PubSubConfiguration` FileType object below PublishSubscribe
+  is functional with the PubSub information model, the full namespace zero
+  and a file-transfer driver added to the server:
+  Open/Close/Read/Write/GetPosition/SetPosition/CloseAndUpdate.
+- The vendor-defined method nodes "PubSub configuration" and "Delete PubSub
+  config" below PublishSubscribe are removed. They are superseded by the
+  `PubSubConfiguration` FileType object.
 - The information model methods (AddConnection, AddWriterGroup, ...) convert
   their arguments with the same mapping and take all fields of the DataTypes.
 

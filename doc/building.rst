@@ -378,9 +378,10 @@ PubSub Build Options
 
 **UA_ENABLE_PUBSUB_FILE_CONFIG**
    Enable the PubSubConfiguration file of OPC UA Part 14 (read and update the
-   PubSub configuration as a file). Enabling the PubSub information model
-   also adds a method to the Publish/Subscribe object which replaces the
-   configuration with a file at runtime. Disabled by default.
+   PubSub configuration as a file). With the PubSub information model, the
+   full namespace zero and a file-transfer driver the standard
+   PubSubConfiguration FileType object below PublishSubscribe is available
+   for clients. Disabled by default.
 
 **UA_ENABLE_PUBSUB_INFORMATIONMODEL**
    Enable the information model representation of the PubSub configuration. For

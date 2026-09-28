@@ -993,6 +993,16 @@ UA_Server_updateSubscribedDataSetConfig(UA_Server *server, const UA_NodeId id,
  *   elements of a file. A complete file is loaded with the references for
  *   Add in one complete update. The elements of a file are replaced with the
  *   references for Remove and Add of the same file in one complete update.
+ * - For OPC UA clients the ``PubSubConfiguration`` FileType object below
+ *   ``PublishSubscribe``. It requires the PubSub information model, the full
+ *   namespace zero and a file-transfer driver added to the server (see
+ *   ``open62541/driver/file_transfer.h``). Open supports the modes Read
+ *   (0x01), Read+Write (0x03) and Write+EraseExisting (0x06). The content is
+ *   generated when the file is opened. Written content stays in the file
+ *   handle -- a plain Close discards it, CloseAndUpdate applies the element
+ *   operations of the references and closes the handle. The file handles are
+ *   managed by the driver (bound to the session, parallel readers or one
+ *   writer).
  *
  * Interaction with the state machine:
  *
