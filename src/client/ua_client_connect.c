@@ -2720,8 +2720,10 @@ UA_Client_startListeningForReverseConnect(UA_Client *client,
     client->channel.connectionId = 0;
 
     setConnectStatus(client, initSecurityPolicy(client));
-    if(client->connectStatus != UA_STATUSCODE_GOOD)
+    if(client->connectStatus != UA_STATUSCODE_GOOD) {
+        unlockClient(client);
         return client->connectStatus;
+    }
 
     UA_EventLoop *el = client->config.eventLoop;
     if(!el) {
