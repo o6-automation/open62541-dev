@@ -122,6 +122,15 @@ endpointUnconfigured(const UA_EndpointDescription *endpoint) {
     return UA_equal(&tmp, endpoint, &UA_TYPES[UA_TYPES_ENDPOINTDESCRIPTION]);
 }
 
+/* An exact endpoint was configured. Use it. */
+static UA_StatusCode
+useConfiguredEndpoint(UA_Client *client) {
+    if(endpointUnconfigured(&client->config.endpoint))
+        return UA_STATUSCODE_GOOD;
+    UA_EndpointDescription_clear(&client->endpoint);
+    return UA_EndpointDescription_copy(&client->config.endpoint, &client->endpoint);
+}
+
 UA_Boolean
 isFullyConnected(UA_Client *client) {
     /* No SecureChannel */
@@ -2289,16 +2298,10 @@ initConnect(UA_Client *client) {
         return;
     }
 
-    UA_StatusCode res;
-
-    /* An exact endpoint was configured. Use it. */
-    if(!endpointUnconfigured(&client->config.endpoint)) {
-        UA_EndpointDescription_clear(&client->endpoint);
-        res = UA_EndpointDescription_copy(&client->config.endpoint, &client->endpoint);
-        if(res != UA_STATUSCODE_GOOD) {
-            setConnectStatus(client, res);
-            return;
-        }
+    UA_StatusCode res = useConfiguredEndpoint(client);
+    if(res != UA_STATUSCODE_GOOD) {
+        setConnectStatus(client, res);
+        return;
     }
 
     /* Start the EventLoop if not already started */
@@ -2719,7 +2722,11 @@ UA_Client_startListeningForReverseConnect(UA_Client *client,
     client->channel.processOPNHeaderApplication = client;
     client->channel.connectionId = 0;
 
-    setConnectStatus(client, initSecurityPolicy(client));
+    /* Initialize the SecurityPolicy from the configured endpoint (if any) */
+    res = useConfiguredEndpoint(client);
+    if(res == UA_STATUSCODE_GOOD)
+        res = initSecurityPolicy(client);
+    setConnectStatus(client, res);
     if(client->connectStatus != UA_STATUSCODE_GOOD) {
         unlockClient(client);
         return client->connectStatus;
