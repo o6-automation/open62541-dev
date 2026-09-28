@@ -1952,9 +1952,11 @@ updateConfig2(UA_PubSubManager *psm, const UA_PubSubConfiguration2DataType *cfg,
     }
 
     result->changesApplied = anyApplied;
-    if(anyApplied)
+    if(anyApplied) {
         psm->configurationVersion =
             UA_PubSubConfigurationVersionTimeDifference(UA_DateTime_now());
+        psm->configFileLastModified = UA_DateTime_now();
+    }
 
     UA_free(ops);
     return UA_STATUSCODE_GOOD;

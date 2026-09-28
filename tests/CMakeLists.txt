@@ -535,6 +535,10 @@ if(UA_ENABLE_PUBSUB)
             UA_TEST_PUBSUB_CONFIG_DIR="${CMAKE_CURRENT_SOURCE_DIR}/pubsub/")
         ua_add_test(pubsub/check_pubsub_config2_incremental.c)
         ua_add_test(pubsub/check_pubsub_config2_state.c)
+        if(UA_ENABLE_PUBSUB_INFORMATIONMODEL AND UA_ENABLE_METHODCALLS AND
+           UA_NAMESPACE_ZERO STREQUAL "FULL")
+            ua_add_test(pubsub/check_pubsub_config2_filetype.c)
+        endif()
     endif()
 endif()
 

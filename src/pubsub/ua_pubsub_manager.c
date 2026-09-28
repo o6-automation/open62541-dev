@@ -988,9 +988,29 @@ UA_PubSubManager_clear(UA_PubSubManager *psm) {
     return UA_STATUSCODE_GOOD;
 }
 
+#if defined(UA_ENABLE_PUBSUB_FILE_CONFIG) && \
+    defined(UA_ENABLE_PUBSUB_INFORMATIONMODEL) && defined(UA_ENABLE_METHODCALLS) && \
+    defined(UA_GENERATED_NAMESPACE_ZERO_FULL)
+# define UA_PUBSUB_CONFIGFILE_OBJECT
+#endif
+
+#ifdef UA_PUBSUB_CONFIGFILE_OBJECT
+/* The drivers are started before the server lifecycle is STARTED. The
+ * PubSubConfiguration object is then attached to the file-transfer driver. */
+static void
+UA_PubSubManager_notification(UA_Driver *drv, UA_ApplicationNotificationType type,
+                              const UA_KeyValueMap payload) {
+    if(type == UA_APPLICATIONNOTIFICATIONTYPE_LIFECYCLE_STARTED)
+        UA_PubSubManager_attachConfigFile((UA_PubSubManager*)drv);
+}
+#endif
+
 static UA_StatusCode
 UA_PubSubManager_free(UA_Driver *drv) {
     UA_PubSubManager *psm = (UA_PubSubManager *)drv;
+#ifdef UA_PUBSUB_CONFIGFILE_OBJECT
+    UA_PubSubManager_detachConfigFile(psm);
+#endif
     UA_StatusCode res = UA_PubSubManager_clear(psm);
     if(res == UA_STATUSCODE_GOOD)
         UA_free(psm);
@@ -1008,6 +1028,10 @@ UA_PubSubManager_new(UA_Server *server) {
     psm->drv.start = UA_PubSubManager_start;
     psm->drv.stop = UA_PubSubManager_stop;
     psm->drv.free = UA_PubSubManager_free;
+#ifdef UA_PUBSUB_CONFIGFILE_OBJECT
+    psm->drv.notificationCallback = UA_PubSubManager_notification;
+    psm->drv.notificationFilter = UA_APPLICATIONNOTIFICATIONTYPE_LIFECYCLE;
+#endif
 
     /* Set the logging shortcut */
     psm->logging = server->config.logging;

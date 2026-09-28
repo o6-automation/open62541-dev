@@ -839,6 +839,9 @@ struct UA_PubSubManager {
      * updated on every successful configuration change. */
     UA_UInt32 configurationVersion;
     UA_KeyValueMap configurationProperties;
+#ifdef UA_ENABLE_PUBSUB_FILE_CONFIG
+    UA_DateTime configFileLastModified; /* Last update that applied changes */
+#endif
     size_t defaultSecurityKeyServicesSize;
     UA_EndpointDescription *defaultSecurityKeyServices;
 
@@ -938,6 +941,17 @@ UA_PubSubManager_updateConfigFile(UA_PubSubManager *psm, const UA_ByteString *fi
                                   const UA_PubSubConfigurationRefDataType *refs,
                                   UA_Boolean requireCompleteUpdate,
                                   UA_PubSubConfigurationUpdateResult *result);
+
+#if defined(UA_ENABLE_PUBSUB_INFORMATIONMODEL) && defined(UA_ENABLE_METHODCALLS) && \
+    defined(UA_GENERATED_NAMESPACE_ZERO_FULL)
+/* Serve the PubSubConfiguration FileType object with the file-transfer driver
+ * if the server has one (Part 14 9.1.3.7.1) */
+void
+UA_PubSubManager_attachConfigFile(UA_PubSubManager *psm);
+
+void
+UA_PubSubManager_detachConfigFile(UA_PubSubManager *psm);
+#endif
 
 #endif /* UA_ENABLE_PUBSUB_FILE_CONFIG */
 
