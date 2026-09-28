@@ -818,6 +818,8 @@ UA_Client_renewSecureChannel(UA_Client *client) {
 static void
 responseReadNamespacesArray(UA_Client *client, void *userdata,
                             UA_UInt32 requestId, void *response) {
+    /* The handshake is done also if the read fails. Otherwise the client never
+     * becomes fully connected. The flag is reset when the channel closes. */
     client->namespacesHandshake = false;
     client->haveNamespaces = true;
 
@@ -848,6 +850,7 @@ responseReadNamespacesArray(UA_Client *client, void *userdata,
                      "Read NamespaceArray returned too few entries");
         return;
     }
+    UA_String_clear(&client->namespaces[1]);
     UA_String_copy(&ns[1], &client->namespaces[1]);
     for(size_t i = 2; i < nsSize; ++i) {
         UA_UInt16 nsIndex = 0;
@@ -2177,8 +2180,11 @@ __Client_networkCallback(UA_ConnectionManager *cm, uintptr_t connectionId,
          * Requests immediately. */
         __Client_AsyncService_removeAll(client, UA_STATUSCODE_BADSECURECHANNELCLOSED);
 
-        /* Clean up the channel and set the status to CLOSED */
+        /* Clean up the channel and set the status to CLOSED. This deletes the
+         * NamespaceMapping. Read the NamespaceArray again after the next
+         * Session activation. */
         UA_SecureChannel_clear(&client->channel);
+        client->haveNamespaces = false;
 
         /* The connection closed before it actually opened. Since we are
          * connecting asynchronously, this happens when the TCP connection
@@ -2315,6 +2321,7 @@ initConnect(UA_Client *client) {
 
     /* Initialize the SecureChannel */
     UA_SecureChannel_clear(&client->channel);
+    client->haveNamespaces = false;
     client->channel.config = client->config.localConnectionConfig;
     client->channel.processOPNHeader = verifyClientSecureChannelHeader;
     client->channel.processOPNHeaderApplication = client;
@@ -2717,6 +2724,7 @@ UA_Client_startListeningForReverseConnect(UA_Client *client,
     client->channel.renewState = UA_SECURECHANNELRENEWSTATE_NORMAL;
 
     UA_SecureChannel_init(&client->channel);
+    client->haveNamespaces = false;
     client->channel.config = client->config.localConnectionConfig;
     client->channel.processOPNHeader = verifyClientSecureChannelHeader;
     client->channel.processOPNHeaderApplication = client;
