@@ -1,6 +1,8 @@
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/.
+ *
+ *    Copyright 2026 (c) o6 Automation GmbH (Author: Andreas Ebner)
  */
 
 #ifndef UA_DRIVER_FILE_TRANSFER_H_
@@ -41,8 +43,11 @@
  * instead of copying them, so the Part 20 Methods of *every*
  * FileType/FileDirectoryType Object in the server are answered by the driver,
  * which rejects Objects it does not manage. An application that implements
- * FileType Objects itself must not run this driver at the same time. Stopping
- * the driver releases the Method nodes again. */
+ * FileType Objects with these shared Method nodes itself must not run this
+ * driver at the same time. Stopping the driver releases the Method nodes
+ * again. Objects with their own Method nodes (e.g. the instance declarations
+ * of a FileType subtype) are only served when they are attached with
+ * attachFile. */
 
 #if defined(UA_ENABLE_METHODCALLS) && defined(UA_GENERATED_NAMESPACE_ZERO_FULL)
 
@@ -337,6 +342,61 @@ struct UA_FileTransferDriver {
      * @return The StatusCode of the operation */
     UA_StatusCode (*refresh)(UA_FileTransferDriver *driver,
                              const UA_NodeId directoryNodeId);
+
+    /* Serve an existing FileType Object, e.g. an Object of a FileType subtype
+     * defined by a companion specification. The driver provides the Properties
+     * and answers the FileType Methods of the Object. Methods of the Object
+     * that are not instances of the FileType Methods (e.g. CloseAndUpdate of
+     * Part 14) stay with the application, see getHandleContext. The Object is
+     * not deleted by the driver.
+     *
+     * @param driver The file transfer driver
+     * @param fileNodeId The existing FileType Object
+     * @param backend The storage backend for this file
+     * @param path The backend path of the file. Must exist.
+     * @param options Mount options. NULL selects the defaults.
+     * @return The StatusCode of the operation */
+    UA_StatusCode (*attachFile)(UA_FileTransferDriver *driver,
+                                const UA_NodeId fileNodeId,
+                                UA_FileTransferBackend backend,
+                                const UA_String path,
+                                const UA_FileTransferMountOptions *options);
+
+    /* Stop serving an Object attached with attachFile. Open handles are
+     * closed. The Object is kept.
+     *
+     * @param driver The file transfer driver
+     * @param fileNodeId The attached FileType Object
+     * @return The StatusCode of the operation */
+    UA_StatusCode (*detachFile)(UA_FileTransferDriver *driver,
+                                const UA_NodeId fileNodeId);
+
+    /* The open mode and the backend file context of a file handle returned by
+     * the Open Method of the file Object. Used by the Methods of a FileType
+     * subtype that work on an open file.
+     *
+     * @param driver The file transfer driver
+     * @param fileNodeId The file Object
+     * @param sessionId The Session that opened the file
+     * @param fileHandle The file handle
+     * @param mode The open mode (can be NULL)
+     * @param backendFileContext The file context of the backend (can be NULL)
+     * @return Bad_InvalidArgument for an unknown handle */
+    UA_StatusCode (*getHandleContext)(UA_FileTransferDriver *driver,
+                                      const UA_NodeId fileNodeId,
+                                      const UA_NodeId *sessionId,
+                                      UA_UInt32 fileHandle, UA_Byte *mode,
+                                      void **backendFileContext);
+
+    /* Close a file handle as the Close Method does
+     *
+     * @param driver The file transfer driver
+     * @param sessionId The Session that opened the file
+     * @param fileHandle The file handle
+     * @return The StatusCode of the backend closeFile */
+    UA_StatusCode (*closeHandle)(UA_FileTransferDriver *driver,
+                                 const UA_NodeId *sessionId,
+                                 UA_UInt32 fileHandle);
 };
 
 UA_EXPORT UA_FileTransferDriver *

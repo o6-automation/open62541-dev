@@ -64,6 +64,7 @@ struct FTMount {
     UA_FileTransferBackend backend;
     UA_FileTransferMountOptions options;
     UA_Boolean standaloneFile; /* Created via addFile (no directory tree) */
+    UA_Boolean attached;       /* An existing Object (attachFile) */
 };
 
 typedef struct FileTransferDriver {
@@ -87,6 +88,10 @@ UA_Boolean backendComplete(const UA_FileTransferBackend *b,
                            UA_Boolean standaloneFile, UA_Boolean readOnly);
 UA_StatusCode registerFileTransferMethodCallbacks(UA_Server *server);
 void unregisterFileTransferMethodCallbacks(UA_Server *server);
+/* Set or release the FileType Method callbacks and the Property value sources
+ * of an Object attached with attachFile */
+UA_StatusCode setAttachedFileCallbacks(UA_Server *server, FTNode *node,
+                                       UA_Boolean install);
 
 /* driver.c -- registry and handle primitives, used across all sub-files */
 FTNode *findFTNode(FileTransferDriver *ftd, const UA_NodeId *nodeId);

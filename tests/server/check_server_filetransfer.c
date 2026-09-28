@@ -9,6 +9,7 @@
 #include <open62541/driver/file_transfer.h>
 #include <open62541/server_config_default.h>
 #include "test_helpers.h"
+#include "ua_server_internal.h"
 
 #include <check.h>
 #include <stdlib.h>
@@ -2366,6 +2367,114 @@ START_TEST(mountRejectsUnknownNamespace) {
     ck_assert(UA_NodeId_isNull(&fsId));
 } END_TEST
 
+/* Call a Method node of the object by its BrowseName */
+static UA_CallMethodResult
+callObjectMethod(const UA_NodeId objectId, const char *name,
+                 size_t inputSize, UA_Variant *input) {
+    UA_CallMethodRequest request;
+    UA_CallMethodRequest_init(&request);
+    request.objectId = objectId;
+    request.methodId = resolveChild(server_ft, objectId, name);
+    request.inputArgumentsSize = inputSize;
+    request.inputArguments = input;
+    UA_CallMethodResult result = UA_Server_call(server_ft, &request);
+    UA_NodeId_clear(&request.methodId);
+    return result;
+}
+
+/* An existing Object with its own instances of the FileType Methods is served
+ * by the driver. The Methods work on the handles of the driver and the Object
+ * is kept when it is detached. */
+START_TEST(attachExistingFile) {
+    UA_ServerConfig *config = UA_Server_getConfig(server_ft);
+    config->copyMethodsOnInstances = true;
+    UA_NodeId fileId = addFileTypeInstance(server_ft, "AttachedFile");
+    config->copyMethodsOnInstances = false;
+    UA_NodeId openId = resolveChild(server_ft, fileId, "Open");
+    UA_NodeId typeOpenId = UA_NS0ID(FILETYPE_OPEN);
+    ck_assert(!UA_NodeId_equal(&openId, &typeOpenId));
+    UA_NodeId_clear(&openId);
+
+    ck_assert_uint_eq(ftDriver->attachFile(ftDriver, fileId,
+                                           memBackendWithFile("f.bin", "attached"),
+                                           UA_STRING("f.bin"), NULL),
+                      UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(ftDriver->attachFile(ftDriver, fileId,
+                                           memBackendWithFile("f.bin", NULL),
+                                           UA_STRING("f.bin"), NULL),
+                      UA_STATUSCODE_BADNODEIDEXISTS);
+    ck_assert_uint_eq(ftDriver->removeFile(ftDriver, fileId),
+                      UA_STATUSCODE_BADNOTFOUND);
+
+    /* Open and read with the Methods of the Object */
+    UA_Byte mode = UA_OPENFILEMODE_READ | UA_OPENFILEMODE_WRITE;
+    UA_Variant input[2];
+    UA_Variant_setScalar(&input[0], &mode, &UA_TYPES[UA_TYPES_BYTE]);
+    UA_CallMethodResult result = callObjectMethod(fileId, "Open", 1, input);
+    ck_assert_uint_eq(result.statusCode, UA_STATUSCODE_GOOD);
+    UA_UInt32 handle = *(UA_UInt32*)result.outputArguments[0].data;
+    UA_CallMethodResult_clear(&result);
+    ck_assert_uint_eq(readOpenCount(fileId), 1);
+
+    UA_Int32 length = 100;
+    UA_Variant_setScalar(&input[0], &handle, &UA_TYPES[UA_TYPES_UINT32]);
+    UA_Variant_setScalar(&input[1], &length, &UA_TYPES[UA_TYPES_INT32]);
+    result = callObjectMethod(fileId, "Read", 2, input);
+    ck_assert_uint_eq(result.statusCode, UA_STATUSCODE_GOOD);
+    UA_ByteString expected = UA_BYTESTRING("attached");
+    ck_assert(UA_ByteString_equal((UA_ByteString*)result.outputArguments[0].data,
+                                  &expected));
+    UA_CallMethodResult_clear(&result);
+
+    /* The handle is available to the application and can be closed */
+    const UA_NodeId *sessionId = &server_ft->adminSession.sessionId;
+    UA_Byte handleMode = 0;
+    void *fileContext = NULL;
+    ck_assert_uint_eq(ftDriver->getHandleContext(ftDriver, fileId, sessionId,
+                                                 handle, &handleMode, &fileContext),
+                      UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(handleMode, mode);
+    ck_assert_ptr_nonnull(fileContext);
+    ck_assert_uint_eq(ftDriver->getHandleContext(ftDriver, UA_NS0ID(OBJECTSFOLDER),
+                                                 sessionId, handle, NULL, NULL),
+                      UA_STATUSCODE_BADINVALIDARGUMENT);
+    ck_assert_uint_eq(ftDriver->closeHandle(ftDriver, sessionId, handle),
+                      UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(readOpenCount(fileId), 0);
+    ck_assert_uint_eq(ftDriver->getHandleContext(ftDriver, fileId, sessionId,
+                                                 handle, NULL, NULL),
+                      UA_STATUSCODE_BADINVALIDARGUMENT);
+
+    /* Detaching closes the handles and keeps the Object */
+    UA_Variant_setScalar(&input[0], &mode, &UA_TYPES[UA_TYPES_BYTE]);
+    result = callObjectMethod(fileId, "Open", 1, input);
+    ck_assert_uint_eq(result.statusCode, UA_STATUSCODE_GOOD);
+    UA_CallMethodResult_clear(&result);
+    ck_assert_uint_eq(ftDriver->detachFile(ftDriver, fileId), UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(ftDriver->detachFile(ftDriver, fileId),
+                      UA_STATUSCODE_BADNOTFOUND);
+    UA_NodeClass nodeClass;
+    ck_assert_uint_eq(UA_Server_readNodeClass(server_ft, fileId, &nodeClass),
+                      UA_STATUSCODE_GOOD);
+    UA_Variant value;
+    readProperty(fileId, "Size", &value);
+    UA_Variant_clear(&value);
+    result = callObjectMethod(fileId, "Open", 1, input);
+    ck_assert_uint_ne(result.statusCode, UA_STATUSCODE_GOOD);
+    UA_CallMethodResult_clear(&result);
+
+    /* Attach again, the driver releases the Object when it is freed */
+    ck_assert_uint_eq(ftDriver->attachFile(ftDriver, fileId,
+                                           memBackendWithFile("f.bin", "again"),
+                                           UA_STRING("f.bin"), NULL),
+                      UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(ftDriver->attachFile(ftDriver, UA_NODEID_NUMERIC(1, 999999),
+                                           memBackendWithFile("f.bin", NULL),
+                                           UA_STRING("f.bin"), NULL),
+                      UA_STATUSCODE_BADNODEIDUNKNOWN);
+    UA_NodeId_clear(&fileId);
+} END_TEST
+
 #endif /* UA_TEST_ENABLE_FILETRANSFER */
 
 int main(void) {
@@ -2397,6 +2506,7 @@ int main(void) {
     tcase_add_test(tc_file, fileMaxByteStringLength);
     tcase_add_test(tc_file, fileWriteRespectsMaxByteStringLength);
     tcase_add_test(tc_file, readOnlyBackendNeedsNoWriteCallbacks);
+    tcase_add_test(tc_file, attachExistingFile);
 # ifndef _WIN32
     tcase_add_test(tc_file, fileMimeType);
 # endif
