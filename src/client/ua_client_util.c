@@ -190,9 +190,10 @@ getRemoteDataTypes(UA_Client *client, UA_ReadRequest *req,
 static void *
 setNodesToRead(void *context, NodeIdTreeEntry *elm) {
     UA_ReadValueId **rvi = (UA_ReadValueId**)context;
-    (*rvi)->nodeId = elm->nodeId;
+    (*rvi)->nodeId = elm->nodeId; /* Move the NodeId */
     (*rvi)->attributeId = UA_ATTRIBUTEID_DATATYPEDEFINITION;
     (*rvi)++;
+    UA_String_clear(&elm->typeName);
     UA_free(elm);
     return NULL;
 }
