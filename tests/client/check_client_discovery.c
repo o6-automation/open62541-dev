@@ -60,8 +60,28 @@ START_TEST(Client_connect_badEndpointUrl) {
 }
 END_TEST
 
+/* Discovery must not change the client configuration */
+static const UA_String configuredUrl =
+    UA_STRING_STATIC("opc.tcp://configured.invalid:4840");
+
+static void
+setDiscoveryConfig(UA_Client *client) {
+    UA_ClientConfig *cc = UA_Client_getConfig(client);
+    UA_String_clear(&cc->endpointUrl);
+    UA_String_copy(&configuredUrl, &cc->endpointUrl);
+    cc->noSession = false;
+}
+
+static void
+checkDiscoveryConfig(UA_Client *client) {
+    UA_ClientConfig *cc = UA_Client_getConfig(client);
+    ck_assert(UA_String_equal(&cc->endpointUrl, &configuredUrl));
+    ck_assert(!cc->noSession);
+}
+
 START_TEST(Client_getEndpoints) {
     UA_Client *client = UA_Client_newForUnitTest();
+    setDiscoveryConfig(client);
 
     size_t endpointCount = 0;
     UA_EndpointDescription *endpoints = NULL;
@@ -80,12 +100,14 @@ START_TEST(Client_getEndpoints) {
     UA_Array_delete(endpoints, endpointCount,
                     &UA_TYPES[UA_TYPES_ENDPOINTDESCRIPTION]);
 
+    checkDiscoveryConfig(client);
     UA_Client_delete(client);
 }
 END_TEST
 
 START_TEST(Client_findServers) {
     UA_Client *client = UA_Client_newForUnitTest();
+    setDiscoveryConfig(client);
 
     size_t serverCount = 0;
     UA_ApplicationDescription *servers = NULL;
@@ -100,6 +122,7 @@ START_TEST(Client_findServers) {
     UA_Array_delete(servers, serverCount,
                     &UA_TYPES[UA_TYPES_APPLICATIONDESCRIPTION]);
 
+    checkDiscoveryConfig(client);
     UA_Client_delete(client);
 }
 END_TEST
