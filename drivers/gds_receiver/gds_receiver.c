@@ -4,6 +4,7 @@
  *
  *    Copyright 2024 (c) Fraunhofer IOSB (Author: Noel Graf)
  *    Copyright 2026 (c) o6 Automation GmbH (Author: Julius Pfrommer)
+ *    Copyright 2026 (c) o6 Automation GmbH (Author: Andreas Ebner)
  */
 
 #include <open62541/plugin/certificategroup_default.h>
@@ -34,7 +35,6 @@ typedef struct {
     UA_Server *server;
     UA_NodeId sessionId;
     UA_GDSTransactionState state;
-    UA_ByteString localCsrCertificate;
     size_t certGroupSize;
     UA_CertificateGroup *certGroups;
     size_t certificateInfosSize;
@@ -76,6 +76,9 @@ struct UA_GDSReceiverContext {
     LIST_HEAD(, ChannelMetadata) secureChannels;
     UA_UInt64 checkSessionCallbackId;
     size_t pendingDelayedCallbacks;
+    /* The last CreateSigningRequest. It is kept beyond transactions, the
+     * matching key is held by the SecurityPolicy. */
+    UA_ByteString lastCsr;
 };
 
 typedef enum UA_GDSTransactionChanges {
@@ -114,22 +117,117 @@ UA_GDSTransaction_init(UA_GDSTransaction *transaction, UA_Server *server,
     if(!transaction || !server)
         return UA_STATUSCODE_BADINTERNALERROR;
 
-    UA_ByteString csr = UA_BYTESTRING_NULL;
-    if(transaction->localCsrCertificate.length > 0)
-        csr = transaction->localCsrCertificate;
-
     memset(transaction, 0, sizeof(UA_GDSTransaction));
 
     UA_StatusCode res = UA_NodeId_copy(&sessionId, &transaction->sessionId);
-    if(res != UA_STATUSCODE_GOOD) {
-        transaction->localCsrCertificate = csr;
+    if(res != UA_STATUSCODE_GOOD)
         return res;
-    }
     transaction->state = UA_GDSTRANSACTIONSTATE_PENDING;
     transaction->server = server;
-    transaction->localCsrCertificate = csr;
     transaction->applyChangesQueued = false;
 
+    return UA_STATUSCODE_GOOD;
+}
+
+/* Copy a CertificateGroup into a Memorystore, optionally with an additional
+ * trusted Certificate. With issuersTrusted, the issuer Certificates and CRLs
+ * are also trusted in the copy. The copy has no size limit. The size of a
+ * resulting TrustList is checked against the MaxTrustListSize by the caller. */
+static UA_StatusCode
+copyCertificateGroup(const UA_CertificateGroup *src,
+                     const UA_ByteString *extraTrusted,
+                     UA_Boolean issuersTrusted,
+                     UA_CertificateGroup *dst) {
+    if(!src->getTrustList)
+        return UA_STATUSCODE_BADNOTSUPPORTED;
+
+    UA_TrustListDataType trustList;
+    UA_TrustListDataType_init(&trustList);
+    trustList.specifiedLists = UA_TRUSTLISTMASKS_ALL;
+    UA_StatusCode res =
+        src->getTrustList((UA_CertificateGroup*)(uintptr_t)src, &trustList);
+    trustList.specifiedLists = UA_TRUSTLISTMASKS_ALL;
+    if(res == UA_STATUSCODE_GOOD && issuersTrusted) {
+        UA_TrustListDataType issuers;
+        UA_TrustListDataType_init(&issuers);
+        issuers.specifiedLists =
+            UA_TRUSTLISTMASKS_TRUSTEDCERTIFICATES | UA_TRUSTLISTMASKS_TRUSTEDCRLS;
+        issuers.trustedCertificates = trustList.issuerCertificates;
+        issuers.trustedCertificatesSize = trustList.issuerCertificatesSize;
+        issuers.trustedCrls = trustList.issuerCrls;
+        issuers.trustedCrlsSize = trustList.issuerCrlsSize;
+        res = UA_TrustListDataType_add(&issuers, &trustList);
+    }
+    if(res == UA_STATUSCODE_GOOD && extraTrusted) {
+        UA_TrustListDataType extra;
+        UA_TrustListDataType_init(&extra);
+        extra.specifiedLists = UA_TRUSTLISTMASKS_TRUSTEDCERTIFICATES;
+        extra.trustedCertificates = (UA_ByteString*)(uintptr_t)extraTrusted;
+        extra.trustedCertificatesSize = 1;
+        res = UA_TrustListDataType_add(&extra, &trustList);
+    }
+    if(res == UA_STATUSCODE_GOOD) {
+        UA_UInt32 unlimited = 0;
+        UA_KeyValuePair param;
+        param.key = UA_QUALIFIEDNAME(0, "max-trust-listsize");
+        UA_Variant_setScalar(&param.value, &unlimited, &UA_TYPES[UA_TYPES_UINT32]);
+        UA_KeyValueMap params = {1, &param};
+        memset(dst, 0, sizeof(UA_CertificateGroup));
+        res = UA_CertificateGroup_Memorystore(
+            dst, (UA_NodeId*)(uintptr_t)&src->certificateGroupId, &trustList,
+            src->logging, &params);
+    }
+    UA_TrustListDataType_clear(&trustList);
+    return res;
+}
+
+/* The encoded size of the complete TrustList of a group */
+static UA_StatusCode
+trustListSize(UA_CertificateGroup *group, size_t *size) {
+    UA_TrustListDataType trustList;
+    UA_TrustListDataType_init(&trustList);
+    trustList.specifiedLists = UA_TRUSTLISTMASKS_ALL;
+    UA_StatusCode res = group->getTrustList(group, &trustList);
+    trustList.specifiedLists = UA_TRUSTLISTMASKS_ALL;
+    *size = UA_calcSizeBinary(&trustList, &UA_TYPES[UA_TYPES_TRUSTLISTDATATYPE], NULL);
+    UA_TrustListDataType_clear(&trustList);
+    return res;
+}
+
+/* Returns the CertificateGroup staged in the transaction or NULL */
+static UA_CertificateGroup *
+UA_GDSTransaction_findCertificateGroup(UA_GDSTransaction *transaction,
+                                       const UA_NodeId *certificateGroupId) {
+    if(transaction->state != UA_GDSTRANSACTIONSTATE_PENDING)
+        return NULL;
+    for(size_t i = 0; i < transaction->certGroupSize; i++) {
+        if(UA_NodeId_equal(&transaction->certGroups[i].certificateGroupId,
+                           certificateGroupId))
+            return &transaction->certGroups[i];
+    }
+    return NULL;
+}
+
+/* Move a CertificateGroup into the transaction. It replaces the staged group
+ * with the same NodeId. */
+static UA_StatusCode
+UA_GDSTransaction_stageCertificateGroup(UA_GDSTransaction *transaction,
+                                        UA_CertificateGroup *group) {
+    UA_CertificateGroup *staged =
+        UA_GDSTransaction_findCertificateGroup(transaction, &group->certificateGroupId);
+    if(staged) {
+        staged->clear(staged);
+        *staged = *group;
+        return UA_STATUSCODE_GOOD;
+    }
+    UA_CertificateGroup *newGroups = (UA_CertificateGroup*)
+        UA_realloc(transaction->certGroups,
+                   (transaction->certGroupSize + 1) * sizeof(UA_CertificateGroup));
+    if(!newGroups)
+        return UA_STATUSCODE_BADOUTOFMEMORY;
+    transaction->certGroups = newGroups;
+    transaction->certGroups[transaction->certGroupSize] = *group;
+    transaction->certGroupSize++;
     return UA_STATUSCODE_GOOD;
 }
 
@@ -163,33 +261,7 @@ UA_GDSTransaction_getCertificateGroup(UA_GDSTransaction *transaction,
 
     UA_CertificateGroup* newGroup = (UA_CertificateGroup*)
         &transaction->certGroups[transaction->certGroupSize-1];
-    memset(newGroup, 0, sizeof(UA_CertificateGroup));
-
-    UA_TrustListDataType trustList;
-    UA_TrustListDataType_init(&trustList);
-    trustList.specifiedLists = UA_TRUSTLISTMASKS_ALL;
-    UA_StatusCode res = certGroup->getTrustList(
-        (UA_CertificateGroup*)(uintptr_t)certGroup, &trustList);
-    if(res != UA_STATUSCODE_GOOD) {
-        UA_TrustListDataType_clear(&trustList);
-        transaction->certGroupSize--;
-        return NULL;
-    }
-
-    /* Set up the parameters */
-    UA_KeyValuePair params[1] = {{{0, UA_STRING_STATIC("max-trust-listsize")}, {0}}};
-    UA_KeyValueMap paramsMap = {1, params};
-    UA_ServerConfig *config = UA_Server_getConfig(transaction->server);
-    UA_Variant_setScalar(&params[0].value, &config->maxTrustListSize,
-                         &UA_TYPES[UA_TYPES_UINT32]);
-
-    /* Initialize the CertificateGroup */
-    res = UA_CertificateGroup_Memorystore(
-        newGroup, (UA_NodeId*)(uintptr_t)&certGroup->certificateGroupId,
-        &trustList, certGroup->logging, &paramsMap);
-
-    UA_TrustListDataType_clear(&trustList);
-    if(res != UA_STATUSCODE_GOOD) {
+    if(copyCertificateGroup(certGroup, NULL, false, newGroup) != UA_STATUSCODE_GOOD) {
         transaction->certGroupSize--;
         return NULL;
     }
@@ -279,7 +351,6 @@ UA_GDSTransaction_clear(UA_GDSTransaction *transaction) {
     transaction->state = UA_GDSTRANSACTIONSTATE_FRESH;
     transaction->server = NULL;
     UA_NodeId_clear(&transaction->sessionId);
-    UA_ByteString_clear(&transaction->localCsrCertificate);
 
     if(transaction->certGroups) {
         for(size_t i = 0; i < transaction->certGroupSize; i++) {
@@ -318,6 +389,197 @@ UA_GDSReceiver_getFileInfo(UA_GDSReceiverContext *ctx,
         fi = fi->next;
     }
     return NULL;
+}
+
+static void
+UA_FileContext_delete(UA_FileInfo *fileInfo, UA_FileContext *fileContext) {
+    LIST_REMOVE(fileContext, listEntry);
+    fileInfo->openCount -= 1;
+    UA_ByteString_clear(&fileContext->file);
+    UA_ByteString_clear(&fileContext->dataToWrite);
+    UA_free(fileContext);
+}
+
+static UA_Boolean
+isWriteHandle(const UA_FileContext *fileContext) {
+    return fileContext->openFileMode ==
+        (UA_OPENFILEMODE_WRITE | UA_OPENFILEMODE_ERASEEXISTING);
+}
+
+/* Is a TrustList open for writing? A NULL fileInfo checks all TrustLists, a
+ * NULL sessionId all Sessions. */
+static UA_Boolean
+hasWriteHandle(UA_GDSReceiverContext *ctx, const UA_FileInfo *fileInfo,
+               const UA_NodeId *sessionId) {
+    for(UA_FileInfo *fi = ctx->fileInfos; fi; fi = fi->next) {
+        if(fileInfo && fi != fileInfo)
+            continue;
+        UA_FileContext *fileContext;
+        LIST_FOREACH(fileContext, &fi->fileContext, listEntry) {
+            if(isWriteHandle(fileContext) &&
+               (!sessionId || UA_NodeId_equal(&fileContext->sessionId, sessionId)))
+                return true;
+        }
+    }
+    return false;
+}
+
+/* Close the write handles of a Session. Their data is discarded. */
+static void
+closeSessionWriteHandles(UA_GDSReceiverContext *ctx, const UA_NodeId *sessionId) {
+    for(UA_FileInfo *fi = ctx->fileInfos; fi; fi = fi->next) {
+        UA_Boolean closed = false;
+        UA_FileContext *fileContext, *fileContextTmp;
+        LIST_FOREACH_SAFE(fileContext, &fi->fileContext, listEntry, fileContextTmp) {
+            if(!isWriteHandle(fileContext) ||
+               !UA_NodeId_equal(&fileContext->sessionId, sessionId))
+                continue;
+            UA_FileContext_delete(fi, fileContext);
+            closed = true;
+        }
+        UA_CertificateGroup *certGroup = getCertGroup(ctx->drv.server,
+                                                      &fi->certificateGroupId);
+        if(closed && certGroup)
+            writeOpenCountVariable(ctx, certGroup);
+    }
+}
+
+/* Close a write handle and discard its data (Part 12, 7.8.2.5). A transaction
+ * without staged changes and without other write handles is closed. */
+static void
+closeWriteHandle(UA_GDSReceiverContext *ctx, UA_CertificateGroup *certGroup,
+                 UA_FileInfo *fileInfo, UA_FileContext *fileContext) {
+    UA_NodeId sessionId;
+    UA_StatusCode res = UA_NodeId_copy(&fileContext->sessionId, &sessionId);
+    UA_FileContext_delete(fileInfo, fileContext);
+    writeOpenCountVariable(ctx, certGroup);
+    if(res != UA_STATUSCODE_GOOD)
+        return;
+    UA_GDSTransaction *transaction = &ctx->transaction;
+    if(transaction->state == UA_GDSTRANSACTIONSTATE_PENDING &&
+       !transaction->applyChangesQueued &&
+       transaction->certGroupSize == 0 && transaction->certificateInfosSize == 0 &&
+       UA_NodeId_equal(&transaction->sessionId, &sessionId) &&
+       !hasWriteHandle(ctx, NULL, &sessionId))
+        UA_GDSTransaction_clear(transaction);
+    UA_NodeId_clear(&sessionId);
+}
+
+UA_StatusCode
+UA_GDSReceiver_checkTransaction(UA_GDSReceiverContext *ctx,
+                                const UA_NodeId *sessionId) {
+    /* One transaction for one Session at a time (Part 12, 7.10.2) */
+    UA_GDSTransaction *transaction = &ctx->transaction;
+    if(transaction->state == UA_GDSTRANSACTIONSTATE_FRESH)
+        return UA_STATUSCODE_GOOD;
+    if(transaction->applyChangesQueued ||
+       !UA_NodeId_equal(&transaction->sessionId, sessionId))
+        return UA_STATUSCODE_BADTRANSACTIONPENDING;
+    return UA_STATUSCODE_GOOD;
+}
+
+/* Verify a Certificate (Part 4, 6.1.3). Suppressible errors are ignored (Part
+ * 12, 7.8.2.5 and 7.10.5). Of those, only the validity period can be ignored
+ * safely. The plugins report RevocationUnknown and UseNotAllowed before the
+ * trust in the Certificate is established. */
+static UA_StatusCode
+verifyCertificate(UA_GDSReceiverContext *ctx, UA_CertificateGroup *group,
+                  const UA_ByteString *certificate) {
+    UA_StatusCode res = group->verifyCertificate(group, certificate);
+    if(res == UA_STATUSCODE_BADCERTIFICATETIMEINVALID ||
+       res == UA_STATUSCODE_BADCERTIFICATEISSUERTIMEINVALID) {
+        UA_ServerConfig *sc = UA_Server_getConfig(ctx->drv.server);
+        UA_LOG_WARNING(sc->logging, UA_LOGCATEGORY_SERVER,
+                       "Accepting a Certificate outside of its validity "
+                       "period (%s)", UA_StatusCode_name(res));
+        res = UA_STATUSCODE_GOOD;
+    }
+    return res;
+}
+
+UA_StatusCode
+UA_GDSReceiver_validateCertificate(UA_GDSReceiverContext *ctx,
+                                   const UA_NodeId *sessionId,
+                                   UA_CertificateGroup *certGroup,
+                                   const UA_ByteString *certificate) {
+    /* Use the TrustList staged in the transaction of the Session. The
+     * CertificateManager updates the TrustList first (Part 12, 7.7.2). */
+    UA_GDSTransaction *transaction = &ctx->transaction;
+    if(sessionId && UA_NodeId_equal(&transaction->sessionId, sessionId)) {
+        UA_CertificateGroup *staged = UA_GDSTransaction_findCertificateGroup(
+            transaction, &certGroup->certificateGroupId);
+        if(staged)
+            certGroup = staged;
+    }
+
+    /* Groups without a TrustList (e.g. AcceptAll) have no side effects */
+    if(!certGroup->getTrustList)
+        return verifyCertificate(ctx, certGroup, certificate);
+
+    /* The TrustList must contain the issuers of the Certificate (Part 12,
+     * 7.10.5). They do not have to be trusted, a CertificateManager may put
+     * its CA in the issuer list only. Verify with a copy where the issuers are
+     * trusted. The copy also keeps the plugins from adding the Certificate to
+     * the rejected list of the group. */
+    UA_CertificateGroup scratch;
+    UA_StatusCode res = copyCertificateGroup(certGroup, NULL, true, &scratch);
+    if(res != UA_STATUSCODE_GOOD)
+        return res;
+    res = verifyCertificate(ctx, &scratch, certificate);
+    scratch.clear(&scratch);
+    return res;
+}
+
+/* Verify the trusted Certificates of a TrustList that are not CA
+ * Certificates. CA Certificates cannot be verified with the plugin interface.
+ * Issuer Certificates are not trusted by themselves. */
+static UA_StatusCode
+verifyTrustList(UA_GDSReceiverContext *ctx, UA_CertificateGroup *group) {
+    UA_TrustListDataType trustList;
+    UA_TrustListDataType_init(&trustList);
+    trustList.specifiedLists = UA_TRUSTLISTMASKS_ALL;
+    UA_StatusCode res = group->getTrustList(group, &trustList);
+    for(size_t i = 0; res == UA_STATUSCODE_GOOD &&
+            i < trustList.trustedCertificatesSize; i++) {
+        UA_ByteString *certificate = &trustList.trustedCertificates[i];
+        if(UA_CertificateUtils_checkCA(certificate) == UA_STATUSCODE_GOOD)
+            continue;
+        res = verifyCertificate(ctx, group, certificate);
+    }
+    UA_TrustListDataType_clear(&trustList);
+    return res;
+}
+
+/* Keep only the lists of the mask */
+static void
+filterTrustList(UA_TrustListDataType *trustList, UA_UInt32 mask) {
+    if(!(mask & UA_TRUSTLISTMASKS_TRUSTEDCERTIFICATES)) {
+        UA_Array_delete(trustList->trustedCertificates,
+                        trustList->trustedCertificatesSize,
+                        &UA_TYPES[UA_TYPES_BYTESTRING]);
+        trustList->trustedCertificates = NULL;
+        trustList->trustedCertificatesSize = 0;
+    }
+    if(!(mask & UA_TRUSTLISTMASKS_TRUSTEDCRLS)) {
+        UA_Array_delete(trustList->trustedCrls, trustList->trustedCrlsSize,
+                        &UA_TYPES[UA_TYPES_BYTESTRING]);
+        trustList->trustedCrls = NULL;
+        trustList->trustedCrlsSize = 0;
+    }
+    if(!(mask & UA_TRUSTLISTMASKS_ISSUERCERTIFICATES)) {
+        UA_Array_delete(trustList->issuerCertificates,
+                        trustList->issuerCertificatesSize,
+                        &UA_TYPES[UA_TYPES_BYTESTRING]);
+        trustList->issuerCertificates = NULL;
+        trustList->issuerCertificatesSize = 0;
+    }
+    if(!(mask & UA_TRUSTLISTMASKS_ISSUERCRLS)) {
+        UA_Array_delete(trustList->issuerCrls, trustList->issuerCrlsSize,
+                        &UA_TYPES[UA_TYPES_BYTESTRING]);
+        trustList->issuerCrls = NULL;
+        trustList->issuerCrlsSize = 0;
+    }
+    trustList->specifiedLists = mask & UA_TRUSTLISTMASKS_ALL;
 }
 
 UA_StatusCode
@@ -364,14 +626,31 @@ UA_GDSReceiver_transactionPending(UA_GDSReceiverContext *ctx) {
 UA_StatusCode
 UA_GDSReceiver_applyChangesForSession(UA_GDSReceiverContext *ctx,
                                      const UA_NodeId *sessionId) {
+    /* Part 12, 7.10.9 */
     UA_GDSTransaction *transaction = &ctx->transaction;
     /* A fresh transaction has no owning session. Check the state first, so
      * that the session comparison does not hide Bad_NothingToDo. */
-    if(transaction->state == UA_GDSTRANSACTIONSTATE_FRESH)
+    if(transaction->state == UA_GDSTRANSACTIONSTATE_FRESH ||
+       transaction->applyChangesQueued)
         return UA_STATUSCODE_BADNOTHINGTODO;
     if(!UA_NodeId_equal(&transaction->sessionId, sessionId))
-        return UA_STATUSCODE_BADUSERACCESSDENIED;
+        return UA_STATUSCODE_BADSESSIONIDINVALID;
     return UA_GDSReceiver_applyChanges(ctx);
+}
+
+UA_StatusCode
+UA_GDSReceiver_cancelChangesForSession(UA_GDSReceiverContext *ctx,
+                                      const UA_NodeId *sessionId) {
+    /* Part 12, 7.10.11 */
+    UA_GDSTransaction *transaction = &ctx->transaction;
+    if(transaction->state == UA_GDSTRANSACTIONSTATE_FRESH ||
+       transaction->applyChangesQueued)
+        return UA_STATUSCODE_BADNOTHINGTODO;
+    if(!UA_NodeId_equal(&transaction->sessionId, sessionId))
+        return UA_STATUSCODE_BADSESSIONIDINVALID;
+    closeSessionWriteHandles(ctx, sessionId);
+    UA_GDSTransaction_clear(transaction);
+    return UA_STATUSCODE_GOOD;
 }
 
 /* This callback is triggered at regular intervals as long as a transaction is ongoing
@@ -461,7 +740,7 @@ UA_GDSReceiver_getPositionTrustList(UA_GDSReceiverContext *ctx, UA_CertificateGr
 
     UA_FileContext *fileContext = getFileContext(fileInfo, sessionId, fileHandle);
     if(!fileContext)
-        return UA_STATUSCODE_BADINTERNALERROR;
+        return UA_STATUSCODE_BADINVALIDARGUMENT;
 
     return UA_Variant_setScalarCopy(output, &fileContext->currentPos,
                                     &UA_TYPES[UA_TYPES_UINT64]);
@@ -479,7 +758,7 @@ UA_GDSReceiver_setPositionTrustList(UA_GDSReceiverContext *ctx, UA_CertificateGr
 
     UA_FileContext *fileContext = getFileContext(fileInfo, sessionId, fileHandle);
     if(!fileContext)
-        return UA_STATUSCODE_BADINTERNALERROR;
+        return UA_STATUSCODE_BADINVALIDARGUMENT;
 
     if(fileContext->file.length < position) {
         fileContext->currentPos = fileContext->file.length;
@@ -505,7 +784,7 @@ UA_GDSReceiver_writeTrustList(UA_GDSReceiverContext *ctx, UA_CertificateGroup *c
 
     UA_FileContext *fileContext = getFileContext(fileInfo, sessionId, fileHandle);
     if(!fileContext)
-        return UA_STATUSCODE_BADINTERNALERROR;
+        return UA_STATUSCODE_BADINVALIDARGUMENT;
 
     if(fileContext->openFileMode !=
        (UA_OPENFILEMODE_WRITE | UA_OPENFILEMODE_ERASEEXISTING))
@@ -530,6 +809,7 @@ UA_GDSReceiver_closeAndUpdateTrustList(UA_GDSReceiverContext *ctx,
                                       UA_UInt32 fileHandle,
                                       UA_Variant *output) {
     UA_assert(certGroup != NULL);
+    UA_ServerConfig *sc = UA_Server_getConfig(ctx->drv.server);
 
     UA_GDSTransaction *transaction = &ctx->transaction;
     UA_FileInfo *fileInfo =
@@ -539,39 +819,58 @@ UA_GDSReceiver_closeAndUpdateTrustList(UA_GDSReceiverContext *ctx,
 
     UA_FileContext *fileContext = getFileContext(fileInfo, sessionId, fileHandle);
     if(!fileContext)
-        return UA_STATUSCODE_BADINTERNALERROR;
+        return UA_STATUSCODE_BADINVALIDARGUMENT;
 
-    if(fileContext->openFileMode !=
-       (UA_OPENFILEMODE_WRITE | UA_OPENFILEMODE_ERASEEXISTING))
+    if(!isWriteHandle(fileContext) ||
+       transaction->state != UA_GDSTRANSACTIONSTATE_PENDING)
         return UA_STATUSCODE_BADINVALIDSTATE;
 
-    UA_CertificateGroup *transactionCertGroup =
-        UA_GDSTransaction_getCertificateGroup(transaction, certGroup);
-    if(!transactionCertGroup)
-        return UA_STATUSCODE_BADINTERNALERROR;
-
+    /* Build the resulting TrustList in a scratch copy of the staged or the
+     * active TrustList. A partial update keeps the other lists. */
+    UA_CertificateGroup scratch;
+    memset(&scratch, 0, sizeof(UA_CertificateGroup));
     UA_TrustListDataType trustList;
-    UA_StatusCode retval =
-        UA_decodeBinary(&fileContext->dataToWrite, &trustList,
-                        &UA_TYPES[UA_TYPES_TRUSTLISTDATATYPE], NULL);
+    UA_TrustListDataType_init(&trustList);
+    UA_StatusCode retval = UA_STATUSCODE_BADNOTWRITABLE;
+    if(!certGroup->setTrustList)
+        goto discard;
+    UA_CertificateGroup *staged = UA_GDSTransaction_findCertificateGroup(
+        transaction, &certGroup->certificateGroupId);
+    retval = copyCertificateGroup(staged ? staged : certGroup, NULL, false, &scratch);
+    if(retval != UA_STATUSCODE_GOOD)
+        goto discard;
+
+    retval = UA_decodeBinary(&fileContext->dataToWrite, &trustList,
+                             &UA_TYPES[UA_TYPES_TRUSTLISTDATATYPE], NULL);
     if(retval != UA_STATUSCODE_GOOD) {
-        UA_TrustListDataType_clear(&trustList);
-        return UA_STATUSCODE_BADINTERNALERROR;
+        retval = UA_STATUSCODE_BADDECODINGERROR;
+        goto discard;
+    }
+    retval = scratch.setTrustList(&scratch, &trustList);
+    if(retval != UA_STATUSCODE_GOOD)
+        goto discard;
+
+    /* The limit applies to the resulting TrustList (Part 12, 7.8.2.5) */
+    size_t size = 0;
+    retval = trustListSize(&scratch, &size);
+    if(retval != UA_STATUSCODE_GOOD)
+        goto discard;
+    if(sc->maxTrustListSize != 0 && size > sc->maxTrustListSize) {
+        retval = UA_STATUSCODE_BADREQUESTTOOLARGE;
+        goto discard;
     }
 
-    retval = transactionCertGroup->setTrustList(transactionCertGroup, &trustList);
-    UA_TrustListDataType_clear(&trustList);
+    /* Validate the Certificates of the resulting TrustList */
+    retval = verifyTrustList(ctx, &scratch);
     if(retval != UA_STATUSCODE_GOOD)
-        return retval;
+        goto discard;
 
-    LIST_REMOVE(fileContext, listEntry);
-    fileInfo->openCount -= 1;
+    retval = UA_GDSTransaction_stageCertificateGroup(transaction, &scratch);
+    if(retval != UA_STATUSCODE_GOOD)
+        goto discard;
+    UA_TrustListDataType_clear(&trustList);
 
-    UA_ByteString_clear(&fileContext->file);
-    UA_ByteString_clear(&fileContext->dataToWrite);
-    UA_free(fileContext);
-
-    /* Updating OpenCount Variable in the information model */
+    UA_FileContext_delete(fileInfo, fileContext);
     writeOpenCountVariable(ctx, certGroup);
 
     /* Output arg, indicates that the ApplyChanges Method shall be called before
@@ -579,6 +878,17 @@ UA_GDSReceiver_closeAndUpdateTrustList(UA_GDSReceiverContext *ctx,
     UA_Boolean applyChangesRequired = true;
     return UA_Variant_setScalarCopy(output, &applyChangesRequired,
                                     &UA_TYPES[UA_TYPES_BOOLEAN]);
+
+ discard:
+    /* The new TrustList is discarded. The transaction keeps its state. */
+    UA_LOG_WARNING(sc->logging, UA_LOGCATEGORY_SERVER,
+                   "The TrustList update was discarded (%s)",
+                   UA_StatusCode_name(retval));
+    UA_TrustListDataType_clear(&trustList);
+    if(scratch.clear)
+        scratch.clear(&scratch);
+    closeWriteHandle(ctx, certGroup, fileInfo, fileContext);
+    return retval;
 }
 
 UA_StatusCode
@@ -588,7 +898,6 @@ UA_GDSReceiver_closeTrustList(UA_GDSReceiverContext *ctx,
                              UA_UInt32 fileHandle) {
     UA_assert(certGroup != NULL);
 
-    UA_GDSTransaction *transaction = &ctx->transaction;
     UA_FileInfo *fileInfo =
         UA_GDSReceiver_getFileInfo(ctx, certGroup->certificateGroupId);
     if(!fileInfo)
@@ -596,26 +905,16 @@ UA_GDSReceiver_closeTrustList(UA_GDSReceiverContext *ctx,
 
     UA_FileContext *fileContext = getFileContext(fileInfo, sessionId, fileHandle);
     if(!fileContext)
-        return UA_STATUSCODE_BADINTERNALERROR;
+        return UA_STATUSCODE_BADINVALIDARGUMENT;
 
-    /* Close discards the data written to the file (Part 12 §7.8.2.5). It is
-     * not staged in the transaction yet. Other changes of the transaction are
-     * kept. A transaction without changes is ended. If the list was opened in
-     * read mode, there are no changes to discard. */
-    if(fileContext->openFileMode ==
-       (UA_OPENFILEMODE_WRITE | UA_OPENFILEMODE_ERASEEXISTING) &&
-       transaction->certGroupSize == 0 &&
-       transaction->certificateInfosSize == 0)
-        UA_GDSTransaction_clear(transaction);
+    /* Close discards the data written to the handle. Other changes of the
+     * transaction remain (Part 12, 7.8.2.5). */
+    if(isWriteHandle(fileContext)) {
+        closeWriteHandle(ctx, certGroup, fileInfo, fileContext);
+        return UA_STATUSCODE_GOOD;
+    }
 
-    LIST_REMOVE(fileContext, listEntry);
-    fileInfo->openCount -= 1;
-
-    UA_ByteString_clear(&fileContext->file);
-    UA_ByteString_clear(&fileContext->dataToWrite);
-    UA_free(fileContext);
-
-    /* Updating OpenCount Variable in the information model */
+    UA_FileContext_delete(fileInfo, fileContext);
     writeOpenCountVariable(ctx, certGroup);
     return UA_STATUSCODE_GOOD;
 }
@@ -633,7 +932,7 @@ UA_GDSReceiver_readTrustList(UA_GDSReceiverContext *ctx, UA_CertificateGroup *ce
 
     UA_FileContext *fileContext = getFileContext(fileInfo, sessionId, fileHandle);
     if(!fileContext)
-        return UA_STATUSCODE_BADINTERNALERROR;
+        return UA_STATUSCODE_BADINVALIDARGUMENT;
 
     if(fileContext->openFileMode != UA_OPENFILEMODE_READ)
         return UA_STATUSCODE_BADINVALIDSTATE;
@@ -678,13 +977,35 @@ UA_GDSReceiver_addCertificate(UA_GDSReceiverContext *ctx,
         return UA_STATUSCODE_BADINVALIDARGUMENT;
     }
 
-    /* This method cannot be called if the containing TrustList Object is open */
+    if(!certGroup->addToTrustList || !certGroup->getTrustList)
+        return UA_STATUSCODE_BADNOTWRITABLE;
+
+    /* This method cannot be called if the containing TrustList Object is open
+     * (Part 12, 7.8.2.6) */
     UA_FileInfo *fileInfo =
         UA_GDSReceiver_getFileInfo(ctx, certGroup->certificateGroupId);
     if(!fileInfo)
         return UA_STATUSCODE_BADINTERNALERROR;
-    if(fileInfo->openCount > 0)
+    if(hasWriteHandle(ctx, fileInfo, NULL))
         return UA_STATUSCODE_BADINVALIDSTATE;
+    if(fileInfo->openCount > 0)
+        return UA_STATUSCODE_BADNOTWRITABLE;
+
+    /* Validate the Certificate in the resulting TrustList. A Certificate
+     * issued by a CA requires the CA in the TrustList. */
+    UA_CertificateGroup scratch;
+    UA_StatusCode res = copyCertificateGroup(certGroup, certificate, false, &scratch);
+    if(res != UA_STATUSCODE_GOOD)
+        return res;
+    res = verifyCertificate(ctx, &scratch, certificate);
+    size_t size = 0;
+    if(res == UA_STATUSCODE_GOOD)
+        res = trustListSize(&scratch, &size);
+    scratch.clear(&scratch);
+    if(res != UA_STATUSCODE_GOOD)
+        return res;
+    if(sc->maxTrustListSize != 0 && size > sc->maxTrustListSize)
+        return UA_STATUSCODE_BADREQUESTTOOLARGE;
 
     UA_TrustListDataType trustList;
     UA_TrustListDataType_init(&trustList);
@@ -692,7 +1013,7 @@ UA_GDSReceiver_addCertificate(UA_GDSReceiverContext *ctx,
     trustList.trustedCertificates = certificate;
     trustList.trustedCertificatesSize = 1;
 
-    UA_StatusCode res = certGroup->addToTrustList(certGroup, &trustList);
+    res = certGroup->addToTrustList(certGroup, &trustList);
     if(res != UA_STATUSCODE_GOOD)
         return res;
 
@@ -700,6 +1021,24 @@ UA_GDSReceiver_addCertificate(UA_GDSReceiverContext *ctx,
     fileInfo->lastUpdateTime = UA_DateTime_now();
     writeLastUpdateVariable(ctx, certGroup);
     return UA_STATUSCODE_GOOD;
+}
+
+/* Does the Certificate belong to the current key of a SecurityPolicy with the
+ * CertificateType? */
+static UA_Boolean
+matchesCurrentKey(UA_ServerConfig *sc, const UA_NodeId *certificateTypeId,
+                  const UA_ByteString *certificate) {
+    for(size_t i = 0; i < sc->securityPoliciesSize; i++) {
+        UA_SecurityPolicy *sp = &sc->securityPolicies[i];
+        if(sp->policyType == UA_SECURITYPOLICYTYPE_NONE ||
+           !UA_NodeId_equal(&sp->certificateTypeId, certificateTypeId) ||
+           sp->localCertificate.length == 0)
+            continue;
+        if(UA_CertificateUtils_comparePublicKeys(certificate, &sp->localCertificate) ==
+           UA_STATUSCODE_GOOD)
+            return true;
+    }
+    return false;
 }
 
 UA_StatusCode
@@ -710,6 +1049,14 @@ UA_GDSReceiver_stageCertificateUpdate(UA_GDSReceiverContext *ctx,
                                 const UA_ByteString *certificate,
                                 const UA_String *privateKeyFormat,
                                 const UA_ByteString *privateKey) {
+    UA_Server *server = ctx->drv.server;
+    UA_ServerConfig *sc = UA_Server_getConfig(server);
+
+    /* Another Session has a transaction (Part 12, 7.10.5) */
+    UA_StatusCode retval = UA_GDSReceiver_checkTransaction(ctx, sessionId);
+    if(retval != UA_STATUSCODE_GOOD)
+        return retval;
+
     /* The server currently only supports the DefaultApplicationGroup. A null
      * CertificateGroupId selects it (Part 12, 7.10.5). */
     static UA_NodeId defaultApplicationGroup =
@@ -720,21 +1067,22 @@ UA_GDSReceiver_stageCertificateUpdate(UA_GDSReceiverContext *ctx,
         return UA_STATUSCODE_BADINVALIDARGUMENT;
 
     /* The certificate type must be one of the CertificateTypes of the group */
-    UA_ServerConfig *sc = UA_Server_getConfig(ctx->drv.server);
     if(!UA_GDSReceiver_certificateTypeSupported(sc, certificateTypeId))
         return UA_STATUSCODE_BADINVALIDARGUMENT;
 
-    /* Verify that the privateKey is in a supported format and
-     * that it matches the specified certificate */
-    UA_StatusCode retval = UA_STATUSCODE_GOOD;
+    if(!certificate || certificate->length == 0)
+        return UA_STATUSCODE_BADCERTIFICATEINVALID;
+
     if(privateKey && privateKey->length > 0) {
+        /* Verify that the privateKey is in a supported format and that it
+         * matches the specified certificate */
         const UA_String pemFormat = UA_STRING("PEM");
         const UA_String derFormat = UA_STRING("DER");
-        if(!UA_String_equal(&pemFormat, privateKeyFormat) &&
-           !UA_String_equal(&derFormat, privateKeyFormat))
+        if(!privateKeyFormat || (!UA_String_equal(&pemFormat, privateKeyFormat) &&
+                                 !UA_String_equal(&derFormat, privateKeyFormat)))
             return UA_STATUSCODE_BADNOTSUPPORTED;
-        retval = UA_CertificateUtils_checkKeyPair(certificate, privateKey);
-        if(retval != UA_STATUSCODE_GOOD)
+        if(UA_CertificateUtils_checkKeyPair(certificate, privateKey) !=
+           UA_STATUSCODE_GOOD)
             return UA_STATUSCODE_BADNOTSUPPORTED;
     } else {
         /* Validate the certificate before staging a keyless update. */
@@ -742,33 +1090,68 @@ UA_GDSReceiver_stageCertificateUpdate(UA_GDSReceiverContext *ctx,
         if(UA_CertificateUtils_getKeySize((UA_ByteString*)(uintptr_t)certificate,
                                           &keySize) != UA_STATUSCODE_GOOD)
             return UA_STATUSCODE_BADCERTIFICATEINVALID;
+
+        /* Without a PrivateKey, the Certificate has to belong to the current
+         * key or to the key of the last CreateSigningRequest */
+        if(!matchesCurrentKey(sc, certificateTypeId, certificate) &&
+           (ctx->lastCsr.length == 0 ||
+            UA_CertificateUtils_comparePublicKeys(certificate, &ctx->lastCsr) !=
+            UA_STATUSCODE_GOOD))
+            return UA_STATUSCODE_BADSECURITYCHECKSFAILED;
     }
 
-    /* The transaction is discarded once the queued ApplyChanges has run.
-     * Refuse new changes instead of silently dropping them. */
+    /* The ApplicationUri is not suppressible (Part 4, 6.1.3) */
+    if(UA_CertificateUtils_verifyApplicationUri(
+           certificate, &sc->applicationDescription.applicationUri) !=
+       UA_STATUSCODE_GOOD) {
+        if(sc->allowAllCertificateUris <= UA_RULEHANDLING_WARN)
+            UA_LOG_ERROR(sc->logging, UA_LOGCATEGORY_SERVER,
+                         "UpdateCertificate: The ApplicationUri of the "
+                         "Certificate is not %S",
+                         sc->applicationDescription.applicationUri);
+        if(sc->allowAllCertificateUris < UA_RULEHANDLING_WARN)
+            return UA_STATUSCODE_BADCERTIFICATEURIINVALID;
+    }
+
+    /* Validate the Certificate with the TrustList (Part 12, 7.10.5) */
+    UA_CertificateGroup *certGroup = getCertGroup(server, certificateGroupId);
+    if(!certGroup)
+        return UA_STATUSCODE_BADINVALIDARGUMENT;
+    retval = UA_GDSReceiver_validateCertificate(ctx, sessionId, certGroup,
+                                                certificate);
+    if(retval != UA_STATUSCODE_GOOD)
+        return retval;
+
+    /* A queued ApplyChanges is refused by UA_GDSReceiver_checkTransaction
+     * above, so the change cannot be dropped silently */
     UA_GDSTransaction *transaction = &ctx->transaction;
-    if(transaction->applyChangesQueued)
-        return UA_STATUSCODE_BADTRANSACTIONPENDING;
+    UA_Boolean created = false;
     if(transaction->state == UA_GDSTRANSACTIONSTATE_FRESH) {
-        retval = UA_GDSTransaction_init(transaction, ctx->drv.server, *sessionId);
+        retval = UA_GDSTransaction_init(transaction, server, *sessionId);
         if(retval != UA_STATUSCODE_GOOD)
             return retval;
+        created = true;
     }
 
     if(ctx->checkSessionCallbackId == 0) {
-        retval = UA_Server_addRepeatedCallback(ctx->drv.server, checkSessionActive,
+        retval = UA_Server_addRepeatedCallback(server, checkSessionActive,
                                                ctx, CHECKACTIVESESSIONINTERVAL,
                                                &ctx->checkSessionCallbackId);
         if(retval != UA_STATUSCODE_GOOD)
-            return retval;
+            goto errout;
     }
 
-    if(!UA_NodeId_equal(&transaction->sessionId, sessionId))
-        return UA_STATUSCODE_BADTRANSACTIONPENDING;
+    retval = UA_GDSTransaction_addCertificateInfo(transaction, *certificateGroupId,
+                                                  *certificateTypeId, certificate,
+                                                  privateKey);
+    if(retval == UA_STATUSCODE_GOOD)
+        return UA_STATUSCODE_GOOD;
 
-    return UA_GDSTransaction_addCertificateInfo(transaction, *certificateGroupId,
-                                                *certificateTypeId, certificate,
-                                                privateKey);
+ errout:
+    /* A failed call does not change the transaction state (Part 12, 7.10.2) */
+    if(created)
+        UA_GDSTransaction_clear(transaction);
+    return retval;
 }
 
 /* TODO: Expose implementation in core open62541 */
@@ -809,13 +1192,20 @@ UA_GDSReceiver_removeCertificate(UA_GDSReceiverContext *ctx,
     if(transaction->state != UA_GDSTRANSACTIONSTATE_FRESH)
         return UA_STATUSCODE_BADTRANSACTIONPENDING;
 
-    /* This Method cannot be called if the containing TrustList Object is open */
+    if(!certGroup->getTrustList || !certGroup->setTrustList ||
+       !certGroup->getCertificateCrls)
+        return UA_STATUSCODE_BADNOTWRITABLE;
+
+    /* This Method cannot be called if the containing TrustList Object is open
+     * (Part 12, 7.8.2.7) */
     UA_FileInfo *fileInfo =
         UA_GDSReceiver_getFileInfo(ctx, certGroup->certificateGroupId);
     if(!fileInfo)
         return UA_STATUSCODE_BADINTERNALERROR;
-    if(fileInfo->openCount > 0)
+    if(hasWriteHandle(ctx, fileInfo, NULL))
         return UA_STATUSCODE_BADINVALIDSTATE;
+    if(fileInfo->openCount > 0)
+        return UA_STATUSCODE_BADNOTWRITABLE;
 
     /* When a certificate is removed, a transaction is created which is then
      * executed directly. No apply changes is required */
@@ -829,6 +1219,7 @@ UA_GDSReceiver_removeCertificate(UA_GDSReceiverContext *ctx,
         UA_GDSTransaction_clear(transaction);
         return UA_STATUSCODE_BADINTERNALERROR;
     }
+    UA_Boolean *validBefore = NULL;
 
     UA_TrustListDataType trustList;
     UA_TrustListDataType_init(&trustList);
@@ -904,15 +1295,44 @@ UA_GDSReceiver_removeCertificate(UA_GDSReceiverContext *ctx,
         goto cleanup;
     }
 
+    /* A CA Certificate may be needed to validate other Certificates of the
+     * TrustList (Part 12, 7.8.2.7). Note which Certificates are valid now. */
+    UA_Boolean removesCA =
+        (UA_CertificateUtils_checkCA(&certificate) == UA_STATUSCODE_GOOD);
+    if(removesCA && trustList.trustedCertificatesSize > 0) {
+        validBefore = (UA_Boolean*)
+            UA_calloc(trustList.trustedCertificatesSize, sizeof(UA_Boolean));
+        if(!validBefore) {
+            retval = UA_STATUSCODE_BADOUTOFMEMORY;
+            goto cleanup;
+        }
+        for(size_t i = 0; i < trustList.trustedCertificatesSize; i++) {
+            UA_ByteString *cert = &trustList.trustedCertificates[i];
+            validBefore[i] = UA_CertificateUtils_checkCA(cert) != UA_STATUSCODE_GOOD &&
+                verifyCertificate(ctx, transactionCG, cert) == UA_STATUSCODE_GOOD;
+        }
+    }
+
     /* Add to the transaction */
     retval = transactionCG->removeFromTrustList(transactionCG, &list);
     if(retval != UA_STATUSCODE_GOOD)
         goto cleanup;
 
+    for(size_t i = 0; validBefore && i < trustList.trustedCertificatesSize; i++) {
+        UA_ByteString *cert = &trustList.trustedCertificates[i];
+        if(!validBefore[i] || UA_ByteString_equal(cert, &certificate))
+            continue;
+        if(verifyCertificate(ctx, transactionCG, cert) != UA_STATUSCODE_GOOD) {
+            retval = UA_STATUSCODE_BADCERTIFICATECHAININCOMPLETE;
+            goto cleanup;
+        }
+    }
+
     /* Apply */
     retval = UA_GDSReceiver_applyChanges(ctx);
 
 cleanup:
+    UA_free(validBefore);
     UA_TrustListDataType_clear(&trustList);
     UA_Array_delete(crls, crlsSize, &UA_TYPES[UA_TYPES_BYTESTRING]);
     if(retval != UA_STATUSCODE_GOOD)
@@ -937,8 +1357,10 @@ UA_GDSReceiver_getRejectedList(UA_GDSReceiverContext *ctx, size_t outputSize,
     UA_CertificateGroup *certGroup = &sc->secureChannelPKI;
     UA_ByteString *rejectedListSecureChannel = NULL;
     size_t rejectedListSecureChannelSize = 0;
-    UA_StatusCode res = certGroup->getRejectedList(
-        certGroup, &rejectedListSecureChannel, &rejectedListSecureChannelSize);
+    UA_StatusCode res = UA_STATUSCODE_GOOD;
+    if(certGroup->getRejectedList)
+        res = certGroup->getRejectedList(certGroup, &rejectedListSecureChannel,
+                                         &rejectedListSecureChannelSize);
     if(res != UA_STATUSCODE_GOOD) {
         UA_Array_delete(rejectedListSecureChannel,
                         rejectedListSecureChannelSize,
@@ -951,8 +1373,9 @@ UA_GDSReceiver_getRejectedList(UA_GDSReceiverContext *ctx, size_t outputSize,
     certGroup = &sc->sessionPKI;
     UA_ByteString *rejectedListSession = NULL;
     size_t rejectedListSessionSize = 0;
-    res = certGroup->getRejectedList(certGroup, &rejectedListSession,
-                                     &rejectedListSessionSize);
+    if(certGroup->getRejectedList)
+        res = certGroup->getRejectedList(certGroup, &rejectedListSession,
+                                         &rejectedListSessionSize);
     if(res != UA_STATUSCODE_GOOD) {
         UA_Array_delete(rejectedListSecureChannel,
                         rejectedListSecureChannelSize,
@@ -1033,13 +1456,17 @@ UA_GDSReceiver_openTrustListWithMask(UA_GDSReceiverContext *ctx, UA_CertificateG
     UA_assert(certGroup != NULL);
     UA_Server *server = ctx->drv.server;
 
-    if(ctx->transaction.state == UA_GDSTRANSACTIONSTATE_PENDING)
-        return UA_STATUSCODE_BADTRANSACTIONPENDING;
+    if(!certGroup->getTrustList)
+        return UA_STATUSCODE_BADNOTSUPPORTED;
 
+    /* Reading is possible during a transaction, but not while the TrustList is
+     * open for writing (Part 12, 7.8.2.5 and Part 20) */
     UA_FileInfo *fileInfo =
         UA_GDSReceiver_getFileInfo(ctx, certGroup->certificateGroupId);
     if(!fileInfo)
         return UA_STATUSCODE_BADINTERNALERROR;
+    if(hasWriteHandle(ctx, fileInfo, NULL))
+        return UA_STATUSCODE_BADNOTREADABLE;
 
     UA_StatusCode retval = UA_STATUSCODE_GOOD;
     if(ctx->checkSessionCallbackId == 0) {
@@ -1058,6 +1485,9 @@ UA_GDSReceiver_openTrustListWithMask(UA_GDSReceiverContext *ctx, UA_CertificateG
         UA_TrustListDataType_clear(&trustList);
         return retval;
     }
+
+    /* The plugins return all lists */
+    filterTrustList(&trustList, mask);
 
     UA_ByteString encTrustList = UA_BYTESTRING_NULL;
     retval = UA_encodeBinary(&trustList, &UA_TYPES[UA_TYPES_TRUSTLISTDATATYPE],
@@ -1110,101 +1540,100 @@ UA_GDSReceiver_openTrustList(UA_GDSReceiverContext *ctx, UA_CertificateGroup *ce
                             UA_Variant *output) {
     UA_assert(certGroup != NULL);
     UA_Server *server = ctx->drv.server;
-
     UA_GDSTransaction *transaction = &ctx->transaction;
-    /* Cannot be opened when a transaction is running. Only an Open for writing
-     * from the session of the transaction continues it (Part 12 §7.8.2.2),
-     * unless ApplyChanges is already queued. */
-    if(transaction->state == UA_GDSTRANSACTIONSTATE_PENDING &&
-       (fileOpenMode != (UA_OPENFILEMODE_WRITE | UA_OPENFILEMODE_ERASEEXISTING) ||
-        transaction->applyChangesQueued ||
-        !UA_NodeId_equal(&transaction->sessionId, sessionId)))
-        return UA_STATUSCODE_BADTRANSACTIONPENDING;
+
+    /* Only Read and Write + EraseExisting (Part 12, 7.8.2.2) */
+    const UA_Byte writeMode = UA_OPENFILEMODE_WRITE | UA_OPENFILEMODE_ERASEEXISTING;
+    if(fileOpenMode != UA_OPENFILEMODE_READ && fileOpenMode != writeMode)
+        return UA_STATUSCODE_BADNOTSUPPORTED;
+    if(!certGroup->getTrustList)
+        return UA_STATUSCODE_BADNOTSUPPORTED;
 
     UA_FileInfo *fileInfo =
         UA_GDSReceiver_getFileInfo(ctx, certGroup->certificateGroupId);
     if(!fileInfo)
         return UA_STATUSCODE_BADINTERNALERROR;
 
-    /* Check that the list can be opened in the specified mode */
     UA_StatusCode retval = UA_STATUSCODE_GOOD;
-    if(fileOpenMode == (UA_OPENFILEMODE_WRITE | UA_OPENFILEMODE_ERASEEXISTING)) {
-        if(fileInfo->openCount != 0)
-            return UA_STATUSCODE_BADNOTWRITABLE;
-    } else if(fileOpenMode == UA_OPENFILEMODE_READ) {
-        /* Nothing to check.
-         * If the list is already open for writing,
-         * the previous check for a current transaction will fail. */
+    UA_Boolean created = false;
+    if(fileOpenMode == UA_OPENFILEMODE_READ) {
+        /* Readers get the active TrustList, also during a transaction (Part 12,
+         * 7.8.2.5). Not while the TrustList is open for writing. */
+        if(hasWriteHandle(ctx, fileInfo, NULL))
+            return UA_STATUSCODE_BADNOTREADABLE;
     } else {
-        return UA_STATUSCODE_BADINVALIDSTATE;
-    }
-
-    /* If the list is opened for writing, a transaction must be created */
-    if(fileOpenMode == (UA_OPENFILEMODE_WRITE | UA_OPENFILEMODE_ERASEEXISTING) &&
-       transaction->state == UA_GDSTRANSACTIONSTATE_FRESH) {
-        retval = UA_GDSTransaction_init(transaction, server, *sessionId);
+        /* Continue the transaction of the Session or create a new one
+         * (Part 12, 7.8.2.2) */
+        retval = UA_GDSReceiver_checkTransaction(ctx, sessionId);
         if(retval != UA_STATUSCODE_GOOD)
             return retval;
+        if(fileInfo->openCount != 0)
+            return UA_STATUSCODE_BADNOTWRITABLE;
+        if(transaction->state == UA_GDSTRANSACTIONSTATE_FRESH) {
+            retval = UA_GDSTransaction_init(transaction, server, *sessionId);
+            if(retval != UA_STATUSCODE_GOOD)
+                return retval;
+            created = true;
+        }
     }
 
+    UA_ByteString encTrustList = UA_BYTESTRING_NULL;
+    UA_FileContext *fileContext = NULL;
     if(ctx->checkSessionCallbackId == 0) {
         retval = UA_Server_addRepeatedCallback(server, checkSessionActive, ctx,
                                                CHECKACTIVESESSIONINTERVAL,
                                                &ctx->checkSessionCallbackId);
         if(retval != UA_STATUSCODE_GOOD)
-            return retval;
+            goto errout;
     }
 
     UA_TrustListDataType trustList;
-    memset(&trustList, 0, sizeof(UA_TrustListDataType));
+    UA_TrustListDataType_init(&trustList);
     trustList.specifiedLists = UA_TRUSTLISTMASKS_ALL;
     retval = certGroup->getTrustList(certGroup, &trustList);
-    if(retval != UA_STATUSCODE_GOOD) {
-        UA_TrustListDataType_clear(&trustList);
-        return retval;
-    }
-
-    UA_ByteString encTrustList = UA_BYTESTRING_NULL;
-    retval = UA_encodeBinary(&trustList, &UA_TYPES[UA_TYPES_TRUSTLISTDATATYPE],
-                             &encTrustList, NULL);
+    filterTrustList(&trustList, UA_TRUSTLISTMASKS_ALL);
+    if(retval == UA_STATUSCODE_GOOD)
+        retval = UA_encodeBinary(&trustList, &UA_TYPES[UA_TYPES_TRUSTLISTDATATYPE],
+                                 &encTrustList, NULL);
     UA_TrustListDataType_clear(&trustList);
-    if(retval != UA_STATUSCODE_GOOD) {
-        UA_ByteString_clear(&encTrustList);
-        return retval;
-    }
+    if(retval != UA_STATUSCODE_GOOD)
+        goto errout;
 
-    UA_FileContext *fileContext = (UA_FileContext*)UA_calloc(1, sizeof(UA_FileContext));
+    fileContext = (UA_FileContext*)UA_calloc(1, sizeof(UA_FileContext));
     if(!fileContext) {
-        UA_ByteString_clear(&encTrustList);
-        return UA_STATUSCODE_BADOUTOFMEMORY;
+        retval = UA_STATUSCODE_BADOUTOFMEMORY;
+        goto errout;
     }
     fileContext->file = encTrustList;
+    encTrustList = UA_BYTESTRING_NULL;
     fileContext->sessionId = *sessionId;
     fileContext->openFileMode = fileOpenMode;
     fileContext->currentPos = 0;
     fileContext->dataToWrite = UA_BYTESTRING_NULL;
     retval = createFileHandleId(fileInfo, &fileContext->fileHandle);
-    if(retval != UA_STATUSCODE_GOOD) {
-        UA_ByteString_clear(&fileContext->file);
-        UA_free(fileContext);
-        return retval;
-    }
+    if(retval == UA_STATUSCODE_GOOD)
+        retval = UA_Variant_setScalarCopy(output, &fileContext->fileHandle,
+                                          &UA_TYPES[UA_TYPES_UINT32]);
+    if(retval != UA_STATUSCODE_GOOD)
+        goto errout;
 
-    retval = UA_Variant_setScalarCopy(output, &fileContext->fileHandle,
-                                      &UA_TYPES[UA_TYPES_UINT32]);
-    if(retval != UA_STATUSCODE_GOOD) {
-        UA_ByteString_clear(&fileContext->file);
-        UA_free(fileContext);
-        return retval;
-    }
     fileInfo->openCount += 1;
+    LIST_INSERT_HEAD(&fileInfo->fileContext, fileContext, listEntry);
 
     /* Updating OpenCount Variable in the information model */
     writeOpenCountVariable(ctx, certGroup);
-
-    LIST_INSERT_HEAD(&fileInfo->fileContext, fileContext, listEntry);
-
     return UA_STATUSCODE_GOOD;
+
+ errout:
+    /* A failed call does not change the transaction state (Part 12, 7.10.2) */
+    if(fileContext) {
+        UA_ByteString_clear(&fileContext->file);
+        UA_free(fileContext);
+    }
+    UA_ByteString_clear(&encTrustList);
+    if(created)
+        UA_GDSTransaction_clear(transaction);
+    return retval;
 }
 
 static void
@@ -1566,6 +1995,11 @@ createSigningRequestLocked(UA_GDSReceiver *receiver,
             return UA_STATUSCODE_BADOUTOFMEMORY;
     }
 
+    /* The first SecurityPolicy creates the request (and the new key). The
+     * others take over the new key. Several endpoints can share a policy,
+     * which is called only once. */
+    UA_SecurityPolicy *called[GDS_RECEIVER_MAX_ENDPOINTS];
+    size_t calledSize = 0;
     for(size_t i = 0; i < sc->endpointsSize; i++) {
         UA_SecurityPolicy *sp =
             getSecPolicyByUri(sc, &sc->endpoints[i].securityPolicyUri);
@@ -1578,6 +2012,18 @@ createSigningRequestLocked(UA_GDSReceiver *receiver,
         if(!UA_NodeId_equal(&certificateTypeId, &sp->certificateTypeId) ||
            !UA_NodeId_equal(&certGroupId, &sp->certificateGroupId))
             continue;
+        size_t j = 0;
+        for(; j < calledSize; j++) {
+            if(called[j] == sp)
+                break;
+        }
+        if(j < calledSize)
+            continue;
+        if(calledSize == GDS_RECEIVER_MAX_ENDPOINTS) {
+            retval = UA_STATUSCODE_BADNOTSUPPORTED;
+            goto cleanup;
+        }
+        called[calledSize++] = sp;
 
         retval = sp->createSigningRequest(sp, subjectName, nonce,
                                           &UA_KEYVALUEMAP_NULL, csr,
@@ -1586,11 +2032,11 @@ createSigningRequestLocked(UA_GDSReceiver *receiver,
             goto cleanup;
     }
 
-    UA_ByteString localCsrCertificate = UA_BYTESTRING_NULL;
-    retval = UA_ByteString_copy(csr, &localCsrCertificate);
+    UA_ByteString lastCsr = UA_BYTESTRING_NULL;
+    retval = UA_ByteString_copy(csr, &lastCsr);
     if(retval == UA_STATUSCODE_GOOD) {
-        UA_ByteString_clear(&ctx->transaction.localCsrCertificate);
-        ctx->transaction.localCsrCertificate = localCsrCertificate;
+        UA_ByteString_clear(&ctx->lastCsr);
+        ctx->lastCsr = lastCsr;
     }
 
 cleanup:
@@ -1631,29 +2077,34 @@ UA_GDSReceiver_applyChanges(UA_GDSReceiverContext *ctx) {
     if(transaction->applyChangesQueued)
         return UA_STATUSCODE_BADINVALIDSTATE;
 
-    /* Check if a TrustList is still open */
-    for(size_t i = 0; i < transaction->certGroupSize; i++) {
-        UA_CertificateGroup *certGroup = &transaction->certGroups[i];
-        UA_FileInfo *fileInfo =
-            UA_GDSReceiver_getFileInfo(ctx, certGroup->certificateGroupId);
-        if(!fileInfo)
-            return UA_STATUSCODE_BADINTERNALERROR;
-        if(fileInfo->openCount > 0)
-            return UA_STATUSCODE_BADINVALIDSTATE;
-    }
+    /* No changes are applied while a TrustList is open for writing (Part 12,
+     * 7.10.9) */
+    if(hasWriteHandle(ctx, NULL, NULL))
+        return UA_STATUSCODE_BADINVALIDSTATE;
 
-    /* No changes are applied while any TrustList is open for writing (Part 12
-     * §7.10.9). The transaction may also hold a certificate update only. */
-    for(UA_FileInfo *fi = ctx->fileInfos; fi; fi = fi->next) {
-        UA_FileContext *fileContext;
-        LIST_FOREACH(fileContext, &fi->fileContext, listEntry) {
-            if(fileContext->openFileMode ==
-               (UA_OPENFILEMODE_WRITE | UA_OPENFILEMODE_ERASEEXISTING))
-                return UA_STATUSCODE_BADINVALIDSTATE;
+    /* Verify that the changes are consistent before anything is applied. The
+     * Certificates are validated with the final TrustLists (Part 12, 7.10.2). */
+    UA_StatusCode retval = UA_STATUSCODE_GOOD;
+    for(size_t i = 0; i < transaction->certificateInfosSize; i++) {
+        UA_GDSCertificateInfo *certInfo = &transaction->certificateInfos[i];
+        UA_CertificateGroup *liveGroup =
+            getCertGroup(server, &certInfo->certificateGroup);
+        if(!liveGroup) {
+            UA_GDSTransaction_clear(transaction);
+            return UA_STATUSCODE_BADINTERNALERROR;
+        }
+        retval = UA_GDSReceiver_validateCertificate(ctx, &transaction->sessionId,
+                                                    liveGroup, &certInfo->certificate);
+        if(retval != UA_STATUSCODE_GOOD) {
+            UA_LOG_WARNING(sc->logging, UA_LOGCATEGORY_SERVER,
+                           "ApplyChanges: A staged Certificate is not valid with "
+                           "the new TrustList (%s). The changes are discarded.",
+                           UA_StatusCode_name(retval));
+            UA_GDSTransaction_clear(transaction);
+            return retval;
         }
     }
 
-    UA_StatusCode retval = UA_STATUSCODE_GOOD;
     UA_GDSTransactionChanges *changes = (UA_GDSTransactionChanges*)
         UA_calloc(1, sizeof(UA_GDSTransactionChanges));
     if(!changes)
@@ -1880,6 +2331,18 @@ UA_GDSReceiver_stop(UA_Driver *drv) {
         UA_Server_removeCallback(drv->server, ctx->checkSessionCallbackId);
         ctx->checkSessionCallbackId = 0;
     }
+
+    /* The Sessions end with the server. Discard their transaction and the
+     * handles of open TrustLists. */
+    if(!ctx->transaction.applyChangesQueued)
+        UA_GDSTransaction_clear(&ctx->transaction);
+    for(UA_FileInfo *fi = ctx->fileInfos; fi; fi = fi->next) {
+        UA_FileContext *fileContext, *fileContextTmp;
+        LIST_FOREACH_SAFE(fileContext, &fi->fileContext, listEntry, fileContextTmp)
+            UA_FileContext_delete(fi, fileContext);
+        fi->openCount = 0;
+    }
+
     if(ctx->pendingDelayedCallbacks > 0)
         drv->state = UA_LIFECYCLESTATE_STOPPING;
     else
@@ -1901,6 +2364,7 @@ UA_GDSReceiver_free(UA_Driver *drv) {
     UA_GDSReceiverContext *ctx = (UA_GDSReceiverContext*)drv;
     ctx->checkSessionCallbackId = 0;
     UA_GDSTransaction_clear(&ctx->transaction);
+    UA_ByteString_clear(&ctx->lastCsr);
     UA_FileInfo *fi = (UA_FileInfo*)ctx->fileInfos;
 
     /* free all fileInfoContexts */
