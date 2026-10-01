@@ -226,6 +226,37 @@ START_TEST(certificate_types_configured_filestore) {
 END_TEST
 #endif /* defined(__linux__) || defined(UA_ARCHITECTURE_WIN32) */
 
+/* The key of the certificate must fit the certificate type (Part 12,
+ * 7.8.4) */
+START_TEST(update_certificate_eccCertAsRsa) {
+    UA_ByteString certificate = {CERT_P256_DER_LENGTH, CERT_P256_DER_DATA};
+    UA_ByteString privateKey = {KEY_P256_DER_LENGTH, KEY_P256_DER_DATA};
+    UA_NodeId certTypRsaSha256 = UA_NODEID_NUMERIC(0, UA_NS0ID_RSASHA256APPLICATIONCERTIFICATETYPE);
+    ck_assert_uint_eq(UA_GDSReceiver_updateCertificate(receiver, UA_NODEID_NULL,
+                                                       certTypRsaSha256, certificate,
+                                                       &privateKey),
+                      UA_STATUSCODE_BADCERTIFICATEINVALID);
+}
+END_TEST
+
+#if defined(__linux__) || defined(UA_ARCHITECTURE_WIN32)
+/* The filestore configuration has RsaMin endpoints. Their certificate can be
+ * updated with the C API. */
+START_TEST(update_certificate_rsaMin_filestore) {
+    UA_ByteString newCertificate = UA_BYTESTRING_NULL;
+    UA_ByteString newPrivateKey = UA_BYTESTRING_NULL;
+    generateCertificate(&newCertificate, &newPrivateKey);
+    UA_NodeId certTypRsaMin = UA_NODEID_NUMERIC(0, UA_NS0ID_RSAMINAPPLICATIONCERTIFICATETYPE);
+    ck_assert_uint_eq(UA_GDSReceiver_updateCertificate(receiver, UA_NODEID_NULL,
+                                                       certTypRsaMin, newCertificate,
+                                                       &newPrivateKey),
+                      UA_STATUSCODE_GOOD);
+    UA_ByteString_clear(&newCertificate);
+    UA_ByteString_clear(&newPrivateKey);
+}
+END_TEST
+#endif /* defined(__linux__) || defined(UA_ARCHITECTURE_WIN32) */
+
 START_TEST(addDriver_rejectsDuplicateGDSReceiver) {
     UA_GDSReceiver *duplicate = UA_GDSReceiver_new();
     ck_assert_ptr_nonnull(duplicate);
@@ -350,6 +381,7 @@ static Suite* testSuite_create_certificate(void) {
     tcase_add_test(tc_cert, update_certificate_noKey);
     tcase_add_test(tc_cert, certificate_types_configured);
     tcase_add_test(tc_cert, update_certificate_unconfiguredType);
+    tcase_add_test(tc_cert, update_certificate_eccCertAsRsa);
     tcase_add_test(tc_cert, addDriver_rejectsDuplicateGDSReceiver);
     tcase_add_test(tc_cert, update_certificate_preflightsAllEndpoints);
     tcase_add_test(tc_cert, update_certificate_noneEndpoint);
@@ -365,6 +397,8 @@ static Suite* testSuite_create_certificate(void) {
     tcase_add_test(tc_cert_filestore, update_certificate_wrongKey);
     tcase_add_test(tc_cert_filestore, update_certificate_noKey);
     tcase_add_test(tc_cert_filestore, certificate_types_configured_filestore);
+    tcase_add_test(tc_cert_filestore, update_certificate_eccCertAsRsa);
+    tcase_add_test(tc_cert_filestore, update_certificate_rsaMin_filestore);
     tcase_add_test(tc_cert_filestore, addDriver_rejectsDuplicateGDSReceiver);
     tcase_add_test(tc_cert_filestore, update_certificate_preflightsAllEndpoints);
     tcase_add_test(tc_cert_filestore, update_certificate_noneEndpoint);

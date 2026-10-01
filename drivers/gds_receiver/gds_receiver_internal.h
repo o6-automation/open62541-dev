@@ -63,6 +63,13 @@ UA_GDSReceiver_serverSlots(UA_GDSReceiverContext *ctx, size_t *slotsSize);
 UA_StatusCode
 writeServerCertificateTypes(UA_GDSReceiverContext *ctx);
 
+/* The key of the certificate must fit the certificate type (Part 12, 7.8.4):
+ * Bad_CertificateInvalid otherwise. Types that the crypto backend cannot check
+ * (for example certificate types of non-OPC UA applications) are accepted. */
+UA_StatusCode
+UA_GDSReceiver_checkCertificateType(const UA_NodeId *certificateTypeId,
+                                    const UA_ByteString *certificate);
+
 UA_StatusCode
 writeOpenCountVariable(UA_GDSReceiverContext *ctx, UA_CertificateGroup *group);
 
