@@ -3,7 +3,7 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/.
  *
  *    Copyright 2024 (c) Fraunhofer IOSB (Author: Noel Graf)
- *
+ *    Copyright 2026 (c) o6 Automation GmbH (Author: Andreas Ebner)
  */
 
 #include <open62541/client.h>
@@ -651,6 +651,36 @@ START_TEST(filestore_uses_crl_issuer_in_filename) {
 END_TEST
 #endif
 
+/* Both backends read the documented max-trust-listsize parameter */
+START_TEST(memorystore_honours_max_trust_listsize) {
+    UA_ByteString certificate = {CERT_DER_LENGTH, CERT_DER_DATA};
+    UA_KeyValueMap *params = UA_KeyValueMap_new();
+    ck_assert_ptr_nonnull(params);
+    UA_UInt32 maxTrustListSize = (UA_UInt32)CERT_DER_LENGTH - 1;
+    UA_StatusCode retval = UA_KeyValueMap_setScalar(
+        params, UA_QUALIFIEDNAME(0, "max-trust-listsize"),
+        &maxTrustListSize, &UA_TYPES[UA_TYPES_UINT32]);
+    ck_assert_uint_eq(retval, UA_STATUSCODE_GOOD);
+
+    UA_CertificateGroup group;
+    memset(&group, 0, sizeof(group));
+    UA_NodeId groupId = UA_NODEID_NUMERIC(0, 1);
+    retval = UA_CertificateGroup_Memorystore(&group, &groupId, NULL, NULL, params);
+    ck_assert_uint_eq(retval, UA_STATUSCODE_GOOD);
+
+    UA_TrustListDataType trustList;
+    UA_TrustListDataType_init(&trustList);
+    trustList.specifiedLists = UA_TRUSTLISTMASKS_TRUSTEDCERTIFICATES;
+    trustList.trustedCertificates = &certificate;
+    trustList.trustedCertificatesSize = 1;
+    ck_assert_uint_ne(group.setTrustList(&group, &trustList), UA_STATUSCODE_GOOD);
+    ck_assert_uint_ne(group.addToTrustList(&group, &trustList), UA_STATUSCODE_GOOD);
+
+    group.clear(&group);
+    UA_KeyValueMap_delete(params);
+}
+END_TEST
+
 #ifdef UA_ENABLE_ENCRYPTION_MBEDTLS
 START_TEST(memorystore_rejects_invalid_initial_trust_material) {
     UA_Byte invalidData[] = {0x01, 0x02, 0x03};
@@ -823,6 +853,7 @@ static Suite* testSuite_encryption(void) {
     tcase_add_test(tc_encryption_memorystore, remove_from_trustlist);
     tcase_add_test(tc_encryption_memorystore, get_rejectedlist);
     tcase_add_test(tc_encryption_memorystore, verify_expired_certificate_status_depends_on_trust);
+    tcase_add_test(tc_encryption_memorystore, memorystore_honours_max_trust_listsize);
 #endif /* UA_ENABLE_ENCRYPTION */
     suite_add_tcase(s,tc_encryption_memorystore);
 

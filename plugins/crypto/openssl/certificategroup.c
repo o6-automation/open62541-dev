@@ -5,6 +5,7 @@
  *    Copyright 2020 (c) basysKom GmbH
  *    Copyright 2024 (c) Fraunhofer IOSB (Author: Noel Graf)
  *    Copyright 2024 (c) Siemens AG (Authors: Tin Raic, Thomas Zeschg)
+ *    Copyright 2026 (c) o6 Automation GmbH (Author: Andreas Ebner)
  */
 
 #include <open62541/util.h>
@@ -32,8 +33,8 @@ static const struct {
     const UA_DataType *type;
     UA_Boolean required;
 } MemoryCertStoreParameters[MEMORYCERTSTORE_PARAMETERSSIZE] = {
-    {{0, UA_STRING_STATIC("maxTrustListSize")}, &UA_TYPES[UA_TYPES_UINT16], false},
-    {{0, UA_STRING_STATIC("maxRejectedListSize")}, &UA_TYPES[UA_TYPES_STRING], false}
+    {{0, UA_STRING_STATIC("max-trust-listsize")}, &UA_TYPES[UA_TYPES_UINT32], false},
+    {{0, UA_STRING_STATIC("max-rejected-listsize")}, &UA_TYPES[UA_TYPES_UINT32], false}
 };
 
 struct MemoryCertStore;
