@@ -1507,6 +1507,8 @@ clearRolePermissionSet(void *element) {
 /* Top-level RBAC configuration object:
  *   { "roles": [ ... ], "wellKnownRoleMappings": [ ... ],
  *     "rolePermissionPresets": [ ... ],
+ *     "namespaceZeroDefaultRolePermissions": [ { roleId, permissions }, ... ],
+ *     "namespaceDefaultRolePermissions": [ { roleId, permissions }, ... ],
  *     "allPermissionsForAnonymous": <bool> } */
 PARSE_JSON(RbacConfigurationField) {
     UA_ServerConfig *config = (UA_ServerConfig*)configField;
@@ -1546,6 +1548,19 @@ PARSE_JSON(RbacConfigurationField) {
                                        sizeof(UA_RolePermissionSet),
                                        parseRolePermissionSet,
                                        clearRolePermissionSet);
+        } else if(strcmp(fieldStr, "namespaceZeroDefaultRolePermissions") == 0) {
+            /* Replaces the template of the default configuration */
+            UA_RolePermissionSet *rps = &config->namespaceZeroDefaultRolePermissions;
+            retval = parseElementArray(ctx, fieldStr, (void**)&rps->rolePermissions,
+                                       &rps->rolePermissionsSize,
+                                       sizeof(UA_RolePermission),
+                                       parseRolePermission, clearRolePermission);
+        } else if(strcmp(fieldStr, "namespaceDefaultRolePermissions") == 0) {
+            UA_RolePermissionSet *rps = &config->namespaceDefaultRolePermissions;
+            retval = parseElementArray(ctx, fieldStr, (void**)&rps->rolePermissions,
+                                       &rps->rolePermissionsSize,
+                                       sizeof(UA_RolePermission),
+                                       parseRolePermission, clearRolePermission);
         } else if(strcmp(fieldStr, "allPermissionsForAnonymous") == 0) {
             retval = BooleanField_parseJson(ctx, &config->allPermissionsForAnonymous, NULL);
         } else {

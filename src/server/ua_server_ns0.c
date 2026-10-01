@@ -1166,13 +1166,16 @@ configureNS0(UA_Server *server) {
     retVal |= writeNs0Variable(server, UA_NS0ID_SERVERCONFIGURATION_APPLICATIONTYPE,
                                &server->config.applicationDescription.applicationType,
                                &UA_TYPES[UA_TYPES_APPLICATIONTYPE]);
-    /* OPCUANamespaceMetadata - DefaultAccessRestrictions */
+#ifndef UA_ENABLE_RBAC
+    /* OPCUANamespaceMetadata - DefaultAccessRestrictions. With RBAC a
+     * DataSource reads the namespace default (syncNamespaceMetadata). */
     {
         UA_AccessRestrictionType defaultAccessRestrictions = UA_ACCESSRESTRICTIONTYPE_NONE;
         retVal |= writeNs0Variable(server, UA_NS0ID_OPCUANAMESPACEMETADATA_DEFAULTACCESSRESTRICTIONS,
                                    &defaultAccessRestrictions,
                                    &UA_TYPES[UA_TYPES_ACCESSRESTRICTIONTYPE]);
     }
+#endif
 #endif
 #ifndef UA_ENABLE_HISTORIZING
     deleteNode(server, UA_NS0ID(HISTORYSERVERCAPABILITIES), true);

@@ -168,8 +168,9 @@ initRoleSetRolePermissions(UA_Server *server);
  * Properties. All of them must be called with the server lock held. */
 
 /* Whether the namespace has a RolePermission model: an explicit
- * DefaultRolePermissions, or strict mode (allPermissionsForAnonymous ==
- * false). Without a model (legacy mode), Nodes without their own
+ * DefaultRolePermissions, or in strict mode (allPermissionsForAnonymous ==
+ * false) the template of the server configuration for Namespace Zero or for
+ * all other namespaces. Without a model (legacy mode), Nodes without their own
  * RolePermissions are unrestricted and the Server publishes no RolePermission
  * information for them. entries points to the namespace default (borrowed,
  * may be empty to deny everything). */
@@ -195,6 +196,11 @@ resolveNodeRolePermissions(UA_Server *server, const UA_Node *node,
 UA_PermissionType
 getNodeEffectivePermissions(UA_Server *server, const UA_Session *session,
                             const UA_Node *node);
+
+/* Allocate or grow the namespace metadata array to cover all namespaces. New
+ * entries have no defaults. Must be called with the server lock held. */
+UA_StatusCode
+ensureNamespaceMetadataSize(UA_Server *server);
 
 /* Copy the entries of a RolePermission list that belong to one of the
  * Session's Roles (UserRolePermissions semantics). A NULL Session has no

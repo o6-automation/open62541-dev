@@ -280,6 +280,104 @@ addEndpoint(UA_ServerConfig *conf,
     return retval;
 }
 
+#ifdef UA_ENABLE_RBAC
+
+/* Namespace default RolePermission templates after the suggested permissions
+ * of the well-known Roles (Part 3 §4.9.2, Table 2). Every Session holds the
+ * Anonymous Role in addition to its other Roles. */
+typedef struct {
+    UA_UInt32 roleId; /* Well-known Role in Namespace Zero */
+    UA_PermissionType permissions;
+} DefaultRolePermission;
+
+#define PERMISSIONS_BROWSE_READ \
+    (UA_PERMISSIONTYPE_BROWSE | UA_PERMISSIONTYPE_READ)
+#define PERMISSIONS_OBSERVE \
+    (PERMISSIONS_BROWSE_READ | UA_PERMISSIONTYPE_READHISTORY | \
+     UA_PERMISSIONTYPE_RECEIVEEVENTS)
+
+/* Namespace Zero holds the Server Object and the types. It is readable and
+ * its public Methods (GetMonitoredItems, ResendData, ConditionRefresh, ...)
+ * are callable. Nobody writes to it or adds Nodes by default. */
+static const DefaultRolePermission namespaceZeroPermissions[] = {
+    {UA_NS0ID_WELLKNOWNROLE_ANONYMOUS,
+     PERMISSIONS_BROWSE_READ | UA_PERMISSIONTYPE_CALL |
+     UA_PERMISSIONTYPE_RECEIVEEVENTS},
+    {UA_NS0ID_WELLKNOWNROLE_OBSERVER, PERMISSIONS_OBSERVE | UA_PERMISSIONTYPE_CALL},
+    {UA_NS0ID_WELLKNOWNROLE_OPERATOR, PERMISSIONS_OBSERVE | UA_PERMISSIONTYPE_CALL},
+    {UA_NS0ID_WELLKNOWNROLE_ENGINEER, PERMISSIONS_OBSERVE | UA_PERMISSIONTYPE_CALL},
+    {UA_NS0ID_WELLKNOWNROLE_SUPERVISOR, PERMISSIONS_OBSERVE | UA_PERMISSIONTYPE_CALL},
+    {UA_NS0ID_WELLKNOWNROLE_CONFIGUREADMIN,
+     PERMISSIONS_BROWSE_READ | UA_PERMISSIONTYPE_CALL |
+     UA_PERMISSIONTYPE_RECEIVEEVENTS},
+    {UA_NS0ID_WELLKNOWNROLE_SECURITYADMIN,
+     PERMISSIONS_BROWSE_READ | UA_PERMISSIONTYPE_CALL |
+     UA_PERMISSIONTYPE_RECEIVEEVENTS | UA_PERMISSIONTYPE_READROLEPERMISSIONS}
+};
+
+/* All other namespaces. Anonymous Sessions may only browse. */
+static const DefaultRolePermission namespacePermissions[] = {
+    {UA_NS0ID_WELLKNOWNROLE_ANONYMOUS, UA_PERMISSIONTYPE_BROWSE},
+    {UA_NS0ID_WELLKNOWNROLE_AUTHENTICATEDUSER, PERMISSIONS_BROWSE_READ},
+    {UA_NS0ID_WELLKNOWNROLE_TRUSTEDAPPLICATION, PERMISSIONS_BROWSE_READ},
+    {UA_NS0ID_WELLKNOWNROLE_OBSERVER, PERMISSIONS_OBSERVE},
+    {UA_NS0ID_WELLKNOWNROLE_OPERATOR,
+     PERMISSIONS_OBSERVE | UA_PERMISSIONTYPE_WRITE | UA_PERMISSIONTYPE_CALL},
+    {UA_NS0ID_WELLKNOWNROLE_ENGINEER,
+     PERMISSIONS_OBSERVE | UA_PERMISSIONTYPE_WRITE |
+     UA_PERMISSIONTYPE_WRITEATTRIBUTE | UA_PERMISSIONTYPE_WRITEHISTORIZING |
+     UA_PERMISSIONTYPE_CALL},
+    {UA_NS0ID_WELLKNOWNROLE_SUPERVISOR, PERMISSIONS_OBSERVE | UA_PERMISSIONTYPE_CALL},
+    {UA_NS0ID_WELLKNOWNROLE_CONFIGUREADMIN,
+     PERMISSIONS_BROWSE_READ | UA_PERMISSIONTYPE_WRITE |
+     UA_PERMISSIONTYPE_WRITEATTRIBUTE | UA_PERMISSIONTYPE_WRITEHISTORIZING |
+     UA_PERMISSIONTYPE_CALL | UA_PERMISSIONTYPE_ADDREFERENCE |
+     UA_PERMISSIONTYPE_REMOVEREFERENCE | UA_PERMISSIONTYPE_DELETENODE |
+     UA_PERMISSIONTYPE_ADDNODE},
+    {UA_NS0ID_WELLKNOWNROLE_SECURITYADMIN,
+     PERMISSIONS_BROWSE_READ | UA_PERMISSIONTYPE_READROLEPERMISSIONS}
+};
+
+static UA_StatusCode
+setRolePermissionTemplate(UA_RolePermissionSet *rps,
+                          const DefaultRolePermission *entries,
+                          size_t entriesSize) {
+    UA_RolePermissionSet_clear(rps);
+    rps->rolePermissions = (UA_RolePermission*)
+        UA_calloc(entriesSize, sizeof(UA_RolePermission));
+    if(!rps->rolePermissions)
+        return UA_STATUSCODE_BADOUTOFMEMORY;
+    for(size_t i = 0; i < entriesSize; i++) {
+        rps->rolePermissions[i].roleId = UA_NODEID_NUMERIC(0, entries[i].roleId);
+        rps->rolePermissions[i].permissions = entries[i].permissions;
+    }
+    rps->rolePermissionsSize = entriesSize;
+    return UA_STATUSCODE_GOOD;
+}
+
+UA_EXPORT UA_StatusCode
+UA_ServerConfig_setDefaultNamespacePermissions(UA_ServerConfig *config) {
+    if(!config)
+        return UA_STATUSCODE_BADINVALIDARGUMENT;
+    UA_StatusCode res =
+        setRolePermissionTemplate(&config->namespaceZeroDefaultRolePermissions,
+                                  namespaceZeroPermissions,
+                                  sizeof(namespaceZeroPermissions) /
+                                  sizeof(namespaceZeroPermissions[0]));
+    if(res == UA_STATUSCODE_GOOD)
+        res = setRolePermissionTemplate(&config->namespaceDefaultRolePermissions,
+                                        namespacePermissions,
+                                        sizeof(namespacePermissions) /
+                                        sizeof(namespacePermissions[0]));
+    if(res != UA_STATUSCODE_GOOD) {
+        UA_RolePermissionSet_clear(&config->namespaceZeroDefaultRolePermissions);
+        UA_RolePermissionSet_clear(&config->namespaceDefaultRolePermissions);
+    }
+    return res;
+}
+
+#endif /* UA_ENABLE_RBAC */
+
 static UA_StatusCode
 setDefaultConfig(UA_ServerConfig *conf, UA_UInt16 portNumber) {
     if(!conf)
@@ -576,6 +674,9 @@ setDefaultConfig(UA_ServerConfig *conf, UA_UInt16 portNumber) {
 
 #ifdef UA_ENABLE_RBAC
     conf->allPermissionsForAnonymous = true;
+    UA_StatusCode rbacRes = UA_ServerConfig_setDefaultNamespacePermissions(conf);
+    if(rbacRes != UA_STATUSCODE_GOOD)
+        return rbacRes;
 #endif
 
     /* --> Finish setting the default static config <-- */

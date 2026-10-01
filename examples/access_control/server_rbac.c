@@ -40,8 +40,11 @@ int main(void) {
     /* Allow username/password authentication over unencrypted connection (for demo) */
     config.allowNonePolicyPassword = true;
 
-    /* When allPermissionsForAnonymous is false, access is denied for nodes
-     * without explicit RolePermissions or namespace defaults.
+    /* When allPermissionsForAnonymous is false, nodes without explicit
+     * RolePermissions or namespace defaults use the namespace templates of
+     * the configuration (config.namespaceZeroDefaultRolePermissions and
+     * config.namespaceDefaultRolePermissions, see
+     * UA_ServerConfig_setDefaultNamespacePermissions).
      * Set to true for development/testing to skip permission checks. */
     config.allPermissionsForAnonymous = false;
     UA_LOG_INFO(UA_Log_Stdout, UA_LOGCATEGORY_USERLAND,

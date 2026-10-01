@@ -17,11 +17,12 @@
 /* RBAC NS0 information model integration.
  * Known RBAC limitations are documented in ua_server_rbac.c. */
 
-/* Resolve the Role Object owning a property (inverse HasProperty), so the data
- * source callbacks need no per-node context to release on node deletion. */
+/* Resolve the Object owning a property (inverse HasProperty), so the data
+ * source callbacks need no per-node context to release on node deletion. Used
+ * for the Properties of the Role and NamespaceMetadata Objects. */
 static UA_StatusCode
-getRoleIdOfProperty(UA_Server *server, const UA_NodeId *propertyId,
-                    UA_NodeId *roleId) {
+getParentOfProperty(UA_Server *server, const UA_NodeId *propertyId,
+                    UA_NodeId *parentId) {
     UA_BrowseDescription bd;
     UA_BrowseDescription_init(&bd);
     bd.nodeId = *propertyId;
@@ -35,7 +36,7 @@ getRoleIdOfProperty(UA_Server *server, const UA_NodeId *propertyId,
     UA_StatusCode res = br.statusCode;
     if(res == UA_STATUSCODE_GOOD) {
         if(br.referencesSize > 0)
-            res = UA_NodeId_copy(&br.references[0].nodeId.nodeId, roleId);
+            res = UA_NodeId_copy(&br.references[0].nodeId.nodeId, parentId);
         else
             res = UA_STATUSCODE_BADNOTFOUND;
     }
@@ -100,17 +101,43 @@ findMethodChild(UA_Server *server, const UA_NodeId parentId,
     return res;
 }
 
+/* Resolve the namespace whose NamespaceMetadata Object owns the Property */
+static UA_StatusCode
+getNamespaceOfProperty(UA_Server *server, const UA_NodeId *propertyId,
+                       UA_UInt16 *namespaceIndex) {
+    UA_NodeId objectId;
+    UA_StatusCode res = getParentOfProperty(server, propertyId, &objectId);
+    if(res != UA_STATUSCODE_GOOD)
+        return res;
+    res = UA_STATUSCODE_BADNOTFOUND;
+    lockServer(server);
+    for(size_t i = 0; i < server->namespaceMetadataSize; i++) {
+        if(UA_NodeId_equal(&server->namespaceMetadata[i].objectId, &objectId)) {
+            *namespaceIndex = (UA_UInt16)i;
+            res = UA_STATUSCODE_GOOD;
+            break;
+        }
+    }
+    unlockServer(server);
+    UA_NodeId_clear(&objectId);
+    return res;
+}
+
 static UA_StatusCode
 readNamespacePermissions(UA_Server *server, const UA_NodeId *sessionId,
-                         UA_Boolean userOnly, UA_DataValue *value) {
+                         const UA_NodeId *nodeId, UA_Boolean userOnly,
+                         UA_DataValue *value) {
+    UA_UInt16 namespaceIndex = 0;
+    UA_StatusCode res = getNamespaceOfProperty(server, nodeId, &namespaceIndex);
+    if(res != UA_STATUSCODE_GOOD)
+        return res;
+
     UA_RolePermissionType *out = NULL;
     size_t outSize = 0;
-    UA_StatusCode res = UA_STATUSCODE_GOOD;
-
     lockServer(server);
     size_t entriesSize = 0;
     const UA_RolePermission *entries = NULL;
-    getNamespaceRolePermissionModel(server, 0, &entriesSize, &entries);
+    getNamespaceRolePermissionModel(server, namespaceIndex, &entriesSize, &entries);
     if(userOnly) {
         /* DefaultUserRolePermissions: filtered to the Session's Roles */
         const UA_Session *session = sessionId ?
@@ -153,7 +180,7 @@ readNamespaceDefaultRolePermissions(UA_Server *server,
                                     UA_Boolean includeSourceTimeStamp,
                                     const UA_NumericRange *range,
                                     UA_DataValue *value) {
-    return readNamespacePermissions(server, sessionId, false, value);
+    return readNamespacePermissions(server, sessionId, nodeId, false, value);
 }
 
 static UA_StatusCode
@@ -165,7 +192,36 @@ readNamespaceDefaultUserRolePermissions(UA_Server *server,
                                         UA_Boolean includeSourceTimeStamp,
                                         const UA_NumericRange *range,
                                         UA_DataValue *value) {
-    return readNamespacePermissions(server, sessionId, true, value);
+    return readNamespacePermissions(server, sessionId, nodeId, true, value);
+}
+
+static UA_StatusCode
+readNamespaceDefaultAccessRestrictions(UA_Server *server,
+                                       const UA_NodeId *sessionId,
+                                       void *sessionContext,
+                                       const UA_NodeId *nodeId,
+                                       void *nodeContext,
+                                       UA_Boolean includeSourceTimeStamp,
+                                       const UA_NumericRange *range,
+                                       UA_DataValue *value) {
+    UA_UInt16 namespaceIndex = 0;
+    UA_StatusCode res = getNamespaceOfProperty(server, nodeId, &namespaceIndex);
+    if(res != UA_STATUSCODE_GOOD)
+        return res;
+
+    UA_AccessRestrictionType restrictions = UA_ACCESSRESTRICTIONTYPE_NONE;
+    lockServer(server);
+    if(server->namespaceMetadata && namespaceIndex < server->namespaceMetadataSize &&
+       server->namespaceMetadata[namespaceIndex].hasDefaultAccessRestrictions)
+        restrictions = server->namespaceMetadata[namespaceIndex].defaultAccessRestrictions;
+    unlockServer(server);
+
+    res = UA_Variant_setScalarCopy(&value->value, &restrictions,
+                                   &UA_TYPES[UA_TYPES_ACCESSRESTRICTIONTYPE]);
+    if(res != UA_STATUSCODE_GOOD)
+        return res;
+    value->hasValue = true;
+    return UA_STATUSCODE_GOOD;
 }
 
 static UA_StatusCode
@@ -180,7 +236,7 @@ readRoleIdentities(UA_Server *server, const UA_NodeId *sessionId,
                    const UA_NumericRange *range,
                    UA_DataValue *value) {
     UA_NodeId roleId;
-    UA_StatusCode res = getRoleIdOfProperty(server, nodeId, &roleId);
+    UA_StatusCode res = getParentOfProperty(server, nodeId, &roleId);
     if(res != UA_STATUSCODE_GOOD)
         return res;
 
@@ -206,7 +262,7 @@ readRoleApplications(UA_Server *server, const UA_NodeId *sessionId,
                      const UA_NumericRange *range,
                      UA_DataValue *value) {
     UA_NodeId roleId;
-    UA_StatusCode res = getRoleIdOfProperty(server, nodeId, &roleId);
+    UA_StatusCode res = getParentOfProperty(server, nodeId, &roleId);
     if(res != UA_STATUSCODE_GOOD)
         return res;
 
@@ -232,7 +288,7 @@ readRoleEndpoints(UA_Server *server, const UA_NodeId *sessionId,
                   const UA_NumericRange *range,
                   UA_DataValue *value) {
     UA_NodeId roleId;
-    UA_StatusCode res = getRoleIdOfProperty(server, nodeId, &roleId);
+    UA_StatusCode res = getParentOfProperty(server, nodeId, &roleId);
     if(res != UA_STATUSCODE_GOOD)
         return res;
 
@@ -258,7 +314,7 @@ readRoleApplicationsExclude(UA_Server *server, const UA_NodeId *sessionId,
                             const UA_NumericRange *range,
                             UA_DataValue *value) {
     UA_NodeId roleId;
-    UA_StatusCode res = getRoleIdOfProperty(server, nodeId, &roleId);
+    UA_StatusCode res = getParentOfProperty(server, nodeId, &roleId);
     if(res != UA_STATUSCODE_GOOD)
         return res;
 
@@ -289,7 +345,7 @@ writeRoleApplicationsExclude(UA_Server *server, const UA_NodeId *sessionId,
         return UA_STATUSCODE_BADTYPEMISMATCH;
 
     UA_NodeId roleId;
-    UA_StatusCode res = getRoleIdOfProperty(server, nodeId, &roleId);
+    UA_StatusCode res = getParentOfProperty(server, nodeId, &roleId);
     if(res != UA_STATUSCODE_GOOD)
         return res;
 
@@ -313,7 +369,7 @@ readRoleEndpointsExclude(UA_Server *server, const UA_NodeId *sessionId,
                          const UA_NumericRange *range,
                          UA_DataValue *value) {
     UA_NodeId roleId;
-    UA_StatusCode res = getRoleIdOfProperty(server, nodeId, &roleId);
+    UA_StatusCode res = getParentOfProperty(server, nodeId, &roleId);
     if(res != UA_STATUSCODE_GOOD)
         return res;
 
@@ -344,7 +400,7 @@ writeRoleEndpointsExclude(UA_Server *server, const UA_NodeId *sessionId,
         return UA_STATUSCODE_BADTYPEMISMATCH;
 
     UA_NodeId roleId;
-    UA_StatusCode res = getRoleIdOfProperty(server, nodeId, &roleId);
+    UA_StatusCode res = getParentOfProperty(server, nodeId, &roleId);
     if(res != UA_STATUSCODE_GOOD)
         return res;
 
@@ -368,7 +424,7 @@ readRoleCustomConfiguration(UA_Server *server, const UA_NodeId *sessionId,
                             const UA_NumericRange *range,
                             UA_DataValue *value) {
     UA_NodeId roleId;
-    UA_StatusCode res = getRoleIdOfProperty(server, nodeId, &roleId);
+    UA_StatusCode res = getParentOfProperty(server, nodeId, &roleId);
     if(res != UA_STATUSCODE_GOOD)
         return res;
 
@@ -1651,22 +1707,8 @@ initNS0RBAC(UA_Server *server) {
      * Nodes the Server is allowed to create itself are created below. */
     UA_StatusCode retval = UA_STATUSCODE_GOOD;
 
-    /* Keep the standard NamespaceMetadata permission Properties backed by the
-     * same namespace-default policy used for enforcement and attributes. */
-    UA_DataSource defaultRolePermissions = {
-        readNamespaceDefaultRolePermissions, NULL};
-    RBAC_INIT_TRY(UA_Server_setVariableNode_dataSource(
-        server,
-        UA_NODEID_NUMERIC(0,
-            UA_NS0ID_OPCUANAMESPACEMETADATA_DEFAULTROLEPERMISSIONS),
-        defaultRolePermissions));
-    UA_DataSource defaultUserRolePermissions = {
-        readNamespaceDefaultUserRolePermissions, NULL};
-    RBAC_INIT_TRY(UA_Server_setVariableNode_dataSource(
-        server,
-        UA_NODEID_NUMERIC(0,
-            UA_NS0ID_OPCUANAMESPACEMETADATA_DEFAULTUSERROLEPERMISSIONS),
-        defaultUserRolePermissions));
+    /* The NamespaceMetadata Properties are backed by syncNamespaceMetadata,
+     * which needs the Roles registered by UA_Server_initRBAC */
 
     /* Ensure the RoleSet instance node exists */
     UA_NodeId roleSetId = UA_NODEID_NUMERIC(0, UA_NS0ID_SERVER_SERVERCAPABILITIES_ROLESET);
@@ -1756,6 +1798,456 @@ initNS0RBAC(UA_Server *server) {
 
 #undef RBAC_INIT_TRY
     return retval;
+}
+
+/*****************************/
+/* NamespaceMetadata Objects */
+/*****************************/
+
+/* Every namespace is published by a NamespaceMetadata Object under
+ * Server/Namespaces (Part 5 §6.3.13). Namespace Zero has the standard Object
+ * i=15957. For the other namespaces an Object shipped by a nodeset (such as the
+ * DI or GDS nodesets) is adopted; otherwise the Server creates one with an
+ * automatically assigned NodeId in Namespace Zero.
+ *
+ * The permission Properties are backed by DataSources that read the live
+ * namespace defaults. DefaultAccessRestrictions is always present.
+ * DefaultRolePermissions and DefaultUserRolePermissions are present only if the
+ * namespace has a RolePermission model (always in strict mode, in legacy mode
+ * only with an explicit default). Otherwise the Server publishes no
+ * information about how it manages Permissions (Part 3 §5.2.9). */
+
+typedef struct {
+    const char *name;
+    UA_UInt32 ns0Id; /* NodeId of the Property of i=15957 */
+    size_t typeIndex;
+    UA_Boolean isArray;
+    UA_StatusCode (*read)(UA_Server *server, const UA_NodeId *sessionId,
+                          void *sessionContext, const UA_NodeId *nodeId,
+                          void *nodeContext, UA_Boolean includeSourceTimeStamp,
+                          const UA_NumericRange *range, UA_DataValue *value);
+} NamespaceMetadataProperty;
+
+static const NamespaceMetadataProperty defaultRolePermissionsProperty = {
+    "DefaultRolePermissions",
+    UA_NS0ID_OPCUANAMESPACEMETADATA_DEFAULTROLEPERMISSIONS,
+    UA_TYPES_ROLEPERMISSIONTYPE, true, readNamespaceDefaultRolePermissions};
+static const NamespaceMetadataProperty defaultUserRolePermissionsProperty = {
+    "DefaultUserRolePermissions",
+    UA_NS0ID_OPCUANAMESPACEMETADATA_DEFAULTUSERROLEPERMISSIONS,
+    UA_TYPES_ROLEPERMISSIONTYPE, true, readNamespaceDefaultUserRolePermissions};
+static const NamespaceMetadataProperty defaultAccessRestrictionsProperty = {
+    "DefaultAccessRestrictions",
+    UA_NS0ID_OPCUANAMESPACEMETADATA_DEFAULTACCESSRESTRICTIONS,
+    UA_TYPES_ACCESSRESTRICTIONTYPE, false, readNamespaceDefaultAccessRestrictions};
+
+/* Whether the Object is a NamespaceMetadata Object for the namespace URI. It
+ * must be of NamespaceMetadataType (or a subtype) and carry the URI in its
+ * NamespaceUri Property or as its BrowseName. */
+static UA_Boolean
+isNamespaceMetadataObjectFor(UA_Server *server, const UA_ReferenceDescription *rd,
+                             const UA_String *uri) {
+    const UA_NodeId nmType = UA_NS0ID(NAMESPACEMETADATATYPE);
+    if(!isNodeInTree_singleRef(server, &rd->typeDefinition.nodeId, &nmType,
+                               UA_REFERENCETYPEINDEX_HASSUBTYPE))
+        return false;
+    if(UA_String_equal(&rd->browseName.name, uri))
+        return true;
+    UA_Variant v;
+    UA_Variant_init(&v);
+    UA_Boolean match = false;
+    if(readObjectProperty(server, rd->nodeId.nodeId,
+                          UA_QUALIFIEDNAME(0, "NamespaceUri"),
+                          &v) == UA_STATUSCODE_GOOD &&
+       UA_Variant_hasScalarType(&v, &UA_TYPES[UA_TYPES_STRING]))
+        match = UA_String_equal((const UA_String*)v.data, uri);
+    UA_Variant_clear(&v);
+    return match;
+}
+
+/* Find a NamespaceMetadata Object for the namespace under Server/Namespaces
+ * that is not yet assigned to another namespace */
+static UA_StatusCode
+findNamespaceMetadataObject(UA_Server *server, UA_UInt16 namespaceIndex,
+                            UA_NodeId *objectId) {
+    UA_BrowseDescription bd;
+    UA_BrowseDescription_init(&bd);
+    bd.nodeId = UA_NS0ID(SERVER_NAMESPACES);
+    bd.referenceTypeId = UA_NS0ID(HASCOMPONENT);
+    bd.includeSubtypes = true;
+    bd.browseDirection = UA_BROWSEDIRECTION_FORWARD;
+    bd.nodeClassMask = UA_NODECLASS_OBJECT;
+    bd.resultMask = UA_BROWSERESULTMASK_BROWSENAME |
+        UA_BROWSERESULTMASK_TYPEDEFINITION;
+
+    UA_BrowseResult br = UA_Server_browse(server, 0, &bd);
+    UA_StatusCode res = br.statusCode;
+    if(res != UA_STATUSCODE_GOOD) {
+        UA_BrowseResult_clear(&br);
+        return res;
+    }
+
+    res = UA_STATUSCODE_BADNOTFOUND;
+    const UA_String *uri = &server->namespaces[namespaceIndex];
+    for(size_t i = 0; i < br.referencesSize; i++) {
+        const UA_ReferenceDescription *rd = &br.references[i];
+        UA_Boolean assigned = false;
+        for(size_t j = 0; j < server->namespaceMetadataSize; j++) {
+            if(UA_NodeId_equal(&server->namespaceMetadata[j].objectId,
+                               &rd->nodeId.nodeId)) {
+                assigned = true;
+                break;
+            }
+        }
+        if(assigned || !isNamespaceMetadataObjectFor(server, rd, uri))
+            continue;
+        res = UA_NodeId_copy(&rd->nodeId.nodeId, objectId);
+        break;
+    }
+    UA_BrowseResult_clear(&br);
+    return res;
+}
+
+/* Create the NamespaceMetadata Object of a namespace. The mandatory Properties
+ * are instantiated from the type and describe a namespace without static
+ * NodeIds. */
+static UA_StatusCode
+addNamespaceMetadataObject(UA_Server *server, UA_UInt16 namespaceIndex,
+                           UA_NodeId *objectId) {
+    const UA_String *uri = &server->namespaces[namespaceIndex];
+    UA_ObjectAttributes attr = UA_ObjectAttributes_default;
+    attr.displayName.text = *uri;
+    UA_QualifiedName browseName;
+    browseName.namespaceIndex = namespaceIndex;
+    browseName.name = *uri;
+    UA_StatusCode res =
+        UA_Server_addObjectNode(server, UA_NODEID_NUMERIC(0, 0),
+                                UA_NS0ID(SERVER_NAMESPACES), UA_NS0ID(HASCOMPONENT),
+                                browseName, UA_NS0ID(NAMESPACEMETADATATYPE),
+                                attr, NULL, objectId);
+    if(res != UA_STATUSCODE_GOOD)
+        return res;
+
+    UA_String empty = UA_STRING_NULL;
+    UA_DateTime publicationDate = 0;
+    UA_Boolean isSubset = false;
+    UA_Variant v;
+    UA_Variant_setScalar(&v, (void*)(uintptr_t)uri, &UA_TYPES[UA_TYPES_STRING]);
+    res |= writeObjectProperty(server, *objectId,
+                               UA_QUALIFIEDNAME(0, "NamespaceUri"), v);
+    UA_Variant_setScalar(&v, &empty, &UA_TYPES[UA_TYPES_STRING]);
+    res |= writeObjectProperty(server, *objectId,
+                               UA_QUALIFIEDNAME(0, "NamespaceVersion"), v);
+    res |= writeObjectProperty(server, *objectId,
+                               UA_QUALIFIEDNAME(0, "StaticStringNodeIdPattern"), v);
+    UA_Variant_setScalar(&v, &publicationDate, &UA_TYPES[UA_TYPES_DATETIME]);
+    res |= writeObjectProperty(server, *objectId,
+                               UA_QUALIFIEDNAME(0, "NamespacePublicationDate"), v);
+    UA_Variant_setScalar(&v, &isSubset, &UA_TYPES[UA_TYPES_BOOLEAN]);
+    res |= writeObjectProperty(server, *objectId,
+                               UA_QUALIFIEDNAME(0, "IsNamespaceSubset"), v);
+    UA_Variant_setArray(&v, NULL, 0, &UA_TYPES[UA_TYPES_IDTYPE]);
+    res |= writeObjectProperty(server, *objectId,
+                               UA_QUALIFIEDNAME(0, "StaticNodeIdTypes"), v);
+    UA_Variant_setArray(&v, NULL, 0, &UA_TYPES[UA_TYPES_STRING]);
+    res |= writeObjectProperty(server, *objectId,
+                               UA_QUALIFIEDNAME(0, "StaticNumericNodeIdRange"), v);
+    if(res != UA_STATUSCODE_GOOD) {
+        deleteNode(server, *objectId, true);
+        UA_NodeId_clear(objectId);
+        return UA_STATUSCODE_BADINTERNALERROR;
+    }
+    return UA_STATUSCODE_GOOD;
+}
+
+/* The NamespaceMetadata Object of the namespace: the remembered one if it
+ * still exists, else an adopted or a new one */
+static UA_StatusCode
+getNamespaceMetadataObject(UA_Server *server, UA_UInt16 namespaceIndex,
+                           UA_NodeId *objectId) {
+    UA_NamespaceMetadata *nm = &server->namespaceMetadata[namespaceIndex];
+    if(!UA_NodeId_isNull(&nm->objectId)) {
+        const UA_Node *node = UA_NODESTORE_GET(server, &nm->objectId);
+        if(node) {
+            UA_NODESTORE_RELEASE(server, node);
+            return UA_NodeId_copy(&nm->objectId, objectId);
+        }
+        UA_NodeId_clear(&nm->objectId); /* The Object was deleted */
+    }
+
+    UA_StatusCode res;
+    if(namespaceIndex == 0) {
+        *objectId = UA_NS0ID(OPCUANAMESPACEMETADATA);
+        const UA_Node *node = UA_NODESTORE_GET(server, objectId);
+        if(!node)
+            return UA_STATUSCODE_BADNOTFOUND;
+        UA_NODESTORE_RELEASE(server, node);
+        res = UA_STATUSCODE_GOOD;
+    } else {
+        res = findNamespaceMetadataObject(server, namespaceIndex, objectId);
+        if(res == UA_STATUSCODE_BADNOTFOUND)
+            res = addNamespaceMetadataObject(server, namespaceIndex, objectId);
+    }
+    if(res != UA_STATUSCODE_GOOD)
+        return res;
+
+    /* Index again: the callbacks of addNode may have grown the array */
+    res = UA_NodeId_copy(objectId, &server->namespaceMetadata[namespaceIndex].objectId);
+    if(res != UA_STATUSCODE_GOOD)
+        UA_NodeId_clear(objectId);
+    return res;
+}
+
+/* Find the Property and back it with its DataSource. A missing Property is
+ * added. The Properties of i=15957 keep their standard NodeIds. */
+static UA_StatusCode
+addNamespaceMetadataProperty(UA_Server *server, const UA_NodeId *objectId,
+                             const NamespaceMetadataProperty *prop,
+                             UA_NodeId *propertyId) {
+    UA_StatusCode res = findPropertyChild(server, *objectId, prop->name, propertyId);
+    if(res == UA_STATUSCODE_BADNOTFOUND) {
+        const UA_DataType *type = &UA_TYPES[prop->typeIndex];
+        UA_VariableAttributes attr = UA_VariableAttributes_default;
+        attr.displayName = UA_LOCALIZEDTEXT("", (char*)(uintptr_t)prop->name);
+        attr.dataType = type->typeId;
+        attr.accessLevel = UA_ACCESSLEVELMASK_READ;
+        UA_UInt32 arrayDims = 0;
+        UA_AccessRestrictionType none = UA_ACCESSRESTRICTIONTYPE_NONE;
+        if(prop->isArray) {
+            attr.valueRank = UA_VALUERANK_ONE_DIMENSION;
+            attr.arrayDimensionsSize = 1;
+            attr.arrayDimensions = &arrayDims;
+            UA_Variant_setArray(&attr.value, NULL, 0, type);
+        } else {
+            attr.valueRank = UA_VALUERANK_SCALAR;
+            UA_Variant_setScalar(&attr.value, &none, type);
+        }
+        const UA_NodeId ns0Object = UA_NS0ID(OPCUANAMESPACEMETADATA);
+        UA_NodeId requestedId = UA_NODEID_NUMERIC(0, 0);
+        if(UA_NodeId_equal(objectId, &ns0Object))
+            requestedId.identifier.numeric = prop->ns0Id;
+        res = UA_Server_addVariableNode(server, requestedId, *objectId,
+                                        UA_NS0ID(HASPROPERTY),
+                                        UA_QUALIFIEDNAME(0, (char*)(uintptr_t)prop->name),
+                                        UA_NS0ID(PROPERTYTYPE), attr, NULL,
+                                        propertyId);
+    }
+    if(res != UA_STATUSCODE_GOOD)
+        return res;
+
+    UA_DataSource ds;
+    ds.read = prop->read;
+    ds.write = NULL;
+    res = UA_Server_setVariableNode_dataSource(server, *propertyId, ds);
+    if(res != UA_STATUSCODE_GOOD)
+        UA_NodeId_clear(propertyId);
+    return res;
+}
+
+static UA_StatusCode
+removeNamespaceMetadataProperty(UA_Server *server, const UA_NodeId *objectId,
+                                const NamespaceMetadataProperty *prop) {
+    UA_NodeId propertyId;
+    UA_StatusCode res = findPropertyChild(server, *objectId, prop->name, &propertyId);
+    if(res == UA_STATUSCODE_BADNOTFOUND)
+        return UA_STATUSCODE_GOOD;
+    if(res != UA_STATUSCODE_GOOD)
+        return res;
+    res = deleteNode(server, propertyId, true);
+    UA_NodeId_clear(&propertyId);
+    return res;
+}
+
+/* Give the Node the RolePermissions unless it already has its own. The shared
+ * entry of a Node can hold only AccessRestrictions; such a Node (and one with
+ * an empty list, which is no override) has no RolePermissions of its own and
+ * is protected. It keeps its AccessRestrictions. */
+static UA_StatusCode
+protectNamespaceMetadataNode(UA_Server *server, const UA_NodeId *nodeId,
+                             size_t entriesSize, const UA_RolePermission *entries) {
+    UA_LOCK_ASSERT(&server->serviceMutex);
+    const UA_Node *node = UA_NODESTORE_GET(server, nodeId);
+    if(!node)
+        return UA_STATUSCODE_BADNODEIDUNKNOWN;
+    const UA_RolePermissionEntry *rp =
+        getRolePermissionsEntry(server, node->head.permissionIndex);
+    UA_Boolean hasOwn = (rp && rp->rolePermissionsSize > 0);
+    UA_NODESTORE_RELEASE(server, node);
+    if(hasOwn)
+        return UA_STATUSCODE_GOOD;
+    return UA_Server_setNodeRolePermissions(server, *nodeId, entriesSize, entries,
+                                            false, NULL);
+}
+
+/* An Object adopted from a nodeset has NodeIds in its own namespace. It must
+ * stay readable under the template of that namespace, which lets Anonymous
+ * Sessions only browse. */
+static UA_StatusCode
+protectAdoptedNamespaceMetadataObject(UA_Server *server, const UA_NodeId *objectId) {
+    const UA_RolePermission readable[2] = {
+        {UA_NS0ID(WELLKNOWNROLE_ANONYMOUS),
+         UA_PERMISSIONTYPE_BROWSE | UA_PERMISSIONTYPE_READ},
+        {UA_NS0ID(WELLKNOWNROLE_SECURITYADMIN),
+         UA_PERMISSIONTYPE_READROLEPERMISSIONS}};
+    UA_StatusCode res = protectNamespaceMetadataNode(server, objectId, 2, readable);
+    if(res != UA_STATUSCODE_GOOD)
+        return res;
+
+    UA_BrowseDescription bd;
+    UA_BrowseDescription_init(&bd);
+    bd.nodeId = *objectId;
+    bd.referenceTypeId = UA_NS0ID(HASPROPERTY);
+    bd.browseDirection = UA_BROWSEDIRECTION_FORWARD;
+    bd.nodeClassMask = UA_NODECLASS_VARIABLE;
+    bd.resultMask = UA_BROWSERESULTMASK_BROWSENAME;
+    UA_BrowseResult br = UA_Server_browse(server, 0, &bd);
+    res = br.statusCode;
+    const UA_String drp = UA_STRING((char*)(uintptr_t)defaultRolePermissionsProperty.name);
+    for(size_t i = 0; i < br.referencesSize && res == UA_STATUSCODE_GOOD; i++) {
+        if(UA_String_equal(&br.references[i].browseName.name, &drp))
+            continue; /* Readable by administrators only */
+        res = protectNamespaceMetadataNode(server, &br.references[i].nodeId.nodeId,
+                                           2, readable);
+    }
+    UA_BrowseResult_clear(&br);
+    return res;
+}
+
+/* The DefaultRolePermissions Property "shall only be readable by
+ * administrators" (Part 3 §5.2.9) */
+static UA_StatusCode
+addDefaultRolePermissionsProperty(UA_Server *server, const UA_NodeId *objectId) {
+    UA_NodeId propertyId;
+    UA_StatusCode res =
+        addNamespaceMetadataProperty(server, objectId, &defaultRolePermissionsProperty,
+                                     &propertyId);
+    if(res != UA_STATUSCODE_GOOD)
+        return res;
+    const UA_RolePermission adminOnly[2] = {
+        {UA_NS0ID(WELLKNOWNROLE_ANONYMOUS), UA_PERMISSIONTYPE_BROWSE},
+        {UA_NS0ID(WELLKNOWNROLE_SECURITYADMIN),
+         UA_PERMISSIONTYPE_BROWSE | UA_PERMISSIONTYPE_READ |
+         UA_PERMISSIONTYPE_READROLEPERMISSIONS}};
+    res = protectNamespaceMetadataNode(server, &propertyId, 2, adminOnly);
+    if(res != UA_STATUSCODE_GOOD) {
+        /* Fail closed: do not publish the defaults unprotected */
+        deleteNode(server, propertyId, true);
+    }
+    UA_NodeId_clear(&propertyId);
+    return res;
+}
+
+UA_StatusCode
+syncNamespaceMetadata(UA_Server *server, UA_UInt16 namespaceIndex) {
+    UA_LOCK_ASSERT(&server->serviceMutex);
+    if(namespaceIndex >= server->namespacesSize)
+        return UA_STATUSCODE_BADINDEXRANGEINVALID;
+    UA_StatusCode res = ensureNamespaceMetadataSize(server);
+    if(res != UA_STATUSCODE_GOOD)
+        return res;
+
+    UA_NodeId objectId;
+    res = getNamespaceMetadataObject(server, namespaceIndex, &objectId);
+    if(res != UA_STATUSCODE_GOOD)
+        return res;
+
+    /* DefaultAccessRestrictions is always published */
+    UA_NodeId propertyId;
+    res = addNamespaceMetadataProperty(server, &objectId,
+                                       &defaultAccessRestrictionsProperty,
+                                       &propertyId);
+    if(res == UA_STATUSCODE_GOOD)
+        UA_NodeId_clear(&propertyId);
+
+    /* The RolePermission Properties follow the namespace model */
+    size_t entriesSize = 0;
+    const UA_RolePermission *entries = NULL;
+    if(getNamespaceRolePermissionModel(server, namespaceIndex,
+                                       &entriesSize, &entries)) {
+        if(res == UA_STATUSCODE_GOOD)
+            res = addDefaultRolePermissionsProperty(server, &objectId);
+        if(res == UA_STATUSCODE_GOOD)
+            res = addNamespaceMetadataProperty(server, &objectId,
+                                               &defaultUserRolePermissionsProperty,
+                                               &propertyId);
+        if(res == UA_STATUSCODE_GOOD)
+            UA_NodeId_clear(&propertyId);
+    } else {
+        UA_StatusCode res2 =
+            removeNamespaceMetadataProperty(server, &objectId,
+                                            &defaultRolePermissionsProperty);
+        if(res2 == UA_STATUSCODE_GOOD)
+            res2 = removeNamespaceMetadataProperty(server, &objectId,
+                                                   &defaultUserRolePermissionsProperty);
+        if(res == UA_STATUSCODE_GOOD)
+            res = res2;
+    }
+
+    if(res == UA_STATUSCODE_GOOD && objectId.namespaceIndex != 0)
+        res = protectAdoptedNamespaceMetadataObject(server, &objectId);
+
+    UA_NodeId_clear(&objectId);
+    return res;
+}
+
+static void
+syncNamespaceMetadataLogged(UA_Server *server, UA_UInt16 namespaceIndex) {
+    UA_StatusCode res = syncNamespaceMetadata(server, namespaceIndex);
+    if(res != UA_STATUSCODE_GOOD)
+        UA_LOG_WARNING(server->config.logging, UA_LOGCATEGORY_SERVER,
+                       "RBAC: Could not publish the NamespaceMetadata Object "
+                       "of namespace %u (%s)", (unsigned)namespaceIndex,
+                       UA_StatusCode_name(res));
+}
+
+void
+syncAllNamespaceMetadata(UA_Server *server) {
+    UA_LOCK_ASSERT(&server->serviceMutex);
+    for(size_t i = 0; i < server->namespacesSize; i++)
+        syncNamespaceMetadataLogged(server, (UA_UInt16)i);
+}
+
+/* Publish the namespaces added since the last run. Executed as a delayed
+ * callback, so a nodeset loaded right after addNamespace has added its own
+ * NamespaceMetadata Object by now. */
+static void
+syncNewNamespaceMetadata(void *application, void *context) {
+    UA_Server *server = (UA_Server*)application;
+    lockServer(server);
+    server->namespaceMetadataSyncPending = false;
+    if(server->state == UA_LIFECYCLESTATE_STARTED) {
+        for(size_t i = 1; i < server->namespacesSize; i++) {
+            if(server->namespaceMetadata && i < server->namespaceMetadataSize &&
+               !UA_NodeId_isNull(&server->namespaceMetadata[i].objectId))
+                continue;
+            syncNamespaceMetadataLogged(server, (UA_UInt16)i);
+        }
+    }
+    unlockServer(server);
+}
+
+void
+scheduleNamespaceMetadataSync(UA_Server *server) {
+    UA_LOCK_ASSERT(&server->serviceMutex);
+    if(server->state != UA_LIFECYCLESTATE_STARTED ||
+       server->namespaceMetadataSyncPending)
+        return;
+    UA_EventLoop *el = server->config.eventLoop;
+    server->namespaceMetadataSync.callback = syncNewNamespaceMetadata;
+    server->namespaceMetadataSync.application = server;
+    server->namespaceMetadataSync.context = NULL;
+    server->namespaceMetadataSyncPending = true;
+    el->addDelayedCallback(el, &server->namespaceMetadataSync);
+}
+
+void
+cancelNamespaceMetadataSync(UA_Server *server) {
+    if(!server->namespaceMetadataSyncPending)
+        return;
+    UA_EventLoop *el = server->config.eventLoop;
+    if(el)
+        el->removeDelayedCallback(el, &server->namespaceMetadataSync);
+    server->namespaceMetadataSyncPending = false;
 }
 
 #endif /* UA_ENABLE_RBAC */

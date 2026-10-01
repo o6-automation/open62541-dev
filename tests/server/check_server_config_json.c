@@ -334,6 +334,78 @@ START_TEST(Rbac_ConfigRolesReachTheServer) {
     UA_Server_delete(server);
 } END_TEST
 
+/* The namespace default templates replace those of the default configuration.
+ * An empty array is an empty template; an omitted key keeps the default. */
+START_TEST(Rbac_NamespaceTemplatesParsed) {
+    UA_ServerConfig config;
+    ck_assert_int_eq(loadJson("{\"buildInfo\":{\"productUri\":\"urn:test\"}}",
+                              &config), UA_STATUSCODE_GOOD);
+    ck_assert_uint_gt(config.namespaceZeroDefaultRolePermissions.rolePermissionsSize, 0);
+    size_t defaultSize = config.namespaceDefaultRolePermissions.rolePermissionsSize;
+    ck_assert_uint_gt(defaultSize, 0);
+    UA_ServerConfig_clear(&config);
+
+    const char *json =
+        "{\"rbac\":{"
+        "  \"namespaceZeroDefaultRolePermissions\": [],"
+        "  \"namespaceDefaultRolePermissions\": ["
+        "    {\"roleId\": \"i=15644\", \"permissions\": 1},"
+        "    {\"roleId\": \"i=15680\", \"permissions\": 4193}]"
+        "},\"buildInfo\":{\"productUri\":\"urn:test\"}}";
+    ck_assert_int_eq(loadJson(json, &config), UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(config.namespaceZeroDefaultRolePermissions.rolePermissionsSize, 0);
+    ck_assert_ptr_null(config.namespaceZeroDefaultRolePermissions.rolePermissions);
+    const UA_RolePermissionSet *tmpl = &config.namespaceDefaultRolePermissions;
+    ck_assert_uint_eq(tmpl->rolePermissionsSize, 2);
+    UA_NodeId operatorRole = UA_NODEID_NUMERIC(0, 15680);
+    ck_assert(UA_NodeId_equal(&tmpl->rolePermissions[1].roleId, &operatorRole));
+    ck_assert_uint_eq(tmpl->rolePermissions[1].permissions, 4193);
+    UA_String expectedUri = UA_STRING((char*)(uintptr_t)"urn:test");
+    ck_assert(UA_String_equal(&config.buildInfo.productUri, &expectedUri));
+    UA_ServerConfig_clear(&config);
+
+    /* Only one template given: the other keeps the default */
+    ck_assert_int_eq(loadJson("{\"rbac\":{\"namespaceDefaultRolePermissions\":[]}}",
+                              &config), UA_STATUSCODE_GOOD);
+    ck_assert_uint_gt(config.namespaceZeroDefaultRolePermissions.rolePermissionsSize, 0);
+    ck_assert_uint_eq(config.namespaceDefaultRolePermissions.rolePermissionsSize, 0);
+    UA_ServerConfig_clear(&config);
+
+    /* Malformed entries are rejected */
+    ck_assert_int_eq(loadJson("{\"rbac\":{\"namespaceDefaultRolePermissions\":"
+                              "{\"roleId\":\"i=15644\"}}}", &config),
+                     UA_STATUSCODE_BADDECODINGERROR);
+    UA_ServerConfig_clear(&config);
+} END_TEST
+
+/* The parsed templates reach the server; an unknown Role aborts the startup */
+START_TEST(Rbac_NamespaceTemplatesReachTheServer) {
+    const char *json =
+        "{\"rbac\":{\"allPermissionsForAnonymous\": false,"
+        "  \"namespaceDefaultRolePermissions\": ["
+        "    {\"roleId\": \"i=15644\", \"permissions\": 33}]}}";
+    UA_ByteString jsonConfig = UA_STRING((char*)(uintptr_t)json);
+    UA_Server *server = UA_Server_newFromFile(jsonConfig);
+    ck_assert_ptr_ne(server, NULL);
+    size_t entriesSize = 0;
+    UA_RolePermission *entries = NULL;
+    ck_assert_int_eq(UA_Server_getNamespaceDefaultRolePermissions(server, 1,
+                                                                  &entriesSize,
+                                                                  &entries),
+                     UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(entriesSize, 1);
+    ck_assert_uint_eq(entries[0].permissions, 33);
+    UA_NodeId_clear(&entries[0].roleId);
+    UA_free(entries);
+    UA_Server_delete(server);
+
+    const char *unknown =
+        "{\"rbac\":{\"namespaceZeroDefaultRolePermissions\": ["
+        "    {\"roleId\": \"ns=1;i=4711\", \"permissions\": 1}]}}";
+    jsonConfig = UA_STRING((char*)(uintptr_t)unknown);
+    ck_assert_ptr_eq(UA_Server_newFromFile(jsonConfig), NULL);
+} END_TEST
+
 #endif /* UA_ENABLE_RBAC */
 
 static Suite *testSuite_ServerConfigJson(void) {
@@ -357,6 +429,8 @@ static Suite *testSuite_ServerConfigJson(void) {
     tcase_add_test(tcRbac, Rbac_UnknownObjectFieldSkipped);
     tcase_add_test(tcRbac, Rbac_MalformedValuesRejected);
     tcase_add_test(tcRbac, Rbac_ConfigRolesReachTheServer);
+    tcase_add_test(tcRbac, Rbac_NamespaceTemplatesParsed);
+    tcase_add_test(tcRbac, Rbac_NamespaceTemplatesReachTheServer);
     suite_add_tcase(s, tcRbac);
 #endif
 

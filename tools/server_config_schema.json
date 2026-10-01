@@ -604,6 +604,16 @@
         }
       }
     },
+    "RolePermissionArray": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "roleId": { "type": "string", "description": "NodeId of the role (e.g. \"i=15644\" for Anonymous)" },
+          "permissions": { "type": "integer", "description": "PermissionType bitmask (Part 3 8.55)" }
+        }
+      }
+    },
     "RbacConfiguration": {
       "type": "object",
       "properties": {
@@ -693,17 +703,18 @@
             "type": "object",
             "properties": {
               "rolePermissions": {
-                "type": "array",
-                "items": {
-                  "type": "object",
-                  "properties": {
-                    "roleId": { "type": "string", "description": "NodeId of the role (e.g. \"ns=0;i=15637\")" },
-                    "permissions": { "type": "integer", "description": "PermissionType bitmask" }
-                  }
-                }
+                "$ref": "#/definitions/RolePermissionArray"
               }
             }
           }
+        },
+        "namespaceZeroDefaultRolePermissions": {
+          "$ref": "#/definitions/RolePermissionArray",
+          "description": "DefaultRolePermissions of Namespace Zero unless set explicitly. Replaces the default template (Part 3 Table 2); an empty array grants nothing. Ignored while allPermissionsForAnonymous is true. Every roleId must be a registered Role"
+        },
+        "namespaceDefaultRolePermissions": {
+          "$ref": "#/definitions/RolePermissionArray",
+          "description": "DefaultRolePermissions of every other namespace (including namespaces added at runtime) unless set explicitly. Replaces the default template (Part 3 Table 2); an empty array grants nothing. Ignored while allPermissionsForAnonymous is true. Every roleId must be a registered Role"
         },
         "allPermissionsForAnonymous": {
           "type": "boolean",

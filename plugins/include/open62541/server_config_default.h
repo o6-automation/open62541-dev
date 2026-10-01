@@ -389,6 +389,40 @@ UA_ServerConfig_addAllEndpoints(UA_ServerConfig *config);
 UA_EXPORT UA_StatusCode
 UA_ServerConfig_addAllSecureEndpoints(UA_ServerConfig *config);
 
+#ifdef UA_ENABLE_RBAC
+
+/* Sets the namespace default RolePermission templates
+ * (namespaceZeroDefaultRolePermissions and namespaceDefaultRolePermissions)
+ * to defaults that follow the suggested permissions of the well-known Roles
+ * (Part 3 §4.9.2, Table 2). Templates already in the configuration are
+ * replaced. Called by the functions above that create a default config.
+ *
+ * Namespace Zero:
+ * - Anonymous and ConfigureAdmin: Browse, Read, Call, ReceiveEvents
+ * - Observer, Operator, Engineer, Supervisor: additionally ReadHistory
+ * - SecurityAdmin: Browse, Read, Call, ReceiveEvents, ReadRolePermissions
+ *
+ * No Role may Write, AddNode or DeleteNode in Namespace Zero by default.
+ *
+ * Other namespaces:
+ * - Anonymous: Browse
+ * - AuthenticatedUser and TrustedApplication: Browse, Read
+ * - Observer: Browse, Read, ReadHistory, ReceiveEvents
+ * - Operator: as Observer, plus Write and Call
+ * - Engineer: as Operator, plus WriteAttribute and WriteHistorizing
+ * - Supervisor: as Observer, plus Call
+ * - ConfigureAdmin: Browse, Read, Write, WriteAttribute, WriteHistorizing,
+ *   Call, AddReference, RemoveReference, DeleteNode, AddNode
+ * - SecurityAdmin: Browse, Read, ReadRolePermissions
+ *
+ * The templates apply only while allPermissionsForAnonymous is false.
+ *
+ * @param config The configuration to manipulate */
+UA_EXPORT UA_StatusCode
+UA_ServerConfig_setDefaultNamespacePermissions(UA_ServerConfig *config);
+
+#endif /* UA_ENABLE_RBAC */
+
 _UA_END_DECLS
 
 #endif /* UA_SERVER_CONFIG_DEFAULT_H_ */

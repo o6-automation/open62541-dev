@@ -230,6 +230,28 @@
   //   // Nodes without explicit RolePermissions are fully permissive when this
   //   // is true. Set to false to actually enforce the configured permissions.
   //   allPermissionsForAnonymous: false,
+  //   // DefaultRolePermissions of every namespace without an explicit default
+  //   // (Namespace Zero / all other namespaces, also those added at runtime).
+  //   // Used only while allPermissionsForAnonymous is false. When omitted, the
+  //   // defaults after Part 3 Table 2 apply; an empty array grants nothing.
+  //   // Each roleId must be a well-known or configured Role.
+  //   // "permissions" is the PermissionType bitmask from Part 3.
+  //   namespaceZeroDefaultRolePermissions: [
+  //     // Anonymous: Browse | Read | ReceiveEvents | Call
+  //     { roleId: "i=15644", permissions: 6177 },
+  //     // SecurityAdmin: the same plus ReadRolePermissions
+  //     { roleId: "i=15704", permissions: 6179 }
+  //   ],
+  //   namespaceDefaultRolePermissions: [
+  //     // Anonymous: Browse
+  //     { roleId: "i=15644", permissions: 1 },
+  //     // AuthenticatedUser: Browse | Read
+  //     { roleId: "i=15656", permissions: 33 },
+  //     // Operator: Browse | Read | Write | ReadHistory | ReceiveEvents | Call
+  //     { roleId: "i=15680", permissions: 6369 },
+  //     // The custom Role defined below: Browse | Read
+  //     { roleId: "ns=1;i=5000", permissions: 33 }
+  //   ],
   //   // Configure mutable well-known Roles separately from custom Roles.
   //   // This example grants SecurityAdmin to the authenticated user "admin".
   //   wellKnownRoleMappings: [

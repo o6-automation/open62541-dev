@@ -132,5 +132,9 @@ UA_ServerConfig_clear(UA_ServerConfig *config) {
         config->wellKnownRoleMappings = NULL;
         config->wellKnownRoleMappingsSize = 0;
     }
+
+    /* Namespace default RolePermission templates */
+    UA_RolePermissionSet_clear(&config->namespaceZeroDefaultRolePermissions);
+    UA_RolePermissionSet_clear(&config->namespaceDefaultRolePermissions);
 #endif
 }

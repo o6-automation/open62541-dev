@@ -84,6 +84,13 @@ UA_UInt16 addNamespace(UA_Server *server, const UA_String name) {
 
     /* Announce the change (otherwise, the array appears unchanged) */
     ++server->namespacesSize;
+
+#ifdef UA_ENABLE_RBAC
+    /* Publish the NamespaceMetadata Object of the new namespace. Before the
+     * startup, UA_Server_run_startup does that. */
+    scheduleNamespaceMetadataSync(server);
+#endif
+
     return (UA_UInt16)(server->namespacesSize - 1);
 }
 
@@ -1149,6 +1156,13 @@ UA_Server_run_startup(UA_Server *server) {
     UA_String_clear(&server->namespaces[1]);
     setupNs1Uri(server);
 
+#ifdef UA_ENABLE_RBAC
+    /* Publish the NamespaceMetadata Objects of all namespaces. Namespace Zero
+     * is updated as well: the configuration may have changed since the Server
+     * was created. */
+    syncAllNamespaceMetadata(server);
+#endif
+
     /* At least one endpoint has to be configured */
     if(config->endpointsSize == 0) {
         UA_LOG_WARNING(config->logging, UA_LOGCATEGORY_SERVER,
@@ -1255,6 +1269,11 @@ UA_Server_run_shutdown(UA_Server *server) {
         removeCallback(server, server->houseKeepingCallbackId);
         server->houseKeepingCallbackId = 0;
     }
+
+#ifdef UA_ENABLE_RBAC
+    /* Namespaces added from now on are published at the next startup */
+    cancelNamespaceMetadataSync(server);
+#endif
 
     /* Stop all drivers */
     stopDrivers(server);

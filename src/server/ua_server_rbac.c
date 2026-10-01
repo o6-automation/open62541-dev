@@ -39,6 +39,19 @@
  *   the last entry of a Node list never widens access: the Node keeps the
  *   override {Anonymous, 0}, which grants nothing.
  *
+ * - In strict mode (allPermissionsForAnonymous == false) a namespace without
+ *   an explicit default uses the template of the server configuration
+ *   (namespaceZeroDefaultRolePermissions / namespaceDefaultRolePermissions),
+ *   evaluated lazily so that namespaces added later are covered. Legacy mode
+ *   ignores the templates.
+ *
+ * - Every namespace has a NamespaceMetadata Object with live
+ *   DefaultRolePermissions (SecurityAdmin only), DefaultUserRolePermissions
+ *   and DefaultAccessRestrictions Properties (syncNamespaceMetadata in
+ *   ua_server_ns0_rbac.c). Objects shipped by nodesets are adopted. A nodeset
+ *   loaded at runtime into a namespace that was added and published before
+ *   brings a second Object for the same namespace.
+ *
  * - The RolePermissions and AccessRestrictions attributes report only the
  *   Node's own override: an empty array and 0 for a Node that uses the
  *   namespace default. UserRolePermissions reports the override or the
@@ -744,6 +757,24 @@ initializeWellKnownRoleMappings(UA_Server *server) {
     return UA_STATUSCODE_GOOD;
 }
 
+/* Every Role of a namespace default template must be registered. Like a
+ * rejected config Role, an unknown Role aborts startup instead of silently
+ * granting nothing. */
+static UA_StatusCode
+validateNamespaceTemplate(UA_Server *server, const char *name,
+                          const UA_RolePermissionSet *tmpl) {
+    for(size_t i = 0; i < tmpl->rolePermissionsSize; i++) {
+        const UA_NodeId *roleId = &tmpl->rolePermissions[i].roleId;
+        if(findRoleById(server, roleId))
+            continue;
+        UA_LOG_ERROR(server->config.logging, UA_LOGCATEGORY_SERVER,
+                     "RBAC: The %s configuration references the unknown "
+                     "Role %N", name, *roleId);
+        return UA_STATUSCODE_BADCONFIGURATIONERROR;
+    }
+    return UA_STATUSCODE_GOOD;
+}
+
 UA_StatusCode
 UA_Server_initRBAC(UA_Server *server) {
     if(!server)
@@ -823,11 +854,35 @@ UA_Server_initRBAC(UA_Server *server) {
                 standardRoles, config->wellKnownRoleMappingsSize,
                 config->rolesSize);
 
+    /* The namespace templates may only grant permissions to registered Roles.
+     * They are validated in legacy mode as well, so that switching to strict
+     * mode cannot reveal a broken configuration. */
+    UA_StatusCode tmplRes =
+        validateNamespaceTemplate(server, "namespaceZeroDefaultRolePermissions",
+                                  &config->namespaceZeroDefaultRolePermissions);
+    if(tmplRes == UA_STATUSCODE_GOOD)
+        tmplRes =
+            validateNamespaceTemplate(server, "namespaceDefaultRolePermissions",
+                                      &config->namespaceDefaultRolePermissions);
+    if(tmplRes != UA_STATUSCODE_GOOD)
+        return tmplRes;
+
     /* Restrict the RoleSet Object and its Methods to SecurityAdmin. Requires
      * the well-known Roles registered above and the NS0 RBAC nodes. */
     UA_StatusCode rsRes = initRoleSetRolePermissions(server);
     if(rsRes != UA_STATUSCODE_GOOD)
         return rsRes;
+
+    /* Publish the defaults of Namespace Zero. Protecting its
+     * DefaultRolePermissions Property needs the Roles registered above. The
+     * other namespaces follow at startup, when the URI of ns=1 is known. */
+    UA_StatusCode nsRes = syncNamespaceMetadata(server, 0);
+    if(nsRes != UA_STATUSCODE_GOOD) {
+        UA_LOG_ERROR(server->config.logging, UA_LOGCATEGORY_SERVER,
+                     "RBAC: Could not publish the NamespaceMetadata of "
+                     "Namespace Zero (%s)", UA_StatusCode_name(nsRes));
+        return nsRes;
+    }
 
     return UA_STATUSCODE_GOOD;
 }
@@ -853,6 +908,10 @@ UA_Server_cleanupRBAC(UA_Server *server) {
     server->rolesProtected = NULL;
     server->rolesSize = 0;
 
+    /* A pending publication of new namespaces must not run on a deleted
+     * Server when the EventLoop is freed */
+    cancelNamespaceMetadataSync(server);
+
     /* Clean up namespace metadata */
     if(server->namespaceMetadata) {
         for(size_t i = 0; i < server->namespaceMetadataSize; i++) {
@@ -861,6 +920,7 @@ UA_Server_cleanupRBAC(UA_Server *server) {
                     UA_NodeId_clear(&server->namespaceMetadata[i].entries[j].roleId);
                 UA_free(server->namespaceMetadata[i].entries);
             }
+            UA_NodeId_clear(&server->namespaceMetadata[i].objectId);
         }
         UA_free(server->namespaceMetadata);
         server->namespaceMetadata = NULL;
@@ -3098,9 +3158,20 @@ getNamespaceRolePermissionModel(UA_Server *server, UA_UInt16 namespaceIndex,
         return true;
     }
 
-    /* Without an explicit default, a namespace has a model only in strict mode.
-     * It then grants nothing to Nodes without their own RolePermissions. */
-    return !server->config.allPermissionsForAnonymous;
+    /* Without an explicit default, a namespace has a model only in strict mode
+     * (legacy mode ignores the templates) */
+    if(server->config.allPermissionsForAnonymous)
+        return false;
+
+    /* The template of the configuration: one for Namespace Zero, one for all
+     * other namespaces, including those added at runtime. An empty template
+     * grants nothing. */
+    const UA_RolePermissionSet *tmpl = (namespaceIndex == 0) ?
+        &server->config.namespaceZeroDefaultRolePermissions :
+        &server->config.namespaceDefaultRolePermissions;
+    *entriesSize = tmpl->rolePermissionsSize;
+    *entries = tmpl->rolePermissions;
+    return true;
 }
 
 UA_StatusCode
@@ -3370,9 +3441,22 @@ UA_Server_getUserRolePermissions(UA_Server *server, const UA_NodeId *sessionId,
 /* Namespace Default Role Permissions       */
 /********************************************/
 
-/* Allocate or grow the namespace metadata array to cover all namespaces. New
- * entries have no defaults. Must be called with the server lock held. */
-static UA_StatusCode
+/* Republish the Properties of the NamespaceMetadata Object after the
+ * namespace model changed. Before the startup only Namespace Zero is
+ * published; UA_Server_run_startup publishes the others. */
+static void
+updateNamespaceMetadata(UA_Server *server, UA_UInt16 namespaceIndex) {
+    if(namespaceIndex != 0 && server->state != UA_LIFECYCLESTATE_STARTED)
+        return;
+    UA_StatusCode res = syncNamespaceMetadata(server, namespaceIndex);
+    if(res != UA_STATUSCODE_GOOD)
+        UA_LOG_WARNING(server->config.logging, UA_LOGCATEGORY_SERVER,
+                       "RBAC: Could not update the NamespaceMetadata Object "
+                       "of namespace %u (%s)", (unsigned)namespaceIndex,
+                       UA_StatusCode_name(res));
+}
+
+UA_StatusCode
 ensureNamespaceMetadataSize(UA_Server *server) {
     if(server->namespaceMetadata &&
        server->namespaceMetadataSize >= server->namespacesSize)
@@ -3431,8 +3515,10 @@ UA_Server_setNamespaceDefaultRolePermissions(UA_Server *server,
                                       &server->namespaceMetadata[namespaceIndex].entriesSize,
                                       &server->namespaceMetadata[namespaceIndex].entries);
     }
-    if(res == UA_STATUSCODE_GOOD)
+    if(res == UA_STATUSCODE_GOOD) {
         server->namespaceMetadata[namespaceIndex].hasDefaultRolePermissions = true;
+        updateNamespaceMetadata(server, namespaceIndex);
+    }
 
     unlockServer(server);
     return res;
@@ -3485,6 +3571,7 @@ UA_Server_removeNamespaceDefaultRolePermissions(UA_Server *server,
         clearNamespaceDefaultRolePermissions(nm);
         nm->hasDefaultRolePermissions = false;
     }
+    updateNamespaceMetadata(server, namespaceIndex);
 
     unlockServer(server);
     return UA_STATUSCODE_GOOD;

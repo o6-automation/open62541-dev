@@ -555,6 +555,14 @@ START_TEST(Client_roles_reevaluated_on_roleAdd) {
         UA_QUALIFIEDNAME(1, "GatedVar"),
         UA_NODEID_NUMERIC(0, UA_NS0ID_BASEDATAVARIABLETYPE),
         vattr, NULL, NULL), UA_STATUSCODE_GOOD);
+    /* The namespace template lets every AuthenticatedUser read ns=1. Restrict
+     * the node with an override that the operator does not match. */
+    UA_RolePermission gate = {
+        UA_NODEID_NUMERIC(0, UA_NS0ID_WELLKNOWNROLE_CONFIGUREADMIN),
+        UA_PERMISSIONTYPE_BROWSE};
+    ck_assert_uint_eq(UA_Server_setNodeRolePermissions(server, gated, 1, &gate,
+                                                       false, NULL),
+                      UA_STATUSCODE_GOOD);
 
     UA_Client *client = UA_Client_newForUnitTest();
     ck_assert_uint_eq(UA_Client_connectUsername(client, "opc.tcp://localhost:4840",

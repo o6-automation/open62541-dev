@@ -2213,8 +2213,24 @@ UA_Server_readObjectProperty(UA_Server *server, const UA_NodeId objectId,
  * ``UA_ServerConfig::allPermissionsForAnonymous`` defaults to ``true``: Nodes
  * with neither explicit nor namespace-default RolePermissions are fully
  * permissive, irrespective of the Session's Roles. Set it to ``false`` before
- * creating the Server to make unconfigured Nodes deny by default. Explicitly
- * configured RolePermissions are enforced with either setting.
+ * creating the Server to enforce a namespace default for every Node: a
+ * namespace without an explicit default then uses the template
+ * ``UA_ServerConfig::namespaceZeroDefaultRolePermissions`` (Namespace Zero) or
+ * ``UA_ServerConfig::namespaceDefaultRolePermissions`` (all other
+ * namespaces). Explicitly configured RolePermissions are enforced with either
+ * setting.
+ *
+ * Every namespace is published by a NamespaceMetadata Object under
+ * Server/Namespaces (Part 5 §6.3.13): the standard Object of Namespace Zero,
+ * an Object brought along by a nodeset, or else one that the Server creates
+ * with a NodeId in Namespace Zero. Its DefaultRolePermissions,
+ * DefaultUserRolePermissions and DefaultAccessRestrictions Properties read the
+ * live namespace defaults. DefaultRolePermissions is readable by
+ * ``SecurityAdmin`` only and DefaultUserRolePermissions is filtered to the
+ * Roles of the reading Session. The two RolePermission Properties exist only
+ * while the namespace has a default: always if allPermissionsForAnonymous is
+ * false, otherwise only with an explicit namespace default. Namespaces added
+ * while the Server runs are published in the next iteration of its EventLoop.
  *
  * Identity Mapping Criteria
  * ~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -2838,9 +2854,31 @@ struct UA_ServerConfig {
     size_t wellKnownRoleMappingsSize;
     UA_Role *wellKnownRoleMappings;
 
+    /* Namespace Default RolePermission Templates
+     * ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+     * The DefaultRolePermissions of every namespace without an explicit
+     * default (UA_Server_setNamespaceDefaultRolePermissions). The first
+     * template applies to Namespace Zero, the second to all other namespaces,
+     * including namespaces added at runtime. They are evaluated lazily, so
+     * changes to the configuration of a running Server take effect
+     * immediately.
+     *
+     * The templates are ignored while allPermissionsForAnonymous is true. An
+     * empty template means that no Role has default permissions: Nodes
+     * without their own RolePermissions grant nothing. Every roleId must be a
+     * Role registered at startup (well-known or from ``roles``); otherwise
+     * the Server fails to start with Bad_ConfigurationError.
+     *
+     * UA_ServerConfig_setDefaultNamespacePermissions fills them with defaults
+     * that follow the suggested permissions of the well-known Roles (Part 3
+     * §4.9.2, Table 2). */
+    UA_RolePermissionSet namespaceZeroDefaultRolePermissions;
+    UA_RolePermissionSet namespaceDefaultRolePermissions; /* ns >= 1 */
+
     /* If true, nodes without explicit or namespace-default RolePermissions
-     * grant all permissions regardless of roles. Explicit RolePermissions are
-     * still enforced. Defaults to true for backwards compatibility.
+     * grant all permissions regardless of roles and the namespace templates
+     * above are ignored. Explicit RolePermissions are still enforced. Defaults
+     * to true for backwards compatibility.
      * WARNING: Authorization is ineffective for unconfigured nodes. */
     UA_Boolean allPermissionsForAnonymous;
 #endif
@@ -3191,7 +3229,11 @@ UA_Server_removeRolePermissions(UA_Server *server, const UA_NodeId nodeId,
  *  1. Explicit node RolePermissions (set via setNodeRolePermissions or
  *     addRolePermissions). An empty node list is no override.
  *  2. Namespace default RolePermissions (set via this API). An empty
- *     namespace default denies all access. */
+ *     namespace default denies all access.
+ *  3. If allPermissionsForAnonymous is false, the template of the server
+ *     configuration (namespaceZeroDefaultRolePermissions for Namespace Zero,
+ *     namespaceDefaultRolePermissions for all other namespaces). Otherwise
+ *     the Node is unrestricted. */
 
 /* Set default role permissions for a namespace.
  * Overwrites any previously set defaults for the given namespace. Calling this
@@ -3211,6 +3253,8 @@ UA_Server_setNamespaceDefaultRolePermissions(UA_Server *server,
                                              const UA_RolePermission *entries);
 
 /* Get default role permissions for a namespace.
+ * Without an explicit default this is the template of the server
+ * configuration if allPermissionsForAnonymous is false, else an empty list.
  * Returns a deep copy. The caller must free each entry's roleId
  * with UA_NodeId_clear and the array with UA_free.
  *
@@ -3227,7 +3271,8 @@ UA_Server_getNamespaceDefaultRolePermissions(UA_Server *server,
 
 /* Remove the default role permissions of a namespace.
  * The namespace then has no explicit default again. Nodes without their own
- * RolePermissions use the behavior selected by allPermissionsForAnonymous.
+ * RolePermissions use the template of the server configuration, or are
+ * unrestricted if allPermissionsForAnonymous is true.
  * Removing a namespace without a default succeeds.
  *
  * @param server The server instance

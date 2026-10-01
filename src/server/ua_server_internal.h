@@ -102,6 +102,9 @@ typedef struct {
     UA_Boolean hasDefaultRolePermissions;
     UA_AccessRestrictionType defaultAccessRestrictions;
     UA_Boolean hasDefaultAccessRestrictions;
+    /* The NamespaceMetadata Object that publishes the defaults (Part 5
+     * §6.3.13). Null until it is adopted or created. */
+    UA_NodeId objectId;
 } UA_NamespaceMetadata;
 
 /* Internal RBAC lifecycle */
@@ -119,6 +122,19 @@ UA_StatusCode initNS0RBAC(UA_Server *server);
  * Must be called with the server lock held. */
 const UA_RolePermissionEntry *
 getRolePermissionsEntry(const UA_Server *server, UA_PermissionIndex index);
+
+/* Publish the NamespaceMetadata Object of a namespace under Server/Namespaces
+ * and its permission Properties, backed by the live namespace defaults
+ * (defined in ua_server_ns0_rbac.c). Idempotent. Must be called with the
+ * server lock held. syncAllNamespaceMetadata logs failures as warnings. */
+UA_StatusCode syncNamespaceMetadata(UA_Server *server, UA_UInt16 namespaceIndex);
+void syncAllNamespaceMetadata(UA_Server *server);
+
+/* Publish the namespaces added while the Server is running in a delayed
+ * callback, so that a nodeset loaded right after addNamespace can provide its
+ * own NamespaceMetadata Object first */
+void scheduleNamespaceMetadataSync(UA_Server *server);
+void cancelNamespaceMetadataSync(UA_Server *server);
 
 #endif /* UA_ENABLE_RBAC */
 
@@ -278,6 +294,11 @@ struct UA_Server {
     /* Namespace metadata: default role permissions per namespace */
     size_t namespaceMetadataSize;
     UA_NamespaceMetadata *namespaceMetadata;
+
+    /* Deferred publication of the NamespaceMetadata Objects of namespaces
+     * added while the Server is running */
+    UA_DelayedCallback namespaceMetadataSync;
+    UA_Boolean namespaceMetadataSyncPending;
 #endif
 
 #ifdef UA_ENABLE_DISCOVERY

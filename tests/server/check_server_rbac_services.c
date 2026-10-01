@@ -681,8 +681,9 @@ START_TEST(rbacAttributes_namespaceDefault) {
                              UA_ACCESSRESTRICTIONTYPE_NONE);
 } END_TEST
 
-/* Strict mode: every namespace has a model, even without an explicit default.
- * It grants nothing to Nodes without an override. */
+/* Strict mode: every namespace has a model, even without an explicit default:
+ * the template of the configuration. An empty template grants nothing to
+ * Nodes without an override. */
 START_TEST(rbacAttributes_strictWithoutDefault) {
     UA_Server_getConfig(server)->allPermissionsForAnonymous = false;
     UA_NodeId inheriting = addObject("Inheriting", UA_NS0ID(OBJECTSFOLDER),
@@ -703,16 +704,36 @@ START_TEST(rbacAttributes_strictWithoutDefault) {
     expectAccessRestrictions(&server->adminSession, inheriting,
                              UA_ACCESSRESTRICTIONTYPE_NONE);
 
+    /* The ns1 template lets ConfigureAdmin browse, but not read the
+     * RolePermissions. UserRolePermissions is the template entry of the
+     * Session's Role. */
     UA_Session *session = createSessionWithRole(UA_NS0ID_WELLKNOWNROLE_CONFIGUREADMIN);
     ck_assert_uint_eq(readStatusAs(session, inheriting, UA_ATTRIBUTEID_ROLEPERMISSIONS),
                       UA_STATUSCODE_BADUSERACCESSDENIED);
-    ck_assert_uint_eq(readStatusAs(session, inheriting,
-                                   UA_ATTRIBUTEID_USERROLEPERMISSIONS),
-                      UA_STATUSCODE_BADUSERACCESSDENIED);
+    const UA_RolePermissionSet *tmpl =
+        &UA_Server_getConfig(server)->namespaceDefaultRolePermissions;
+    UA_RolePermission tmplEntry = {ROLE(CONFIGUREADMIN), 0};
+    for(size_t i = 0; i < tmpl->rolePermissionsSize; i++) {
+        if(UA_NodeId_equal(&tmpl->rolePermissions[i].roleId, &tmplEntry.roleId))
+            tmplEntry.permissions = tmpl->rolePermissions[i].permissions;
+    }
+    ck_assert(tmplEntry.permissions & UA_PERMISSIONTYPE_BROWSE);
+    ck_assert(!(tmplEntry.permissions & UA_PERMISSIONTYPE_READROLEPERMISSIONS));
+    expectRolePermissions(session, inheriting, UA_ATTRIBUTEID_USERROLEPERMISSIONS,
+                          1, &tmplEntry);
     expectRolePermissions(session, overridden, UA_ATTRIBUTEID_ROLEPERMISSIONS,
                           1, override);
     expectRolePermissions(session, overridden, UA_ATTRIBUTEID_USERROLEPERMISSIONS,
                           1, override);
+
+    /* An empty template grants nothing */
+    UA_RolePermissionSet_clear(
+        &UA_Server_getConfig(server)->namespaceDefaultRolePermissions);
+    ck_assert_uint_eq(readStatusAs(session, inheriting,
+                                   UA_ATTRIBUTEID_USERROLEPERMISSIONS),
+                      UA_STATUSCODE_BADUSERACCESSDENIED);
+    expectRolePermissions(&server->adminSession, inheriting,
+                          UA_ATTRIBUTEID_ROLEPERMISSIONS, 0, NULL);
 } END_TEST
 
 /* A detached Subscription samples without a Session and is denied */
