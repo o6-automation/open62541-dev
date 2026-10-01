@@ -65,6 +65,98 @@ now requires `UA_ENABLE_METHODCALLS`, also without RBAC. CMake stops with an
 error otherwise, since the Alarms & Conditions driver binds the ConditionType
 Methods.
 
+### RBAC: secure-by-default
+
+Servers built with `UA_ENABLE_RBAC` now enforce RolePermissions on every Node
+(Part 3 §4.9.3). `UA_ServerConfig::allPermissionsForAnonymous` defaults to
+`false`. A Node without RolePermissions of its own uses the default of its
+namespace. A namespace without an explicit default
+(`UA_Server_setNamespaceDefaultRolePermissions`) uses one of the new
+configuration templates `namespaceZeroDefaultRolePermissions` (Namespace Zero)
+and `namespaceDefaultRolePermissions` (all other namespaces).
+`UA_ServerConfig_setDefaultNamespacePermissions`, called by the default
+configurations, fills them after the suggested permissions of the well-known
+Roles (Part 3 Table 2):
+
+- Namespace Zero: every Session browses, reads, calls and receives Events;
+  Observer, Operator, Engineer and Supervisor also read history; ConfigureAdmin
+  also writes the non-security configuration and adds and removes References
+  (for example to add Nodes of other namespaces below the ObjectsFolder);
+  SecurityAdmin also reads RolePermissions. Nobody adds or deletes Nodes.
+- Other namespaces: Anonymous only browses, AuthenticatedUser and
+  TrustedApplication read, Observer reads history and receives Events, Operator
+  writes and calls, Engineer also writes attributes and historizing,
+  ConfigureAdmin manages the address space, SecurityAdmin reads
+  RolePermissions.
+
+The sensitive Nodes of Namespace Zero carry built-in RolePermissions while
+Namespace Zero has a default: the PubSub configuration Methods (ConfigureAdmin),
+the Security Key Service Methods (SecurityKeyServer Roles), the Condition
+Methods that change an Alarm (Operator, Engineer, Supervisor, also on Methods
+copied with `copyMethodsOnInstances`), the audit EventTypes (ReceiveEvents for
+SecurityAdmin only) and the writable RoleType Properties. The
+SessionSecurityDiagnosticsArray lists other Sessions only to SecurityAdmin.
+
+The RBAC Attributes follow Part 3 §5.2.9-§5.2.11:
+
+| Node state | RolePermissions | UserRolePermissions | AccessRestrictions |
+|---|---|---|---|
+| Own RolePermissions / AccessRestrictions | the Node's list | the list filtered to the Session's Roles | the Node's value |
+| None, the namespace has a default or template | `[]` | the namespace default filtered to the Session's Roles | `0` |
+| None, legacy mode without namespace default | Bad_AttributeIdInvalid | Bad_AttributeIdInvalid | `0` |
+
+Reading RolePermissions requires the ReadRolePermissions bit (the local admin
+Session is exempt). Writing any of the three Attributes returns
+Bad_NotWritable, also through `UA_Server_writeRolePermissions` and
+`UA_Server_writeAccessRestrictions`. Use `UA_Server_setNodeRolePermissions`
+and `UA_Server_setNodeAccessRestrictions` instead. `UA_Server_readAccessRestrictions` returns the Node's own
+value; `UA_Server_getNodeAccessRestrictions` keeps returning the effective
+value.
+
+An empty RolePermissions list on a Node is no override (Part 3 §5.2.9):
+`UA_Server_setNodeRolePermissions` with zero entries removes the override.
+When removing a Role or its last permissions would empty the list of a Node,
+the Node keeps a non-empty override that grants nothing. An empty namespace
+default still denies everything.
+
+Every namespace is published by a NamespaceMetadata Object under
+Server/Namespaces with live DefaultRolePermissions (SecurityAdmin only),
+DefaultUserRolePermissions (filtered to the reading Session) and
+DefaultAccessRestrictions Properties. Missing Objects are created with
+NodeIds in Namespace Zero.
+
+New API: `UA_Server_removeNamespaceDefaultRolePermissions`,
+`UA_Server_getNamespaceDefaultAccessRestrictions`,
+`UA_Server_removeNamespaceDefaultAccessRestrictions`,
+`UA_Server_removeNodeAccessRestrictions`,
+`UA_ServerConfig_setDefaultNamespacePermissions` and
+`UA_CertificateUtils_getApplicationUri`. The JSON configuration accepts
+`namespaceZeroDefaultRolePermissions` and `namespaceDefaultRolePermissions` in
+the `rbac` object.
+
+Further changes of the RBAC behavior:
+
+- The default AccessControl plugin derives its decisions from the RBAC
+  permission bits only. Write grants CurrentWrite, StatusWrite and
+  TimestampWrite; ReceiveEvents is required on the EventType and on the
+  SourceNode. A SourceNode that is not in the AddressSpace is evaluated with
+  the defaults of its namespace.
+- Endpoint filters of Roles are evaluated against the configured ServerUrl of
+  the listener that accepted the SecureChannel, not the client-supplied URL.
+- The Application identity criterion uses the ApplicationUri in the client
+  Certificate, not the one declared in CreateSession. X509Subject criteria are
+  validated and fail closed.
+- Audit events no longer contain passwords, access tokens or PubSub security
+  keys.
+
+Migration: set `allPermissionsForAnonymous = true` (in C before
+`UA_Server_newWithConfig`, or `"allPermissionsForAnonymous": true` in the
+`rbac` object of the JSON configuration) to restore the previous behavior,
+where Nodes without RolePermissions in a namespace without an explicit default
+are unrestricted and the templates are ignored. Better, grant the Roles of
+your users the permissions they need, as Node RolePermissions or namespace
+defaults.
+
 ### PubSub message security with OpenSSL and LibreSSL
 
 The PubSub SecurityPolicies `PubSub-Aes128-CTR` and `PubSub-Aes256-CTR`

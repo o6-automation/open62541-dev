@@ -227,8 +227,9 @@
   // registered at startup and are protected: they cannot be removed through
   // the RoleSet RemoveRole Method or UA_Server_removeRole.
   // rbac: {
-  //   // Nodes without explicit RolePermissions are fully permissive when this
-  //   // is true. Set to false to actually enforce the configured permissions.
+  //   // Legacy mode, false by default. When true, nodes without RolePermissions
+  //   // in a namespace without an explicit default are fully permissive and
+  //   // the templates below are ignored. Keep it false to enforce RBAC.
   //   allPermissionsForAnonymous: false,
   //   // DefaultRolePermissions of every namespace without an explicit default
   //   // (Namespace Zero / all other namespaces, also those added at runtime).

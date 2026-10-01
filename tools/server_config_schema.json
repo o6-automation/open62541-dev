@@ -647,7 +647,7 @@
                     },
                     "criteria": {
                       "type": "string",
-                      "description": "Criteria value. Empty for Anonymous, AuthenticatedUser and TrustedApplication. UserName: the user name. Thumbprint: 40 hexadecimal digits. X509Subject: the certificate subject as CN=\"...\"/O=\"...\" in the order CN, O, OU, DC, L, S, C, dnQualifier, serialNumber (Part 18 4.4.3), matched against the subject or the issuer. Application: the ApplicationUri. GroupId and Role: a group or token claim from the AccessControl hooks"
+                      "description": "Criteria value. Empty for Anonymous, AuthenticatedUser and TrustedApplication. UserName: the user name. Thumbprint: 40 hexadecimal digits. X509Subject: the certificate subject as CN=\"...\"/O=\"...\" in the order CN, O, OU, DC, L, S, C, dnQualifier, serialNumber (Part 18 4.4.3), matched against the subject or the issuer. Application: the ApplicationUri, compared with the single URI in the subjectAltName of the client Certificate of a signed SecureChannel (the ApplicationUri of CreateSession is not used). GroupId and Role: a group or token claim from the AccessControl hooks"
                     }
                   }
                 }
@@ -718,8 +718,8 @@
         },
         "allPermissionsForAnonymous": {
           "type": "boolean",
-          "description": "If true, nodes without explicit RolePermissions are fully permissive (testing only)",
-          "default": true
+          "description": "Legacy mode. If true, nodes without RolePermissions in a namespace without an explicit default are fully permissive and the namespace default templates are ignored. If false (the default), such nodes use the template of their namespace (Part 3 Table 2)",
+          "default": false
         }
       }
     }

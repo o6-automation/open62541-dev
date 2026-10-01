@@ -40,12 +40,13 @@ int main(void) {
     /* Allow username/password authentication over unencrypted connection (for demo) */
     config.allowNonePolicyPassword = true;
 
-    /* When allPermissionsForAnonymous is false, nodes without explicit
-     * RolePermissions or namespace defaults use the namespace templates of
-     * the configuration (config.namespaceZeroDefaultRolePermissions and
-     * config.namespaceDefaultRolePermissions, see
-     * UA_ServerConfig_setDefaultNamespacePermissions).
-     * Set to true for development/testing to skip permission checks. */
+    /* Strict RBAC is the default (allPermissionsForAnonymous = false): nodes
+     * without explicit RolePermissions or namespace defaults use the namespace
+     * templates of the configuration (config.namespaceZeroDefaultRolePermissions
+     * and config.namespaceDefaultRolePermissions, see
+     * UA_ServerConfig_setDefaultNamespacePermissions). Setting the flag to
+     * true restores the legacy mode, where such nodes are unrestricted. It is
+     * set explicitly here for clarity. */
     config.allPermissionsForAnonymous = false;
     UA_LOG_INFO(UA_Log_Stdout, UA_LOGCATEGORY_USERLAND,
                 "RBAC Mode: allPermissionsForAnonymous = %s",

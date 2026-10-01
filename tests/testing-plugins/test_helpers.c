@@ -17,11 +17,24 @@ testServerNotificationCallback(UA_Server *server,
                                const UA_KeyValueMap payload) {
 }
 
+/* The unit tests exercise the services, not the default RolePermissions. The
+ * servers of the factories below run in the legacy RBAC mode, where Nodes
+ * without RolePermissions are unrestricted. Tests of the strict mode clear the
+ * flag or build their own configuration. Set before the Server is created, so
+ * that its startup log and NamespaceMetadata match. */
+static void
+setLegacyRBAC(UA_ServerConfig *config) {
+#ifdef UA_ENABLE_RBAC
+    config->allPermissionsForAnonymous = true;
+#endif
+}
+
 UA_Server * UA_Server_newForUnitTest(void) {
     UA_ServerConfig sc;
     memset(&sc, 0, sizeof(UA_ServerConfig));
     sc.logging = UA_Log_Stdout_new(TESTING_LOGLEVEL);
     UA_ServerConfig_setMinimal(&sc, 4840, NULL);
+    setLegacyRBAC(&sc);
     UA_Server *server = UA_Server_newWithConfig(&sc);
     if(!server)
         return NULL;
@@ -53,6 +66,7 @@ UA_Server_newForUnitTestWithSecurityPolicies(UA_UInt16 portNumber,
                                                    issuerList, issuerListSize,
                                                    revocationList, revocationListSize);
 #endif
+    setLegacyRBAC(&config);
     config.eventLoop->dateTime_now = UA_DateTime_now_fake;
     config.eventLoop->dateTime_nowMonotonic = UA_DateTime_now_fake;
     config.tcpReuseAddr = true;
@@ -73,6 +87,7 @@ UA_Server_newForUnitTestWithSecurityPolicies_Filestore(UA_UInt16 portNumber,
     UA_ServerConfig_setDefaultWithFilestore(&config, portNumber,
                                             certificate, privateKey, storePath);
 #endif
+    setLegacyRBAC(&config);
     config.eventLoop->dateTime_now = UA_DateTime_now_fake;
     config.eventLoop->dateTime_nowMonotonic = UA_DateTime_now_fake;
     config.tcpReuseAddr = true;

@@ -299,9 +299,12 @@ typedef struct {
 /* Namespace Zero holds the Server Object and the types. It is readable and
  * its public Methods (GetMonitoredItems, ResendData, ConditionRefresh, ...)
  * are callable. Only ConfigureAdmin writes, to change the non-security
- * configuration of the Server (e.g. ServerDiagnostics/EnabledFlag). The
- * writable security configuration (the Role Properties, ...) carries its own
- * RolePermissions. Nobody adds or deletes Nodes by default. */
+ * configuration of the Server (e.g. ServerDiagnostics/EnabledFlag), and adds
+ * or removes References, e.g. to organize the Nodes of other namespaces below
+ * the ObjectsFolder or to derive their types from the standard types. The
+ * security configuration (the RoleSet, the Roles, the audit EventTypes, ...)
+ * carries its own RolePermissions. Nobody adds or deletes Nodes of Namespace
+ * Zero by default. */
 static const DefaultRolePermission namespaceZeroPermissions[] = {
     {UA_NS0ID_WELLKNOWNROLE_ANONYMOUS,
      PERMISSIONS_BROWSE_READ | UA_PERMISSIONTYPE_CALL |
@@ -313,7 +316,8 @@ static const DefaultRolePermission namespaceZeroPermissions[] = {
     {UA_NS0ID_WELLKNOWNROLE_CONFIGUREADMIN,
      PERMISSIONS_BROWSE_READ | UA_PERMISSIONTYPE_WRITE |
      UA_PERMISSIONTYPE_WRITEATTRIBUTE | UA_PERMISSIONTYPE_CALL |
-     UA_PERMISSIONTYPE_RECEIVEEVENTS},
+     UA_PERMISSIONTYPE_RECEIVEEVENTS | UA_PERMISSIONTYPE_ADDREFERENCE |
+     UA_PERMISSIONTYPE_REMOVEREFERENCE},
     {UA_NS0ID_WELLKNOWNROLE_SECURITYADMIN,
      PERMISSIONS_BROWSE_READ | UA_PERMISSIONTYPE_CALL |
      UA_PERMISSIONTYPE_RECEIVEEVENTS | UA_PERMISSIONTYPE_READROLEPERMISSIONS}
@@ -677,7 +681,10 @@ setDefaultConfig(UA_ServerConfig *conf, UA_UInt16 portNumber) {
 #endif
 
 #ifdef UA_ENABLE_RBAC
-    conf->allPermissionsForAnonymous = true;
+    /* Strict RBAC (Part 3 §4.9.3): a Node without RolePermissions uses the
+     * default of its namespace, the templates below unless set explicitly.
+     * Setting allPermissionsForAnonymous restores the legacy behavior. */
+    conf->allPermissionsForAnonymous = false;
     UA_StatusCode rbacRes = UA_ServerConfig_setDefaultNamespacePermissions(conf);
     if(rbacRes != UA_STATUSCODE_GOOD)
         return rbacRes;

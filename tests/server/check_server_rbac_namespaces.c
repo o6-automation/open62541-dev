@@ -35,6 +35,8 @@
 #define RH  UA_PERMISSIONTYPE_READHISTORY
 #define RRP UA_PERMISSIONTYPE_READROLEPERMISSIONS
 #define AN  UA_PERMISSIONTYPE_ADDNODE
+#define ARF UA_PERMISSIONTYPE_ADDREFERENCE
+#define RRF UA_PERMISSIONTYPE_REMOVEREFERENCE
 
 static UA_Server *server = NULL;
 
@@ -162,8 +164,8 @@ expectRolePermissions(UA_Session *session, const UA_NodeId nodeId,
 /*****************************************/
 
 /* Namespace Zero: Browse, Read, Call and ReceiveEvents for everybody. Only
- * ConfigureAdmin writes (the non-security configuration). The Observer-like
- * Roles may additionally read history. */
+ * ConfigureAdmin writes (the non-security configuration) and adds or removes
+ * References. The Observer-like Roles may additionally read history. */
 START_TEST(template_namespaceZero) {
     const UA_NodeId serverStatus = UA_NS0ID(SERVER_SERVERSTATUS);
     UA_Session *anonymous = createSessionWithRole(ROLE(ANONYMOUS));
@@ -177,9 +179,69 @@ START_TEST(template_namespaceZero) {
 
     UA_Session *configureAdmin = createSessionWithRole(ROLE(CONFIGUREADMIN));
     UA_PermissionType ca = effective(configureAdmin, serverStatus);
-    ck_assert_uint_eq(ca, B | R | W | WA | C | RE);
+    ck_assert_uint_eq(ca, B | R | W | WA | C | RE | ARF | RRF);
     ck_assert(!(ca & AN));
-    ck_assert(!(effective(operatorSession, serverStatus) & (W | WA)));
+    ck_assert(!(ca & UA_PERMISSIONTYPE_DELETENODE));
+    ck_assert(!(effective(operatorSession, serverStatus) & (W | WA | ARF | RRF)));
+
+    /* The security configuration keeps its own RolePermissions */
+    const UA_NodeId roleSet = UA_NS0ID(SERVER_SERVERCAPABILITIES_ROLESET);
+    const UA_NodeId auditEventType = UA_NS0ID(AUDITEVENTTYPE);
+    const UA_NodeId addIdentity = UA_NS0ID(ROLETYPE_ADDIDENTITY);
+    ck_assert(!(effective(configureAdmin, roleSet) & (ARF | RRF)));
+    ck_assert(!(effective(configureAdmin, auditEventType) & (ARF | RRF)));
+    ck_assert(!(effective(configureAdmin, addIdentity) & (ARF | RRF)));
+} END_TEST
+
+static UA_StatusCode
+addObjectAs(UA_Session *session, const UA_NodeId nodeId, const UA_NodeId parentId) {
+    UA_ObjectAttributes attr = UA_ObjectAttributes_default;
+    attr.displayName = UA_LOCALIZEDTEXT("en-US", "Added");
+    UA_AddNodesItem item;
+    UA_AddNodesItem_init(&item);
+    item.parentNodeId.nodeId = parentId;
+    item.referenceTypeId = UA_NS0ID(ORGANIZES);
+    item.requestedNewNodeId.nodeId = nodeId;
+    item.browseName = UA_QUALIFIEDNAME(1, "Added");
+    item.nodeClass = UA_NODECLASS_OBJECT;
+    item.typeDefinition.nodeId = UA_NS0ID(BASEOBJECTTYPE);
+    UA_ExtensionObject_setValueNoDelete(&item.nodeAttributes, &attr,
+                                        &UA_TYPES[UA_TYPES_OBJECTATTRIBUTES]);
+    UA_AddNodesRequest request;
+    UA_AddNodesRequest_init(&request);
+    request.nodesToAddSize = 1;
+    request.nodesToAdd = &item;
+    UA_AddNodesResponse response;
+    UA_AddNodesResponse_init(&response);
+    lockServer(server);
+    Service_AddNodes(server, session, &request, &response);
+    unlockServer(server);
+    ck_assert_uint_eq(response.responseHeader.serviceResult, UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(response.resultsSize, 1);
+    UA_StatusCode res = response.results[0].statusCode;
+    UA_AddNodesResponse_clear(&response);
+    return res;
+}
+
+/* AddNodes adds a Reference from the parent and needs AddReference there.
+ * ConfigureAdmin has it in Namespace Zero, so it can add the Nodes of its
+ * namespace below the ObjectsFolder. Operator cannot. */
+START_TEST(template_configureAdminAddsBelowObjectsFolder) {
+    const UA_NodeId objectsFolder = UA_NS0ID(OBJECTSFOLDER);
+    const UA_NodeId nodeId = UA_NODEID_STRING(1, "Added");
+    UA_NodeClass nodeClass;
+
+    UA_Session *operatorSession = createSessionWithRole(ROLE(OPERATOR));
+    ck_assert_uint_eq(addObjectAs(operatorSession, nodeId, objectsFolder),
+                      UA_STATUSCODE_BADUSERACCESSDENIED);
+    ck_assert_uint_eq(UA_Server_readNodeClass(server, nodeId, &nodeClass),
+                      UA_STATUSCODE_BADNODEIDUNKNOWN);
+
+    UA_Session *configureAdmin = createSessionWithRole(ROLE(CONFIGUREADMIN));
+    ck_assert_uint_eq(addObjectAs(configureAdmin, nodeId, objectsFolder),
+                      UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(UA_Server_readNodeClass(server, nodeId, &nodeClass),
+                      UA_STATUSCODE_GOOD);
 } END_TEST
 
 /* The other namespaces: Anonymous may only browse, authenticated users read,
@@ -1167,9 +1229,11 @@ START_TEST(strict_receiveEventsOnTypeAndSource) {
     ck_assert_uint_eq(triggerEvent(auditEvent, serverObject, &obsItem, 1), 0);
     ck_assert_uint_eq(triggerEvent(auditEvent, serverObject, &secItem, 1), 1);
 
-    /* An Event from a SourceNode outside the AddressSpace is not delivered */
+    /* A SourceNode outside the AddressSpace is evaluated with the default of
+     * its namespace, here the ns=1 template */
     const UA_NodeId missing = UA_NODEID_STRING(1, "Missing");
-    ck_assert_uint_eq(triggerEvent(baseEvent, missing, &obsItem, 1), 0);
+    ck_assert_uint_eq(triggerEvent(baseEvent, missing, &obsItem, 1), 1);
+    ck_assert_uint_eq(triggerEvent(baseEvent, missing, &secItem, 1), 0);
 }
 END_TEST
 
@@ -1199,6 +1263,7 @@ static Suite *testSuite_rbacNamespaces(void) {
     tcase_add_checked_fixture(tc_strict, setupStrict, teardown);
     tcase_add_test(tc_strict, template_namespaceZero);
     tcase_add_test(tc_strict, template_namespaceOne);
+    tcase_add_test(tc_strict, template_configureAdminAddsBelowObjectsFolder);
     tcase_add_test(tc_strict, template_explicitDefaultWins);
     tcase_add_test(tc_strict, template_runtimeNamespace);
     tcase_add_test(tc_strict, template_attributes);

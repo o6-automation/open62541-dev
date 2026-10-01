@@ -849,9 +849,16 @@ UA_Server_initRBAC(UA_Server *server) {
 
     if(server->config.allPermissionsForAnonymous) {
         UA_LOG_WARNING(server->config.logging, UA_LOGCATEGORY_SERVER,
-                       "RBAC: allPermissionsForAnonymous is enabled. "
-                       "Nodes without RolePermissions grant all permissions "
+                       "RBAC: allPermissionsForAnonymous is enabled (legacy "
+                       "mode). Nodes without RolePermissions in a namespace "
+                       "without an explicit default grant all permissions "
                        "regardless of roles. Disable for production use.");
+    } else {
+        UA_LOG_INFO(server->config.logging, UA_LOGCATEGORY_SERVER,
+                    "RBAC: Nodes without RolePermissions use the default "
+                    "RolePermissions of their namespace (the templates of the "
+                    "server configuration unless set explicitly). Set "
+                    "allPermissionsForAnonymous to restore the legacy mode.");
     }
 
     /* Register the OPC UA well-known roles in the internal registry. Their
@@ -3441,30 +3448,69 @@ UA_Server_getEffectiveNamespacePermissions(UA_Server *server,
     return UA_STATUSCODE_GOOD;
 }
 
+static UA_AccessRestrictionType
+getNamespaceAccessRestrictions(UA_Server *server, UA_UInt16 namespaceIndex);
+static UA_StatusCode
+checkAccessRestrictions(UA_Server *server, const UA_Session *session,
+                        UA_AccessRestrictionType ar, UA_Boolean forBrowse);
+
+/* Permissions of a Session for a Node that is not in the AddressSpace: the
+ * default of the Node's namespace. Like a Node without RolePermissions, a
+ * namespace without a RolePermission model is unrestricted (legacy mode). */
+static UA_PermissionType
+getNamespaceEffectivePermissions(UA_Server *server, const UA_Session *session,
+                                 UA_UInt16 namespaceIndex) {
+    size_t entriesSize = 0;
+    const UA_RolePermission *entries = NULL;
+    if(!getNamespaceRolePermissionModel(server, namespaceIndex,
+                                        &entriesSize, &entries))
+        return UA_PERMISSIONTYPE_ALL;
+    if(!session)
+        return 0;
+    return combineRolePermissions(session->rolesSize, session->roles,
+                                  entriesSize, entries);
+}
+
 UA_Boolean
 mayReceiveEvent(UA_Server *server, const UA_Session *session,
                 const UA_NodeId *eventType, const UA_NodeId *sourceNode) {
     UA_LOCK_ASSERT(&server->serviceMutex);
+
+    /* The EventType must be known */
     const UA_Node *typeNode = UA_NODESTORE_GET(server, eventType);
-    const UA_Node *srcNode = UA_NODESTORE_GET(server, sourceNode);
+    if(!typeNode)
+        return false;
     UA_Boolean allowed =
-        typeNode && srcNode &&
         (getNodeEffectivePermissions(server, session, typeNode) &
          UA_PERMISSIONTYPE_RECEIVEEVENTS) != 0 &&
+        /* Event delivery does not go through the Read service. Apply the
+         * AccessRestrictions here, so a transferred Subscription or changed
+         * channel cannot receive an Event over an insufficient
+         * SecureChannel. */
+        checkNodeAccessRestrictions(server, session, typeNode,
+                                    false) == UA_STATUSCODE_GOOD;
+    UA_NODESTORE_RELEASE(server, typeNode);
+    if(!allowed)
+        return false;
+
+    /* A SourceNode that is not in the AddressSpace (a null or a remote
+     * NodeId) has neither RolePermissions nor AccessRestrictions of its own.
+     * Apply the defaults of its namespace. */
+    const UA_Node *srcNode = UA_NODESTORE_GET(server, sourceNode);
+    if(!srcNode) {
+        UA_UInt16 ns = sourceNode->namespaceIndex;
+        return (getNamespaceEffectivePermissions(server, session, ns) &
+                UA_PERMISSIONTYPE_RECEIVEEVENTS) != 0 &&
+            checkAccessRestrictions(server, session,
+                                    getNamespaceAccessRestrictions(server, ns),
+                                    false) == UA_STATUSCODE_GOOD;
+    }
+    allowed =
         (getNodeEffectivePermissions(server, session, srcNode) &
          UA_PERMISSIONTYPE_RECEIVEEVENTS) != 0 &&
-        /* Event delivery does not go through the Read service. Apply the
-         * AccessRestrictions of both Nodes here, so a transferred
-         * Subscription or changed channel cannot receive an Event over an
-         * insufficient SecureChannel. */
-        checkNodeAccessRestrictions(server, session, typeNode,
-                                    false) == UA_STATUSCODE_GOOD &&
         checkNodeAccessRestrictions(server, session, srcNode,
                                     false) == UA_STATUSCODE_GOOD;
-    if(typeNode)
-        UA_NODESTORE_RELEASE(server, typeNode);
-    if(srcNode)
-        UA_NODESTORE_RELEASE(server, srcNode);
+    UA_NODESTORE_RELEASE(server, srcNode);
     return allowed;
 }
 
@@ -3706,6 +3752,16 @@ getNodeOwnAccessRestrictions(UA_Server *server, const UA_Node *node) {
     return UA_ACCESSRESTRICTIONTYPE_NONE;
 }
 
+/* Default AccessRestrictions of a namespace (Part 3 §5.2.11). Requires the
+ * server lock. */
+static UA_AccessRestrictionType
+getNamespaceAccessRestrictions(UA_Server *server, UA_UInt16 namespaceIndex) {
+    if(namespaceIndex < server->namespaceMetadataSize && server->namespaceMetadata &&
+       server->namespaceMetadata[namespaceIndex].hasDefaultAccessRestrictions)
+        return server->namespaceMetadata[namespaceIndex].defaultAccessRestrictions;
+    return UA_ACCESSRESTRICTIONTYPE_NONE;
+}
+
 /* Effective AccessRestrictions of a node: its own value if set, otherwise the
  * namespace default (Part 3 §5.2.11). The node's own value is stored in its
  * shared role-permission entry. Requires the server lock. */
@@ -3715,25 +3771,20 @@ getNodeAccessRestrictions(UA_Server *server, const UA_Node *node) {
     if(idx != UA_PERMISSION_INDEX_INVALID && idx < server->rolePermissionsSize &&
        server->rolePermissions[idx].hasAccessRestrictions)
         return server->rolePermissions[idx].accessRestrictions;
-    UA_UInt16 ns = node->head.nodeId.namespaceIndex;
-    if(ns < server->namespaceMetadataSize && server->namespaceMetadata &&
-       server->namespaceMetadata[ns].hasDefaultAccessRestrictions)
-        return server->namespaceMetadata[ns].defaultAccessRestrictions;
-    return UA_ACCESSRESTRICTIONTYPE_NONE;
+    return getNamespaceAccessRestrictions(server, node->head.nodeId.namespaceIndex);
 }
 
-/* Enforce a node's AccessRestrictions against the session's SecureChannel.
- * The local admin session is exempt. For Browse the restrictions apply only if
- * the ApplyRestrictionsToBrowse bit is set. Requires the server lock. */
-UA_StatusCode
-checkNodeAccessRestrictions(UA_Server *server, const UA_Session *session,
-                            const UA_Node *node, UA_Boolean forBrowse) {
+/* Enforce AccessRestrictions against the session's SecureChannel. The local
+ * admin session is exempt. For Browse the restrictions apply only if the
+ * ApplyRestrictionsToBrowse bit is set. Requires the server lock. */
+static UA_StatusCode
+checkAccessRestrictions(UA_Server *server, const UA_Session *session,
+                        UA_AccessRestrictionType ar, UA_Boolean forBrowse) {
     UA_LOCK_ASSERT(&server->serviceMutex);
 
     if(session == &server->adminSession)
         return UA_STATUSCODE_GOOD;
 
-    UA_AccessRestrictionType ar = getNodeAccessRestrictions(server, node);
     if(ar == UA_ACCESSRESTRICTIONTYPE_NONE)
         return UA_STATUSCODE_GOOD;
 
@@ -3756,6 +3807,15 @@ checkNodeAccessRestrictions(UA_Server *server, const UA_Session *session,
         return UA_STATUSCODE_BADUSERACCESSDENIED;
 
     return UA_STATUSCODE_GOOD;
+}
+
+/* Enforce a node's AccessRestrictions against the session's SecureChannel */
+UA_StatusCode
+checkNodeAccessRestrictions(UA_Server *server, const UA_Session *session,
+                            const UA_Node *node, UA_Boolean forBrowse) {
+    return checkAccessRestrictions(server, session,
+                                   getNodeAccessRestrictions(server, node),
+                                   forBrowse);
 }
 
 /* Copy-on-write change of the AccessRestrictions part of a node's entry. The

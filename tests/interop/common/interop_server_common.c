@@ -396,6 +396,13 @@ interopServerMain(int argc, char *argv[], UA_InteropTransport transport) {
     if(retval != UA_STATUSCODE_GOOD)
         goto cleanup;
 
+#ifdef UA_ENABLE_RBAC
+    /* The interoperability tests exercise the services, not the default
+     * RolePermissions. Run the legacy RBAC mode, where Nodes without
+     * RolePermissions are unrestricted. */
+    config->allPermissionsForAnonymous = true;
+#endif
+
     addHelloWorldMethod(server);
     addVariable(server);
     writeVariable(server);

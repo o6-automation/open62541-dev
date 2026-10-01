@@ -576,6 +576,26 @@ function unit_tests_alarms_memcheck {
     sudo -E bash -c "make test ARGS=\"${args}\""
 }
 
+# RBAC needs the full Namespace Zero and the Method calls (on by default).
+# Encryption covers the EncryptionRequired restrictions of the RoleSet and
+# the Application identity criterion.
+function unit_tests_rbac {
+    rm -rf build; mkdir -p build; cd build
+    cmake -DCMAKE_BUILD_TYPE=Debug \
+          -DUA_BUILD_EXAMPLES=ON \
+          -DUA_BUILD_UNIT_TESTS=ON \
+          -DUA_ENABLE_COVERAGE=ON \
+          -DUA_ENABLE_RBAC=ON \
+          -DUA_ENABLE_ENCRYPTION=OPENSSL \
+          -DUA_FORCE_WERROR=ON \
+          -DUA_NAMESPACE_ZERO=FULL \
+          ..
+    make ${MAKEOPTS}
+    set_capabilities
+    make test ARGS="-V"
+    make gcov
+}
+
 function unit_tests_encryption {
     rm -rf build; mkdir -p build; cd build
     cmake -DCMAKE_BUILD_TYPE=Debug \

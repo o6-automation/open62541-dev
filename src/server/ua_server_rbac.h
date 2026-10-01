@@ -255,10 +255,13 @@ UA_Server_getEffectivePermissions(UA_Server *server,
 /* Whether the Session receives an Event: the ReceiveEvents bit must be set on
  * the EventType and on the SourceNode (Part 3 §8.55) and the AccessRestrictions
  * of both Nodes must be met at delivery time. Legacy mode yields all bits for
- * Nodes without RolePermissions. An Event whose EventType or SourceNode is not
- * in the AddressSpace is not delivered: neither its RolePermissions nor its
- * AccessRestrictions can be checked. The caller exempts the local admin
- * Session. Must be called with the server lock held. */
+ * Nodes without RolePermissions. A SourceNode that is not in the AddressSpace
+ * (a null or a remote NodeId) is evaluated with the defaults of its namespace
+ * (Namespace Zero for the null NodeId): the namespace default RolePermissions
+ * or template, all bits in legacy mode without a namespace default, and the
+ * namespace default AccessRestrictions. An Event whose EventType is not in the
+ * AddressSpace is not delivered. The caller exempts the local admin Session.
+ * Must be called with the server lock held. */
 UA_Boolean
 mayReceiveEvent(UA_Server *server, const UA_Session *session,
                 const UA_NodeId *eventType, const UA_NodeId *sourceNode);

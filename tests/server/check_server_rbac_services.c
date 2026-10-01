@@ -19,6 +19,7 @@
 
 #include <check.h>
 #include <stdlib.h>
+#include <string.h>
 
 static UA_Server *server = NULL;
 
@@ -26,6 +27,16 @@ static void setup(void) {
     server = UA_Server_newForUnitTest();
     ck_assert(server != NULL);
     UA_Server_getConfig(server)->tcpEnabled = false;
+    ck_assert_uint_eq(UA_Server_run_startup(server), UA_STATUSCODE_GOOD);
+}
+
+/* Strict mode with the namespace templates */
+static void setupStrict(void) {
+    server = UA_Server_newForUnitTest();
+    ck_assert(server != NULL);
+    UA_ServerConfig *config = UA_Server_getConfig(server);
+    config->tcpEnabled = false;
+    config->allPermissionsForAnonymous = false;
     ck_assert_uint_eq(UA_Server_run_startup(server), UA_STATUSCODE_GOOD);
 }
 
@@ -408,7 +419,8 @@ START_TEST(addNodes_instantiationNeedsOnlyParentAddReference) {
 
 #ifdef UA_ENABLE_SUBSCRIPTIONS_EVENTS
 static UA_StatusCode
-createEventItemAs(UA_Session *session, const UA_NodeId nodeId) {
+createEventItemAsEx(UA_Session *session, const UA_NodeId nodeId,
+                    UA_MonitoredItem **outMon) {
     UA_CreateSubscriptionRequest subRequest;
     UA_CreateSubscriptionRequest_init(&subRequest);
     subRequest.publishingEnabled = true;
@@ -453,9 +465,24 @@ createEventItemAs(UA_Session *session, const UA_NodeId nodeId) {
     ck_assert_uint_eq(response.responseHeader.serviceResult, UA_STATUSCODE_GOOD);
     ck_assert_uint_eq(response.resultsSize, 1);
     UA_StatusCode res = response.results[0].statusCode;
+    if(outMon && res == UA_STATUSCODE_GOOD) {
+        lockServer(server);
+        UA_Subscription *sub =
+            UA_Session_getSubscriptionById(session, subResponse.subscriptionId);
+        ck_assert_ptr_ne(sub, NULL);
+        *outMon = UA_Subscription_getMonitoredItem(sub,
+                                                   response.results[0].monitoredItemId);
+        unlockServer(server);
+        ck_assert_ptr_ne(*outMon, NULL);
+    }
     UA_CreateMonitoredItemsResponse_clear(&response);
     UA_CreateSubscriptionResponse_clear(&subResponse);
     return res;
+}
+
+static UA_StatusCode
+createEventItemAs(UA_Session *session, const UA_NodeId nodeId) {
+    return createEventItemAsEx(session, nodeId, NULL);
 }
 
 /* The EventNotifier of a node the Session may not browse cannot be read. The
@@ -492,6 +519,77 @@ START_TEST(eventItem_browsableNode) {
     setPermissions(nodeId, UA_PERMISSIONTYPE_BROWSE | UA_PERMISSIONTYPE_RECEIVEEVENTS);
     UA_Session *session = createSessionWithRole(UA_NS0ID_WELLKNOWNROLE_CONFIGUREADMIN);
     ck_assert_uint_eq(createEventItemAs(session, nodeId), UA_STATUSCODE_GOOD);
+} END_TEST
+
+/* Emit a BaseEventType Event with the SourceNode. It is emitted at the Server
+ * Object in any case. Returns the number of Events the item received. */
+static size_t
+emitEventFrom(UA_MonitoredItem *mon, const UA_NodeId sourceNode,
+              const UA_NodeId eventType) {
+    size_t before = mon->queueSize;
+    UA_EventDescription ed;
+    memset(&ed, 0, sizeof(ed));
+    ed.sourceNode = sourceNode;
+    ed.eventType = eventType;
+    ed.severity = 100;
+    ed.message = UA_LOCALIZEDTEXT("en-US", "Event");
+    UA_Server_createEventEx(server, &ed, NULL);
+    return mon->queueSize - before;
+}
+
+/* Legacy mode: an Event whose SourceNode is not in the AddressSpace is
+ * delivered unless the namespace of the SourceNode has a default without
+ * ReceiveEvents. An unknown EventType is never delivered. */
+START_TEST(eventItem_unknownSourceLegacy) {
+    UA_Session *session = createSessionWithRole(UA_NS0ID_WELLKNOWNROLE_ANONYMOUS);
+    UA_MonitoredItem *mon = NULL;
+    ck_assert_uint_eq(createEventItemAsEx(session, UA_NS0ID(SERVER), &mon),
+                      UA_STATUSCODE_GOOD);
+    const UA_NodeId baseEventType = UA_NS0ID(BASEEVENTTYPE);
+    const UA_NodeId unknown = UA_NODEID_STRING(1, "UnknownSource");
+    ck_assert_uint_eq(emitEventFrom(mon, unknown, baseEventType), 1);
+    ck_assert_uint_eq(emitEventFrom(mon, UA_NODEID_NULL, baseEventType), 1);
+    ck_assert_uint_eq(emitEventFrom(mon, UA_NODEID_NUMERIC(0, UA_NS0ID_SERVER),
+                                    UA_NODEID_STRING(1, "UnknownEventType")), 0);
+
+    /* The namespace default applies to the unknown SourceNode */
+    UA_RolePermission browseOnly = {
+        UA_NODEID_NUMERIC(0, UA_NS0ID_WELLKNOWNROLE_ANONYMOUS),
+        UA_PERMISSIONTYPE_BROWSE};
+    ck_assert_uint_eq(UA_Server_setNamespaceDefaultRolePermissions(server, 1, 1,
+                                                                   &browseOnly),
+                      UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(emitEventFrom(mon, unknown, baseEventType), 0);
+    ck_assert_uint_eq(emitEventFrom(mon, UA_NODEID_NULL, baseEventType), 1);
+} END_TEST
+
+/* Strict mode: the template of the namespace of the unknown SourceNode
+ * applies. Anonymous may only browse in namespace 1, Observer receives Events
+ * there. The null SourceNode is evaluated in Namespace Zero. */
+START_TEST(eventItem_unknownSourceStrict) {
+    const UA_NodeId baseEventType = UA_NS0ID(BASEEVENTTYPE);
+    const UA_NodeId unknown = UA_NODEID_STRING(1, "UnknownSource");
+
+    UA_Session *anonymous = createSessionWithRole(UA_NS0ID_WELLKNOWNROLE_ANONYMOUS);
+    UA_MonitoredItem *anonymousMon = NULL;
+    ck_assert_uint_eq(createEventItemAsEx(anonymous, UA_NS0ID(SERVER), &anonymousMon),
+                      UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(emitEventFrom(anonymousMon, unknown, baseEventType), 0);
+    ck_assert_uint_eq(emitEventFrom(anonymousMon, UA_NODEID_NULL, baseEventType), 1);
+
+    UA_Session *observer = createSessionWithRole(UA_NS0ID_WELLKNOWNROLE_OBSERVER);
+    UA_MonitoredItem *observerMon = NULL;
+    ck_assert_uint_eq(createEventItemAsEx(observer, UA_NS0ID(SERVER), &observerMon),
+                      UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(emitEventFrom(observerMon, unknown, baseEventType), 1);
+
+    /* The default AccessRestrictions of the namespace apply as well. The
+     * in-process Session has no SecureChannel. */
+    ck_assert_uint_eq(UA_Server_setNamespaceDefaultAccessRestrictions(server, 1,
+                          UA_ACCESSRESTRICTIONTYPE_ENCRYPTIONREQUIRED),
+                      UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(emitEventFrom(observerMon, unknown, baseEventType), 0);
+    ck_assert_uint_eq(emitEventFrom(observerMon, UA_NODEID_NULL, baseEventType), 1);
 } END_TEST
 #endif /* UA_ENABLE_SUBSCRIPTIONS_EVENTS */
 
@@ -832,7 +930,13 @@ static Suite *testSuite_rbacServices(void) {
     tcase_add_test(tc_events, eventItem_unbrowsableNode);
     tcase_add_test(tc_events, eventItem_encryptionRequired);
     tcase_add_test(tc_events, eventItem_browsableNode);
+    tcase_add_test(tc_events, eventItem_unknownSourceLegacy);
     suite_add_tcase(s, tc_events);
+
+    TCase *tc_eventsStrict = tcase_create("Event MonitoredItems (strict)");
+    tcase_add_checked_fixture(tc_eventsStrict, setupStrict, teardown);
+    tcase_add_test(tc_eventsStrict, eventItem_unknownSourceStrict);
+    suite_add_tcase(s, tc_eventsStrict);
 #endif
 
     return s;

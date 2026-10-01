@@ -353,6 +353,10 @@ START_TEST(Client_commonAttributes_requireBrowse) {
     server = UA_Server_new();
     UA_ServerConfig *config = UA_Server_getConfig(server);
     UA_ServerConfig_setDefault(config);
+#ifdef UA_ENABLE_RBAC
+    /* The anonymous client reads a Variable in ns=1 (legacy RBAC mode) */
+    config->allPermissionsForAnonymous = true;
+#endif
     config->accessControl.allowBrowseNode = denyTestNodeBrowse;
 
     UA_VariableAttributes attr = UA_VariableAttributes_default;
@@ -436,6 +440,10 @@ START_TEST(Client_write_notWritableVsUserAccessDenied) {
     server = UA_Server_new();
     UA_ServerConfig *config = UA_Server_getConfig(server);
     UA_ServerConfig_setDefault(config);
+#ifdef UA_ENABLE_RBAC
+    /* The anonymous client writes Variables in ns=1 (legacy RBAC mode) */
+    config->allPermissionsForAnonymous = true;
+#endif
     config->accessControl.getUserAccessLevel = userAccessLevel_readOnlyForDenied;
     config->accessControl.getUserRightsMask = userRightsMask_noneForDenied;
 

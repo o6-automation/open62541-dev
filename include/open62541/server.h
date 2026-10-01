@@ -609,10 +609,19 @@ UA_EXPORT UA_THREADSAFE UA_StatusCode
 UA_Server_writeExecutable(UA_Server *server, const UA_NodeId nodeId,
                           const UA_Boolean executable);
 
+/* The RolePermissions Attribute is not writable through the Write Service.
+ * This always returns Bad_NotWritable. With RBAC, configure the
+ * RolePermissions of a Node with UA_Server_setNodeRolePermissions,
+ * UA_Server_addRolePermissions and UA_Server_removeRolePermissions. */
 UA_EXPORT UA_THREADSAFE UA_StatusCode
 UA_Server_writeRolePermissions(UA_Server *server, const UA_NodeId nodeId,
                                const UA_Variant rolePermissions);
 
+/* The AccessRestrictions Attribute is not writable through the Write Service.
+ * With RBAC this always returns Bad_NotWritable, without RBAC
+ * Bad_AttributeIdInvalid. With RBAC, configure the AccessRestrictions of a
+ * Node with UA_Server_setNodeAccessRestrictions and
+ * UA_Server_removeNodeAccessRestrictions. */
 UA_EXPORT UA_THREADSAFE UA_StatusCode
 UA_Server_writeAccessRestrictions(UA_Server *server, const UA_NodeId nodeId,
                                   const UA_AccessRestrictionType accessRestrictions);
@@ -2208,16 +2217,25 @@ UA_Server_readObjectProperty(UA_Server *server, const UA_NodeId objectId,
  * A Role grants access only where matching RolePermissions are configured on
  * a Node or in its NamespaceMetadata defaults. The RolePermissions of a Node
  * override the default of its namespace. An empty list on a Node is no
- * override: the namespace default applies (Part 3 §5.2.9). For backwards
- * compatibility,
- * ``UA_ServerConfig::allPermissionsForAnonymous`` defaults to ``true``: Nodes
- * with neither explicit nor namespace-default RolePermissions are fully
- * permissive, irrespective of the Session's Roles. Set it to ``false`` before
- * creating the Server to enforce a namespace default for every Node: a
- * namespace without an explicit default then uses the template
- * ``UA_ServerConfig::namespaceZeroDefaultRolePermissions`` (Namespace Zero) or
- * ``UA_ServerConfig::namespaceDefaultRolePermissions`` (all other
- * namespaces). Explicitly configured RolePermissions are enforced with either
+ * override: the namespace default applies (Part 3 §5.2.9). A namespace without
+ * an explicit default (UA_Server_setNamespaceDefaultRolePermissions) uses the
+ * template ``UA_ServerConfig::namespaceZeroDefaultRolePermissions`` (Namespace
+ * Zero) or ``UA_ServerConfig::namespaceDefaultRolePermissions`` (all other
+ * namespaces), so every Node has a default (Part 3 §4.9.3). The default
+ * configurations fill the templates after the suggested permissions of the
+ * well-known Roles (Part 3 Table 2, see
+ * UA_ServerConfig_setDefaultNamespacePermissions): every Session browses and
+ * reads Namespace Zero and calls its public Methods, but only browses the other
+ * namespaces without further Roles; AuthenticatedUser reads, Operator writes
+ * and calls, and ConfigureAdmin manages the address space (in Namespace Zero it
+ * writes and adds and removes References, but adds and deletes no Nodes). An
+ * empty template grants nothing.
+ *
+ * ``UA_ServerConfig::allPermissionsForAnonymous`` (default ``false``) restores
+ * the permissive behavior of earlier versions: Nodes with neither explicit nor
+ * namespace-default RolePermissions are fully permissive, irrespective of the
+ * Session's Roles, and the templates are ignored. Set it before creating the
+ * Server. Explicitly configured RolePermissions are enforced with either
  * setting.
  *
  * Some Nodes of Namespace Zero are too sensitive for the Namespace Zero
@@ -2893,11 +2911,13 @@ struct UA_ServerConfig {
     UA_RolePermissionSet namespaceZeroDefaultRolePermissions;
     UA_RolePermissionSet namespaceDefaultRolePermissions; /* ns >= 1 */
 
-    /* If true, nodes without explicit or namespace-default RolePermissions
-     * grant all permissions regardless of roles and the namespace templates
-     * above are ignored. Explicit RolePermissions are still enforced. Defaults
-     * to true for backwards compatibility.
-     * WARNING: Authorization is ineffective for unconfigured nodes. */
+    /* Legacy mode. If true, nodes without explicit or namespace-default
+     * RolePermissions grant all permissions regardless of roles and the
+     * namespace templates above are ignored. Explicit RolePermissions are
+     * still enforced. Defaults to false: such nodes use the template of their
+     * namespace. Set it before the Server is created, the Server publishes
+     * its NamespaceMetadata accordingly.
+     * WARNING: If true, authorization is ineffective for unconfigured nodes. */
     UA_Boolean allPermissionsForAnonymous;
 #endif
 };

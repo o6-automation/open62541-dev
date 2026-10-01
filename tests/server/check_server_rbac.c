@@ -2566,6 +2566,7 @@ START_TEST(emptyPermissionConfig_inheritsNamespaceDefault) {
     sc.logging = UA_Log_Stdout_new(UA_LOGLEVEL_WARNING);
     ck_assert_uint_eq(UA_ServerConfig_setMinimal(&sc, 4840, NULL),
                       UA_STATUSCODE_GOOD);
+    sc.allPermissionsForAnonymous = true; /* Starts in legacy mode */
     sc.rolePermissionPresets = (UA_RolePermissionSet*)
         UA_calloc(2, sizeof(UA_RolePermissionSet));
     ck_assert_ptr_nonnull(sc.rolePermissionPresets);
@@ -2746,12 +2747,22 @@ START_TEST(namespaceDefault_reportedByAttributesAndMetadata) {
 }
 END_TEST
 
+/* The default configuration enforces RBAC with the Table-2 templates. The
+ * unit-test factory opts into the legacy mode. */
 START_TEST(allPermissionsForAnonymous_config) {
+    UA_ServerConfig defaultConfig;
+    memset(&defaultConfig, 0, sizeof(UA_ServerConfig));
+    ck_assert_uint_eq(UA_ServerConfig_setDefault(&defaultConfig),
+                      UA_STATUSCODE_GOOD);
+    ck_assert(defaultConfig.allPermissionsForAnonymous == false);
+    ck_assert_uint_gt(defaultConfig.namespaceZeroDefaultRolePermissions.
+                      rolePermissionsSize, 0);
+    ck_assert_uint_gt(defaultConfig.namespaceDefaultRolePermissions.
+                      rolePermissionsSize, 0);
+    UA_ServerConfig_clear(&defaultConfig);
+
     UA_ServerConfig *config = UA_Server_getConfig(server);
     ck_assert(config->allPermissionsForAnonymous == true);
-    config->allPermissionsForAnonymous = false;
-    ck_assert(config->allPermissionsForAnonymous == false);
-    config->allPermissionsForAnonymous = true;
 }
 END_TEST
 

@@ -1369,6 +1369,10 @@ START_TEST(oversizedServerResponseReturnsServiceFault) {
     UA_Server *server = UA_Server_new();
     ck_assert_ptr_nonnull(server);
     UA_ServerConfig *serverConfig = UA_Server_getConfig(server);
+#ifdef UA_ENABLE_RBAC
+    /* The anonymous client reads a Variable in ns=1 (legacy RBAC mode) */
+    serverConfig->allPermissionsForAnonymous = true;
+#endif
     serverConfig->tcpEnabled = false;
     serverConfig->httpEnabled = true;
     serverConfig->httpAllowUnencrypted = true;
