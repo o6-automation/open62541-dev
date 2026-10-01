@@ -503,6 +503,31 @@ START_TEST(DeferredDeleteNotifiesOnce) {
     ck_assert_uint_eq(removeNotifications[UA_PUBSUBCOMPONENT_WRITERGROUP], 1);
 } END_TEST
 
+/* A PubSubManager that is still stopping cannot be started. Enabling all
+ * components then fails, and must release the server lock: another thread
+ * would block on it for good. */
+START_TEST(EnableAllWhileStoppingReleasesLock) {
+    UA_Server_run_startup(server);
+    addMinimalPubSubConnection();
+    addMinimalWriterGroup();
+    UA_StatusCode res = UA_Server_enableAllPubSubComponents(server);
+    ck_assert_int_eq(res, UA_STATUSCODE_GOOD);
+    for(size_t i = 0; i < 5; i++) {
+        UA_fakeSleep(50);
+        UA_Server_run_iterate(server, false);
+    }
+
+    /* The sockets close in later EventLoop iterations, so the manager is
+     * left STOPPING */
+    UA_Server_disableAllPubSubComponents(server);
+    UA_PubSubManager *psm = getPSM(server);
+    ck_assert_int_eq(psm->drv.state, UA_LIFECYCLESTATE_STOPPING);
+
+    res = UA_Server_enableAllPubSubComponents(server);
+    ck_assert_int_eq(res, UA_STATUSCODE_BADINTERNALERROR);
+    ck_assert_uint_eq(server->serviceMutex.count, 0);
+} END_TEST
+
 static Suite *
 stateMachineSuite(void) {
     Suite *s = suite_create("PubSub state machine edge cases");
@@ -532,6 +557,7 @@ stateMachineSuite(void) {
     tcase_add_test(tc_api, RemoveWriterGroup_UnknownReturnsBadNotFound);
     tcase_add_test(tc_api, RemoveReaderGroup_UnknownReturnsBadNotFound);
     tcase_add_test(tc_api, DeferredDeleteNotifiesOnce);
+    tcase_add_test(tc_api, EnableAllWhileStoppingReleasesLock);
 
     suite_add_tcase(s, tc_wg_state);
     suite_add_tcase(s, tc_rg_state);
