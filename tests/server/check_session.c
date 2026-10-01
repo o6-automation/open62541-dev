@@ -1,6 +1,9 @@
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
- * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/.
+ *
+ *    Copyright 2026 (c) o6 Automation GmbH (Author: Andreas Ebner)
+ */
 
 #include <open62541/client.h>
 #include <open62541/client_config_default.h>
@@ -800,6 +803,52 @@ START_TEST(Session_getSessionAttribute) {
     UA_Client_delete(client);
 } END_TEST
 
+/* The security of the SecureChannel is exposed as read-only attributes */
+START_TEST(Session_securityAttributes) {
+    UA_Client *client = UA_Client_newForUnitTest();
+    UA_StatusCode retval = UA_Client_connect(client, "opc.tcp://localhost:4840");
+    ck_assert_uint_eq(retval, UA_STATUSCODE_GOOD);
+
+    UA_MessageSecurityMode mode = UA_MESSAGESECURITYMODE_INVALID;
+    retval = UA_Server_getSessionAttribute_scalar(server, &client->sessionId,
+                                                  UA_QUALIFIEDNAME(0, "securityMode"),
+                                                  &UA_TYPES[UA_TYPES_MESSAGESECURITYMODE],
+                                                  &mode);
+    ck_assert_uint_eq(retval, UA_STATUSCODE_GOOD);
+    ck_assert_int_eq(mode, UA_MESSAGESECURITYMODE_NONE);
+
+    UA_String policyUri = UA_STRING_NULL;
+    retval = UA_Server_getSessionAttribute_scalar(server, &client->sessionId,
+                                                  UA_QUALIFIEDNAME(0, "securityPolicyUri"),
+                                                  &UA_TYPES[UA_TYPES_STRING], &policyUri);
+    ck_assert_uint_eq(retval, UA_STATUSCODE_GOOD);
+    UA_String noneUri = UA_STRING("http://opcfoundation.org/UA/SecurityPolicy#None");
+    ck_assert(UA_String_equal(&policyUri, &noneUri));
+
+    /* Read-only */
+    UA_Variant v;
+    UA_Variant_setScalar(&v, &mode, &UA_TYPES[UA_TYPES_MESSAGESECURITYMODE]);
+    ck_assert_uint_eq(UA_Server_setSessionAttribute(server, &client->sessionId,
+                                                    UA_QUALIFIEDNAME(0, "securityMode"), &v),
+                      UA_STATUSCODE_BADNOTWRITABLE);
+    ck_assert_uint_eq(UA_Server_deleteSessionAttribute(server, &client->sessionId,
+                                                       UA_QUALIFIEDNAME(0, "securityPolicyUri")),
+                      UA_STATUSCODE_BADNOTWRITABLE);
+
+    /* The admin session has no SecureChannel */
+    UA_Guid adminGuid = {1, 0, 0, {0}};
+    UA_NodeId adminSessionId = UA_NODEID_GUID(0, adminGuid);
+    retval = UA_Server_getSessionAttribute_scalar(server, &adminSessionId,
+                                                  UA_QUALIFIEDNAME(0, "securityMode"),
+                                                  &UA_TYPES[UA_TYPES_MESSAGESECURITYMODE],
+                                                  &mode);
+    ck_assert_uint_eq(retval, UA_STATUSCODE_BADNOTFOUND);
+
+    UA_Client_disconnect(client);
+    UA_Client_delete(client);
+}
+END_TEST
+
 START_TEST(Session_deleteSessionAttribute) {
     UA_Client *client = UA_Client_newForUnitTest();
     UA_StatusCode retval = UA_Client_connectSecureChannel(client, "opc.tcp://localhost:4840");
@@ -1051,6 +1100,7 @@ static Suite* testSuite_Session(void) {
     tcase_add_test(tc_session_ext, Session_multiple_reads);
     tcase_add_test(tc_session_ext, Session_getSessionAttribute);
     tcase_add_test(tc_session_ext, Session_deleteSessionAttribute);
+    tcase_add_test(tc_session_ext, Session_securityAttributes);
     tcase_add_test(tc_session_ext, Session_createSession_certIgnored_on_none_policy);
     tcase_add_test(tc_session_ext, Session_createSession_noServerCertOnNonePolicy);
     tcase_add_test(tc_session_ext, Session_secureChannel_mismatch);

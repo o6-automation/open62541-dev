@@ -383,8 +383,15 @@ UA_Server_closeSession(UA_Server *server, const UA_NodeId *sessionId);
  * - ``0:clientDescription`` (``UA_ApplicationDescription``): Client description
  * - ``0:sessionName`` (``String``): Client-defined name of the session
  * - ``0:clientUserId`` (``String``): User identifier used to activate the session
+ * - ``0:securityMode`` (``UA_MessageSecurityMode``): SecurityMode of the
+ *   SecureChannel the session is bound to
+ * - ``0:securityPolicyUri`` (``String``): SecurityPolicy of the SecureChannel
+ *   the session is bound to
  *
- * Additional attributes can be set manually with the API below. */
+ * The SecureChannel attributes return ``UA_STATUSCODE_BADNOTFOUND`` for
+ * sessions that are not bound to a SecureChannel, such as the admin session
+ * used for local calls. Additional attributes can be set manually with the API
+ * below. */
 
 /* Returns a shallow copy of the attribute (don't _clear or _delete manually).
  * While the method is thread-safe, the returned value is not protected. Only

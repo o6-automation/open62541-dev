@@ -6,6 +6,7 @@
  *    Copyright 2018 (c) Thomas Stalder, Blue Time Concept SA
  *    Copyright 2019 (c) HMS Industrial Networks AB (Author: Jonas Green)
  *    Copyright 2026 (c) o6 Automation GmbH (Author: Julius Pfrommer)
+ *    Copyright 2026 (c) o6 Automation GmbH (Author: Andreas Ebner)
  */
 
 #include "ua_session.h"
@@ -324,12 +325,14 @@ UA_Server_closeSession(UA_Server *server, const UA_NodeId *sessionId) {
 
 /* Session Attributes */
 
-#define UA_PROTECTEDATTRIBUTESSIZE 4
+#define UA_PROTECTEDATTRIBUTESSIZE 6
 static const UA_QualifiedName protectedAttributes[UA_PROTECTEDATTRIBUTESSIZE] = {
     {0, UA_STRING_STATIC("localeIds")},
     {0, UA_STRING_STATIC("clientDescription")},
     {0, UA_STRING_STATIC("sessionName")},
-    {0, UA_STRING_STATIC("clientUserId")}
+    {0, UA_STRING_STATIC("clientUserId")},
+    {0, UA_STRING_STATIC("securityMode")},
+    {0, UA_STRING_STATIC("securityPolicyUri")}
 };
 
 #ifdef UA_ENABLE_RBAC
@@ -449,6 +452,23 @@ getSessionAttribute(UA_Server *server, const UA_NodeId *sessionId,
         /* Return client user id */
         UA_Variant_setScalar(&localAttr, &session->clientUserIdOfSession,
                              &UA_TYPES[UA_TYPES_STRING]);
+        attr = &localAttr;
+    } else if(UA_QualifiedName_equal(&key, &protectedAttributes[4]) ||
+              UA_QualifiedName_equal(&key, &protectedAttributes[5])) {
+        /* Return the security of the SecureChannel. Sessions that are not
+         * bound to a SecureChannel (e.g. the admin session) have none. */
+        UA_SecureChannel *channel = session->channel;
+        if(!channel)
+            return UA_STATUSCODE_BADNOTFOUND;
+        if(UA_QualifiedName_equal(&key, &protectedAttributes[4])) {
+            UA_Variant_setScalar(&localAttr, &channel->securityMode,
+                                 &UA_TYPES[UA_TYPES_MESSAGESECURITYMODE]);
+        } else {
+            if(!channel->securityPolicy)
+                return UA_STATUSCODE_BADNOTFOUND;
+            UA_Variant_setScalar(&localAttr, &channel->securityPolicy->policyUri,
+                                 &UA_TYPES[UA_TYPES_STRING]);
+        }
         attr = &localAttr;
 #ifdef UA_ENABLE_RBAC
     } else if(UA_QualifiedName_equal(&key, &rbacRolesKey)) {
