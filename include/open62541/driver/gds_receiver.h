@@ -48,9 +48,22 @@ UA_GDSReceiver_new(void);
 
 /* Update the application certificate used by the server endpoints. The GDS
  * Receiver driver must be attached and started. If certificateGroupId is
- * null, the DefaultApplicationGroup is used. Returns BadInvalidArgument for a
- * null receiver or empty certificate and BadInvalidState if the receiver is
- * not attached and started. This function is thread-safe. */
+ * null, the DefaultApplicationGroup is used.
+ *
+ * The certificate type must be one of the CertificateTypes of the group. These
+ * are the RSA and ECC application certificate types (RsaMin, RsaSha256,
+ * EccNistP256, EccNistP384, EccBrainpoolP256r1, EccBrainpoolP384r1,
+ * EccCurve25519, EccCurve448) that an endpoint uses. All SecurityPolicies with
+ * the type get the new certificate. Without a private key (NULL or empty), the
+ * current key or the key of the last signing request for the type is used if
+ * it belongs to the certificate.
+ *
+ * Returns BadInvalidArgument for a null receiver, an empty certificate or a
+ * certificate type that is not used, BadCertificateInvalid if the key of the
+ * certificate does not fit the type, BadNotSupported if the private key does
+ * not belong to the certificate, BadSecurityChecksFailed if no key is known
+ * for the certificate and BadInvalidState if the receiver is not attached and
+ * started. This function is thread-safe. */
 UA_EXPORT UA_StatusCode
 UA_GDSReceiver_updateCertificate(UA_GDSReceiver *receiver,
                                 const UA_NodeId certificateGroupId,
@@ -60,9 +73,13 @@ UA_GDSReceiver_updateCertificate(UA_GDSReceiver *receiver,
 
 /* Create a PKCS #10 DER-encoded certificate signing request. The GDS Receiver
  * driver must be attached and started. If certificateGroupId is null,
- * the DefaultApplicationGroup is used. Returns BadInvalidArgument for a null
- * receiver or output pointer and BadInvalidState if the receiver is not
- * attached and started. This function is thread-safe. */
+ * the DefaultApplicationGroup is used. With regenerateKey, a new key of the
+ * certificate type is created and kept by the SecurityPolicies until the
+ * signed certificate is updated without a private key. A later request for
+ * the same type discards it. Returns BadInvalidArgument for a null receiver or
+ * output pointer and for a certificate type that is not used, and
+ * BadInvalidState if the receiver is not attached and started. This function
+ * is thread-safe. */
 UA_EXPORT UA_StatusCode
 UA_GDSReceiver_createSigningRequest(UA_GDSReceiver *receiver,
                                    const UA_NodeId certificateGroupId,

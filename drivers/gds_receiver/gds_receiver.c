@@ -1110,6 +1110,11 @@ UA_GDSReceiver_stageCertificateUpdate(UA_GDSReceiverContext *ctx,
     if(!certificate || certificate->length == 0)
         return UA_STATUSCODE_BADCERTIFICATEINVALID;
 
+    /* The key of the certificate must fit the certificate type */
+    retval = UA_GDSReceiver_checkCertificateType(certificateTypeId, certificate);
+    if(retval != UA_STATUSCODE_GOOD)
+        return retval;
+
     if(privateKey && privateKey->length > 0) {
         /* Verify that the privateKey is in a supported format and that it
          * matches the specified certificate */
@@ -1744,8 +1749,25 @@ getSecPolicyByUri(UA_ServerConfig *sc, const UA_String *securityPolicyUri) {
  * the CertificateTypes Property (Part 12, 7.8.4) */
 static const UA_UInt32 knownCertificateTypes[] = {
     UA_NS0ID_RSAMINAPPLICATIONCERTIFICATETYPE,
-    UA_NS0ID_RSASHA256APPLICATIONCERTIFICATETYPE
+    UA_NS0ID_RSASHA256APPLICATIONCERTIFICATETYPE,
+    UA_NS0ID_ECCNISTP256APPLICATIONCERTIFICATETYPE,
+    UA_NS0ID_ECCNISTP384APPLICATIONCERTIFICATETYPE,
+    UA_NS0ID_ECCBRAINPOOLP256R1APPLICATIONCERTIFICATETYPE,
+    UA_NS0ID_ECCBRAINPOOLP384R1APPLICATIONCERTIFICATETYPE,
+    UA_NS0ID_ECCCURVE25519APPLICATIONCERTIFICATETYPE,
+    UA_NS0ID_ECCCURVE448APPLICATIONCERTIFICATETYPE
 };
+
+UA_StatusCode
+UA_GDSReceiver_checkCertificateType(const UA_NodeId *certificateTypeId,
+                                    const UA_ByteString *certificate) {
+    UA_StatusCode res =
+        UA_CertificateUtils_checkCertificateType(certificate, certificateTypeId);
+    if(res == UA_STATUSCODE_BADNOTSUPPORTED)
+        return UA_STATUSCODE_GOOD; /* Cannot be checked */
+    return (res == UA_STATUSCODE_GOOD) ?
+        UA_STATUSCODE_GOOD : UA_STATUSCODE_BADCERTIFICATEINVALID;
+}
 
 /* Does an endpoint use a SecurityPolicy of the DefaultApplicationGroup with
  * the certificate type? Otherwise an update would have no effect. */
@@ -1987,13 +2009,18 @@ updateCertificateLocked(UA_GDSReceiver *receiver,
     if(!UA_NodeId_equal(&certGroupId, &defaultApplicationGroup))
         return UA_STATUSCODE_BADINVALIDARGUMENT;
 
-    static UA_NodeId certTypRsaSha256 =
-        STATIC_NS0ID(RSASHA256APPLICATIONCERTIFICATETYPE);
-    if(!UA_NodeId_equal(&certificateTypeId, &certTypRsaSha256))
+    /* The certificate type must be one of the CertificateTypes of the group
+     * and the key of the certificate must fit it */
+    if(!UA_GDSCertificateSlots_find(ctx->serverSlots, ctx->serverSlotsSize,
+                                    &certificateTypeId))
         return UA_STATUSCODE_BADINVALIDARGUMENT;
+    UA_StatusCode typeRes =
+        UA_GDSReceiver_checkCertificateType(&certificateTypeId, &certificate);
+    if(typeRes != UA_STATUSCODE_GOOD)
+        return typeRes;
 
     UA_ByteString newPrivateKey = UA_BYTESTRING_NULL;
-    if(privateKey) {
+    if(privateKey && privateKey->length > 0) {
         if(UA_CertificateUtils_checkKeyPair(&certificate, privateKey) !=
            UA_STATUSCODE_GOOD)
             return UA_STATUSCODE_BADNOTSUPPORTED;
