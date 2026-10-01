@@ -557,6 +557,10 @@ UA_Client_addRepeatedCallback(UA_Client *client, UA_ClientCallback callback,
                               void *data, UA_Double interval_ms,
                               UA_UInt64 *callbackId);
 
+/* Change the interval of a callback added with
+ * UA_Client_addRepeatedCallback. A timed callback
+ * (UA_Client_addTimedCallback) runs once and is refused with
+ * UA_STATUSCODE_BADINVALIDARGUMENT. */
 UA_StatusCode UA_EXPORT UA_THREADSAFE
 UA_Client_changeRepeatedCallbackInterval(UA_Client *client,
                                          UA_UInt64 callbackId,
