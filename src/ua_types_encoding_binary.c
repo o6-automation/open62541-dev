@@ -757,8 +757,13 @@ FUNC_ENCODE_BINARY(ExpandedNodeId) {
     if(src->serverIndex > 0)
         encoding |= UA_EXPANDEDNODEID_SERVERINDEX_FLAG;
 
-    /* Encode the NodeId. Can exchange the buffer. */
-    status ret = NodeId_encodeBinaryWithEncodingMask(ctx, &src->nodeId, encoding);
+    /* Encode the NodeId. Can exchange the buffer. With a NamespaceUri, the
+     * NamespaceIndex is encoded as 0 (Part 6, 5.2.2.10). The shallow copy
+     * changes only the index. */
+    UA_NodeId nodeId = src->nodeId;
+    if(encoding & UA_EXPANDEDNODEID_NAMESPACEURI_FLAG)
+        nodeId.namespaceIndex = 0;
+    status ret = NodeId_encodeBinaryWithEncodingMask(ctx, &nodeId, encoding);
     UA_CHECK_STATUS(ret, return ret);
 
     /* Encode the namespace. Internally uses encodeWithExchangeBuffer
