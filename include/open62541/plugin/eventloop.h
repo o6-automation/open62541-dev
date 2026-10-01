@@ -180,7 +180,9 @@ struct UA_EventLoop {
                 void *data, UA_Double interval_ms, UA_DateTime *baseTime,
                 UA_TimerPolicy timerPolicy, UA_UInt64 *timerId);
 
-    /* If baseTime is NULL, use the current time as the base. */
+    /* If baseTime is NULL, use the current time as the base. A timer added
+     * with UA_TIMERPOLICY_ONCE cannot be given a repeating policy:
+     * UA_STATUSCODE_BADINVALIDARGUMENT. */
     UA_StatusCode
     (*modifyTimer)(UA_EventLoop *el, UA_UInt64 timerId,
                    UA_Double interval_ms, UA_DateTime *baseTime,

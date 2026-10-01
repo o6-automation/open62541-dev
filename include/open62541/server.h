@@ -191,6 +191,10 @@ UA_Server_addRepeatedCallback(UA_Server *server, UA_ServerCallback callback,
                               void *data, UA_Double interval_ms,
                               UA_UInt64 *callbackId);
 
+/* Change the interval of a callback added with
+ * UA_Server_addRepeatedCallback. A timed callback
+ * (UA_Server_addTimedCallback) runs once and is refused with
+ * UA_STATUSCODE_BADINVALIDARGUMENT. */
 UA_StatusCode UA_EXPORT UA_THREADSAFE
 UA_Server_changeRepeatedCallbackInterval(UA_Server *server, UA_UInt64 callbackId,
                                          UA_Double interval_ms);
