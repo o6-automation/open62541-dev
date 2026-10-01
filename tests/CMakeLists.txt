@@ -462,6 +462,7 @@ if(UA_ENABLE_RBAC)
     ua_add_test(server/check_server_rbac_interlocked.c)
     ua_add_test(server/check_server_rbac_services.c)
     ua_add_test(server/check_server_rbac_namespaces.c)
+    ua_add_test(server/check_server_rbac_ns0.c)
     ua_add_test(server/check_server_rbac_endpoints.c)
 endif()
 

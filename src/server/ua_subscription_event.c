@@ -1713,48 +1713,14 @@ createEvent(UA_Server *server, const UA_EventDescription *ed,
              *  identified by the SourceNode field."
              *
              * Skip MonitoredItems if the session lacks RECEIVEEVENTS on
-             * either EventType or SourceNode. AdminSession is exempt.
-             * UA_PERMISSIONTYPE_ALL means no RBAC entries for that node
-             * and is treated as permissive for compatibility. */
-            if(ctx.session != &server->adminSession) {
-                UA_PermissionType evtPerms = UA_PERMISSIONTYPE_ALL;
-                UA_PermissionType srcPerms = UA_PERMISSIONTYPE_ALL;
-                (void)getEffectivePermissions(server, ctx.session,
-                                              &ed->eventType, &evtPerms);
-                (void)getEffectivePermissions(server, ctx.session,
-                                              &ed->sourceNode, &srcPerms);
-                if((evtPerms != UA_PERMISSIONTYPE_ALL &&
-                    !(evtPerms & UA_PERMISSIONTYPE_RECEIVEEVENTS)) ||
-                   (srcPerms != UA_PERMISSIONTYPE_ALL &&
-                    !(srcPerms & UA_PERMISSIONTYPE_RECEIVEEVENTS))) {
-                    continue;
-                }
-
-
-                /* Event delivery does not go through the Read service. Apply
-                 * the AccessRestrictions of both Nodes here, at delivery time,
-                 * so a transferred Subscription or changed channel cannot
-                 * receive an Event over an insufficient SecureChannel. */
-                const UA_Node *eventTypeNode =
-                    UA_NODESTORE_GET(server, &ed->eventType);
-                const UA_Node *sourceNode =
-                    UA_NODESTORE_GET(server, &ed->sourceNode);
-                UA_StatusCode eventAr = eventTypeNode ?
-                    checkNodeAccessRestrictions(server, ctx.session,
-                                                eventTypeNode, false) :
-                    UA_STATUSCODE_BADNODEIDUNKNOWN;
-                UA_StatusCode sourceAr = sourceNode ?
-                    checkNodeAccessRestrictions(server, ctx.session,
-                                                sourceNode, false) :
-                    UA_STATUSCODE_BADNODEIDUNKNOWN;
-                if(eventTypeNode)
-                    UA_NODESTORE_RELEASE(server, eventTypeNode);
-                if(sourceNode)
-                    UA_NODESTORE_RELEASE(server, sourceNode);
-                if(eventAr != UA_STATUSCODE_GOOD ||
-                   sourceAr != UA_STATUSCODE_GOOD)
-                    continue;
-            }
+             * either EventType or SourceNode. In legacy mode an unconfigured
+             * Node yields UA_PERMISSIONTYPE_ALL, which contains the bit. Both
+             * Nodes must exist (see ua_server_rbac.h). AdminSession is
+             * exempt. */
+            if(ctx.session != &server->adminSession &&
+               !mayReceiveEvent(server, ctx.session, &ed->eventType,
+                                &ed->sourceNode))
+                continue;
 #endif
 
             /* Evaluate the where-clause and create a notification */

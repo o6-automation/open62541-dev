@@ -2748,13 +2748,21 @@ initPubSubNS0(UA_Server *server) {
         configAttr.displayName = UA_LOCALIZEDTEXT("","LoadPubSubConfigurationFile");
         configAttr.executable = true;
         configAttr.userExecutable = true;
+        UA_NodeId configMethodId = UA_NODEID_NULL;
         retVal |= addMethodNode(server, UA_NODEID_NULL,
                                 UA_NS0ID(PUBLISHSUBSCRIBE), UA_NS0ID(HASORDEREDCOMPONENT),
                                 UA_QUALIFIEDNAME(1, "PubSub configuration"),
                                 &configAttr, UA_loadPubSubConfigMethodCallback,
                                 1, &inputArgument, UA_NODEID_NULL, NULL,
                                 0, NULL, UA_NODEID_NULL, NULL,
-                                NULL, NULL);
+                                NULL, &configMethodId);
+#ifdef UA_ENABLE_RBAC
+        /* Replacing the configuration is reserved to ConfigureAdmin, like
+         * the other configuration Methods (initNS0SensitiveRolePermissions) */
+        if(!UA_NodeId_isNull(&configMethodId))
+            retVal |= protectPubSubConfigurationMethod(server, &configMethodId);
+#endif
+        UA_NodeId_clear(&configMethodId);
 
         /* Adds method node to server. This method is used to delete the current
          * PubSub configuration. */
@@ -2768,7 +2776,12 @@ initPubSubNS0(UA_Server *server) {
                                 &configAttr, UA_deletePubSubConfigMethodCallback,
                                 0, NULL, UA_NODEID_NULL, NULL,
                                 0, NULL, UA_NODEID_NULL, NULL,
-                                NULL, NULL);
+                                NULL, &configMethodId);
+#ifdef UA_ENABLE_RBAC
+        if(!UA_NodeId_isNull(&configMethodId))
+            retVal |= protectPubSubConfigurationMethod(server, &configMethodId);
+#endif
+        UA_NodeId_clear(&configMethodId);
 #endif
     } else {
         /* Remove methods */

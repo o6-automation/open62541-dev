@@ -1497,12 +1497,22 @@ initRoleSetRolePermissions(UA_Server *server) {
     /* Role changes use the affected Role Object as SourceNode. ReceiveEvents
      * is checked independently on that source and on the EventType. The Role
      * Objects are covered by addRoleManagementPermissions above; grant the
-     * matching EventType permission here as well. */
+     * matching EventType permission here as well. Like the other audit
+     * EventTypes (initNS0SensitiveRolePermissions), the type itself stays
+     * browsable for everybody. */
     UA_NodeId roleAuditEventType = UA_NODEID_NUMERIC(
         0, UA_NS0ID_ROLEMAPPINGRULECHANGEDAUDITEVENTTYPE);
     retval = UA_Server_addRolePermissions(server, roleAuditEventType, secAdmin,
-                                          UA_PERMISSIONTYPE_RECEIVEEVENTS,
+                                          UA_PERMISSIONTYPE_BROWSE |
+                                          UA_PERMISSIONTYPE_READ |
+                                          UA_PERMISSIONTYPE_RECEIVEEVENTS |
+                                          UA_PERMISSIONTYPE_READROLEPERMISSIONS,
                                           false, false);
+    if(retval == UA_STATUSCODE_GOOD)
+        retval = UA_Server_addRolePermissions(
+            server, roleAuditEventType,
+            UA_NODEID_NUMERIC(0, UA_NS0ID_WELLKNOWNROLE_ANONYMOUS),
+            UA_PERMISSIONTYPE_BROWSE | UA_PERMISSIONTYPE_READ, false, false);
     if(retval != UA_STATUSCODE_GOOD && retval != UA_STATUSCODE_BADNODEIDUNKNOWN)
         return retval;
 #endif
@@ -1611,6 +1621,241 @@ initRoleSetRolePermissions(UA_Server *server) {
 
     return UA_STATUSCODE_GOOD;
 }
+
+/* Built-in protection of sensitive Nodes in Namespace Zero. The NS0 template
+ * lets every Session browse, read and call in Namespace Zero. That is right for
+ * the public Methods (GetMonitoredItems, ResendData, ConditionRefresh, ...) but
+ * not for the Nodes below. They get built-in RolePermissions
+ * (protectNodeRolePermissions), enforced while Namespace Zero has a
+ * RolePermission model, so legacy mode is unchanged. Every Session holds the
+ * Anonymous Role, so the Nodes stay browsable and readable for all. */
+
+#define PROTECTED_BROWSE (UA_PERMISSIONTYPE_BROWSE | UA_PERMISSIONTYPE_READ)
+#define PROTECTED_CALL (PROTECTED_BROWSE | UA_PERMISSIONTYPE_CALL)
+#define PROTECTED_INSPECT \
+    (PROTECTED_BROWSE | UA_PERMISSIONTYPE_READROLEPERMISSIONS)
+
+#define WELLKNOWNROLE(NAME) \
+    UA_NODEID_NUMERIC(0, UA_NS0ID_WELLKNOWNROLE_##NAME)
+
+static UA_StatusCode
+protectNS0Nodes(UA_Server *server, const UA_UInt32 *nodeIds, size_t nodeIdsSize,
+                const UA_RolePermission *entries, size_t entriesSize) {
+    for(size_t i = 0; i < nodeIdsSize; i++) {
+        UA_NodeId nodeId = UA_NODEID_NUMERIC(0, nodeIds[i]);
+        UA_StatusCode res =
+            protectNodeRolePermissions(server, &nodeId, entriesSize, entries);
+        /* A reduced Namespace Zero may omit individual Nodes */
+        if(res != UA_STATUSCODE_GOOD && res != UA_STATUSCODE_BADNODEIDUNKNOWN)
+            return res;
+    }
+    return UA_STATUSCODE_GOOD;
+}
+
+/* The PubSub configuration Methods (Part 14 §9.1: the Client "should be
+ * authorized to modify the configuration for the PubSub functionality"). The
+ * PubSub Objects reference the Methods of their ObjectTypes, so protecting the
+ * declarations covers every instance. */
+UA_StatusCode
+protectPubSubConfigurationMethod(UA_Server *server, const UA_NodeId *methodId) {
+    const UA_RolePermission entries[] = {
+        {WELLKNOWNROLE(ANONYMOUS), PROTECTED_BROWSE},
+        {WELLKNOWNROLE(CONFIGUREADMIN), PROTECTED_CALL},
+        {WELLKNOWNROLE(SECURITYADMIN), PROTECTED_INSPECT}
+    };
+    return protectNodeRolePermissions(server, methodId,
+                                      sizeof(entries) / sizeof(entries[0]),
+                                      entries);
+}
+
+static UA_StatusCode
+protectPubSubConfigurationMethods(UA_Server *server) {
+    const UA_UInt32 methods[] = {
+        UA_NS0ID_PUBLISHSUBSCRIBE_ADDCONNECTION,
+        UA_NS0ID_PUBLISHSUBSCRIBE_REMOVECONNECTION,
+        UA_NS0ID_DATASETFOLDERTYPE_ADDDATASETFOLDER,
+        UA_NS0ID_DATASETFOLDERTYPE_REMOVEDATASETFOLDER,
+        UA_NS0ID_DATASETFOLDERTYPE_ADDPUBLISHEDDATAITEMS,
+        UA_NS0ID_DATASETFOLDERTYPE_REMOVEPUBLISHEDDATASET,
+        UA_NS0ID_PUBLISHEDDATAITEMSTYPE_ADDVARIABLES,
+        UA_NS0ID_PUBLISHEDDATAITEMSTYPE_REMOVEVARIABLES,
+        UA_NS0ID_PUBSUBCONNECTIONTYPE_ADDWRITERGROUP,
+        UA_NS0ID_PUBSUBCONNECTIONTYPE_ADDREADERGROUP,
+        UA_NS0ID_PUBSUBCONNECTIONTYPE_REMOVEGROUP,
+        UA_NS0ID_WRITERGROUPTYPE_ADDDATASETWRITER,
+        UA_NS0ID_WRITERGROUPTYPE_REMOVEDATASETWRITER,
+        UA_NS0ID_READERGROUPTYPE_ADDDATASETREADER,
+        UA_NS0ID_READERGROUPTYPE_REMOVEDATASETREADER,
+#ifdef UA_NS0ID_PUBLISHSUBSCRIBE_PUBSUBCONFIGURATION_RESERVEIDS
+        UA_NS0ID_PUBLISHSUBSCRIBE_PUBSUBCONFIGURATION_RESERVEIDS,
+#endif
+        UA_NS0ID_PUBSUBSTATUSTYPE_ENABLE,
+        UA_NS0ID_PUBSUBSTATUSTYPE_DISABLE
+    };
+    for(size_t i = 0; i < sizeof(methods) / sizeof(methods[0]); i++) {
+        UA_NodeId methodId = UA_NODEID_NUMERIC(0, methods[i]);
+        UA_StatusCode res = protectPubSubConfigurationMethod(server, &methodId);
+        if(res != UA_STATUSCODE_GOOD && res != UA_STATUSCODE_BADNODEIDUNKNOWN)
+            return res;
+    }
+    return UA_STATUSCODE_GOOD;
+}
+
+#ifdef UA_NS0ID_WELLKNOWNROLE_SECURITYKEYSERVERADMIN
+/* The Security Key Service Methods, restricted to the SKS Roles of Part 14
+ * §8.8: SecurityKeyServerAccess pulls keys, SecurityKeyServerPush pushes them
+ * and SecurityKeyServerAdmin manages the SecurityGroups. GetSecurityKeys
+ * additionally checks Call on the SecurityGroup Object (§8.3.2). */
+static UA_StatusCode
+protectSecurityKeyServiceMethods(UA_Server *server) {
+    const UA_UInt32 pullMethods[] = {
+        UA_NS0ID_PUBLISHSUBSCRIBE_GETSECURITYKEYS,
+        UA_NS0ID_PUBLISHSUBSCRIBE_GETSECURITYGROUP
+    };
+    const UA_RolePermission pull[] = {
+        {WELLKNOWNROLE(ANONYMOUS), PROTECTED_BROWSE},
+        {WELLKNOWNROLE(SECURITYKEYSERVERADMIN), PROTECTED_CALL},
+        {WELLKNOWNROLE(SECURITYKEYSERVERACCESS), PROTECTED_CALL},
+        {WELLKNOWNROLE(SECURITYADMIN), PROTECTED_INSPECT}
+    };
+    UA_StatusCode res =
+        protectNS0Nodes(server, pullMethods,
+                        sizeof(pullMethods) / sizeof(pullMethods[0]),
+                        pull, sizeof(pull) / sizeof(pull[0]));
+    if(res != UA_STATUSCODE_GOOD)
+        return res;
+
+    const UA_UInt32 pushMethods[] = {UA_NS0ID_PUBLISHSUBSCRIBE_SETSECURITYKEYS};
+    const UA_RolePermission push[] = {
+        {WELLKNOWNROLE(ANONYMOUS), PROTECTED_BROWSE},
+        {WELLKNOWNROLE(SECURITYKEYSERVERPUSH), PROTECTED_CALL},
+        {WELLKNOWNROLE(SECURITYADMIN), PROTECTED_INSPECT}
+    };
+    res = protectNS0Nodes(server, pushMethods,
+                          sizeof(pushMethods) / sizeof(pushMethods[0]),
+                          push, sizeof(push) / sizeof(push[0]));
+    if(res != UA_STATUSCODE_GOOD)
+        return res;
+
+    const UA_UInt32 adminMethods[] = {
+        UA_NS0ID_SECURITYGROUPTYPE_INVALIDATEKEYS,
+        UA_NS0ID_SECURITYGROUPTYPE_FORCEKEYROTATION
+    };
+    const UA_RolePermission admin[] = {
+        {WELLKNOWNROLE(ANONYMOUS), PROTECTED_BROWSE},
+        {WELLKNOWNROLE(SECURITYKEYSERVERADMIN), PROTECTED_CALL},
+        {WELLKNOWNROLE(SECURITYADMIN), PROTECTED_INSPECT}
+    };
+    return protectNS0Nodes(server, adminMethods,
+                           sizeof(adminMethods) / sizeof(adminMethods[0]),
+                           admin, sizeof(admin) / sizeof(admin[0]));
+}
+#endif
+
+/* The Condition Methods that change the state of an Alarm. The Condition
+ * instances reference the Methods of ConditionType and
+ * AcknowledgeableConditionType. A Condition created without a NodeId lives in
+ * Namespace Zero and grants Call to everybody through the NS0 template, so the
+ * Methods themselves need the restriction: Operator, Engineer and Supervisor
+ * call Methods (Part 3 Table 2), Observer and the anonymous and authenticated
+ * Sessions only watch. ConditionRefresh(2) stays public, it only resends the
+ * Condition states to the caller's own Subscription. */
+static UA_StatusCode
+protectConditionMethods(UA_Server *server) {
+    const UA_UInt32 methods[] = {
+        UA_NS0ID_CONDITIONTYPE_ENABLE,
+        UA_NS0ID_CONDITIONTYPE_DISABLE,
+        UA_NS0ID_CONDITIONTYPE_ADDCOMMENT,
+        UA_NS0ID_ACKNOWLEDGEABLECONDITIONTYPE_ACKNOWLEDGE,
+        UA_NS0ID_ACKNOWLEDGEABLECONDITIONTYPE_CONFIRM
+    };
+    const UA_RolePermission entries[] = {
+        {WELLKNOWNROLE(ANONYMOUS), PROTECTED_BROWSE},
+        {WELLKNOWNROLE(OPERATOR), PROTECTED_CALL},
+        {WELLKNOWNROLE(ENGINEER), PROTECTED_CALL},
+        {WELLKNOWNROLE(SUPERVISOR), PROTECTED_CALL},
+        {WELLKNOWNROLE(SECURITYADMIN), PROTECTED_INSPECT}
+    };
+    return protectNS0Nodes(server, methods, sizeof(methods) / sizeof(methods[0]),
+                           entries, sizeof(entries) / sizeof(entries[0]));
+}
+
+/* AuditEventType and all its subtypes. Audit Events describe the security
+ * relevant actions of every Session (Part 5 §6.4.3). ReceiveEvents needs the
+ * bit on the EventType and on the SourceNode (Part 3 §8.55). The SourceNode is
+ * mostly the Server Object, so the EventType is where the audit trail is
+ * restricted to SecurityAdmin. */
+static UA_StatusCode
+protectAuditEventTypes(UA_Server *server) {
+    const UA_RolePermission entries[] = {
+        {WELLKNOWNROLE(ANONYMOUS), PROTECTED_BROWSE},
+        {WELLKNOWNROLE(SECURITYADMIN),
+         PROTECTED_INSPECT | UA_PERMISSIONTYPE_RECEIVEEVENTS}
+    };
+
+    UA_NodeId auditEventType = UA_NODEID_NUMERIC(0, UA_NS0ID_AUDITEVENTTYPE);
+    UA_ReferenceTypeSet hasSubtype = UA_REFTYPESET(UA_REFERENCETYPEINDEX_HASSUBTYPE);
+    size_t typesSize = 0;
+    UA_ExpandedNodeId *types = NULL;
+    UA_StatusCode res =
+        browseRecursive(server, 1, &auditEventType, UA_BROWSEDIRECTION_FORWARD,
+                        &hasSubtype, UA_NODECLASS_OBJECTTYPE, true,
+                        &typesSize, &types);
+    if(res != UA_STATUSCODE_GOOD)
+        return res;
+    for(size_t i = 0; i < typesSize; i++) {
+        res = protectNodeRolePermissions(server, &types[i].nodeId,
+                                         sizeof(entries) / sizeof(entries[0]),
+                                         entries);
+        if(res == UA_STATUSCODE_BADNODEIDUNKNOWN)
+            res = UA_STATUSCODE_GOOD;
+        if(res != UA_STATUSCODE_GOOD)
+            break;
+    }
+    UA_Array_delete(types, typesSize, &UA_TYPES[UA_TYPES_EXPANDEDNODEID]);
+    return res;
+}
+
+/* The writable Properties of RoleType. Their instances on the Role Objects
+ * carry their own RolePermissions (protectRolePropertyChildren). The
+ * InstanceDeclarations are security configuration as well, so ConfigureAdmin
+ * does not write them through the Namespace Zero default. */
+static UA_StatusCode
+protectRoleTypeProperties(UA_Server *server) {
+    const UA_UInt32 properties[] = {
+        UA_NS0ID_ROLETYPE_APPLICATIONSEXCLUDE,
+        UA_NS0ID_ROLETYPE_ENDPOINTSEXCLUDE
+    };
+    const UA_RolePermission entries[] = {
+        {WELLKNOWNROLE(ANONYMOUS), PROTECTED_BROWSE},
+        {WELLKNOWNROLE(SECURITYADMIN), PROTECTED_INSPECT}
+    };
+    return protectNS0Nodes(server, properties,
+                           sizeof(properties) / sizeof(properties[0]),
+                           entries, sizeof(entries) / sizeof(entries[0]));
+}
+
+UA_StatusCode
+initNS0SensitiveRolePermissions(UA_Server *server) {
+    UA_LOCK_ASSERT(&server->serviceMutex);
+    UA_StatusCode res = protectPubSubConfigurationMethods(server);
+#ifdef UA_NS0ID_WELLKNOWNROLE_SECURITYKEYSERVERADMIN
+    if(res == UA_STATUSCODE_GOOD)
+        res = protectSecurityKeyServiceMethods(server);
+#endif
+    if(res == UA_STATUSCODE_GOOD)
+        res = protectConditionMethods(server);
+    if(res == UA_STATUSCODE_GOOD)
+        res = protectAuditEventTypes(server);
+    if(res == UA_STATUSCODE_GOOD)
+        res = protectRoleTypeProperties(server);
+    return res;
+}
+
+#undef WELLKNOWNROLE
+#undef PROTECTED_BROWSE
+#undef PROTECTED_CALL
+#undef PROTECTED_INSPECT
 
 #define RBAC_INIT_TRY(EXPRESSION)                  \
     do {                                           \

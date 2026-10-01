@@ -45,6 +45,17 @@
  *   evaluated lazily so that namespaces added later are covered. Legacy mode
  *   ignores the templates.
  *
+ * - Sensitive Namespace Zero Nodes that the NS0 template would open to every
+ *   Session carry built-in RolePermissions (initNS0SensitiveRolePermissions):
+ *   the PubSub configuration Methods (ConfigureAdmin), the Security Key Service
+ *   Methods (SKS Roles), the Condition Methods that change an Alarm (Operator,
+ *   Engineer, Supervisor), the AuditEventType hierarchy (ReceiveEvents for
+ *   SecurityAdmin) and the writable RoleType Properties (no Write for
+ *   ConfigureAdmin). Like the templates, they are enforced only while the
+ *   namespace has a RolePermission model; legacy mode leaves those Nodes
+ *   unrestricted. The SessionSecurityDiagnosticsArray then lists only the
+ *   reader's own Session, unless the reader has the SecurityAdmin Role.
+ *
  * - Every namespace has a NamespaceMetadata Object with live
  *   DefaultRolePermissions (SecurityAdmin only), DefaultUserRolePermissions
  *   and DefaultAccessRestrictions Properties (syncNamespaceMetadata in
@@ -348,6 +359,7 @@ rolePermissionEntry_init(UA_RolePermissionEntry *rp) {
     rp->refCount = 0;
     rp->accessRestrictions = UA_ACCESSRESTRICTIONTYPE_NONE;
     rp->hasRolePermissions = false;
+    rp->modelOnly = false;
     rp->hasAccessRestrictions = false;
 }
 
@@ -423,10 +435,12 @@ compareRolePermissions(size_t size1, const UA_RolePermission *rp1,
 }
 
 /* The content of an entry (the deduplication key). The RolePermission array is
- * borrowed. An absent part is normalized: no RolePermissions means an empty
- * array, no AccessRestrictions means UA_ACCESSRESTRICTIONTYPE_NONE. */
+ * borrowed. modelOnly belongs to the RolePermissions part. An absent part is
+ * normalized: no RolePermissions means an empty array and modelOnly == false,
+ * no AccessRestrictions means UA_ACCESSRESTRICTIONTYPE_NONE. */
 typedef struct {
     UA_Boolean hasRolePermissions;
+    UA_Boolean modelOnly;
     size_t rolePermissionsSize;
     const UA_RolePermission *rolePermissions;
     UA_Boolean hasAccessRestrictions;
@@ -435,8 +449,10 @@ typedef struct {
 
 static void
 EntryContent_setRolePermissions(EntryContent *c, UA_Boolean hasRolePermissions,
-                                size_t rpSize, const UA_RolePermission *rp) {
+                                size_t rpSize, const UA_RolePermission *rp,
+                                UA_Boolean modelOnly) {
     c->hasRolePermissions = hasRolePermissions;
+    c->modelOnly = hasRolePermissions && modelOnly;
     c->rolePermissionsSize = hasRolePermissions ? rpSize : 0;
     c->rolePermissions = hasRolePermissions ? rp : NULL;
 }
@@ -463,7 +479,7 @@ EntryContent_setAccessRestrictions(EntryContent *c, UA_Boolean hasAccessRestrict
 static UA_StatusCode
 getEntryContent(UA_Server *server, const UA_NodeId *nodeId,
                 UA_PermissionIndex index, UA_Boolean repair, EntryContent *c) {
-    EntryContent_setRolePermissions(c, false, 0, NULL);
+    EntryContent_setRolePermissions(c, false, 0, NULL, false);
     EntryContent_setAccessRestrictions(c, false, UA_ACCESSRESTRICTIONTYPE_NONE);
     if(index == UA_PERMISSION_INDEX_INVALID)
         return UA_STATUSCODE_GOOD;
@@ -484,13 +500,16 @@ getEntryContent(UA_Server *server, const UA_NodeId *nodeId,
 
     const UA_RolePermissionEntry *e = &server->rolePermissions[index];
     EntryContent_setRolePermissions(c, e->hasRolePermissions,
-                                    e->rolePermissionsSize, e->rolePermissions);
+                                    e->rolePermissionsSize, e->rolePermissions,
+                                    e->modelOnly);
     EntryContent_setAccessRestrictions(c, e->hasAccessRestrictions,
                                        e->accessRestrictions);
     return UA_STATUSCODE_GOOD;
 }
 
-/* Deduplication: compare all fields of an entry except the refCount */
+/* Deduplication: compare all fields of an entry except the refCount. A
+ * built-in protection (modelOnly) never shares an entry with an ordinary
+ * override. */
 static UA_Boolean
 entryHasContent(const UA_RolePermissionEntry *e, const EntryContent *c) {
     if(e->hasRolePermissions != c->hasRolePermissions ||
@@ -500,6 +519,8 @@ entryHasContent(const UA_RolePermissionEntry *e, const EntryContent *c) {
         return false;
     if(!c->hasRolePermissions)
         return true;
+    if(e->modelOnly != c->modelOnly)
+        return false;
     return compareRolePermissions(c->rolePermissionsSize, c->rolePermissions,
                                   e->rolePermissionsSize, e->rolePermissions);
 }
@@ -508,7 +529,8 @@ entryHasContent(const UA_RolePermissionEntry *e, const EntryContent *c) {
  * server's internal array. Returns the index of the matching or new entry.
  * Content without RolePermissions and without AccessRestrictions needs no
  * entry and yields UA_PERMISSION_INDEX_INVALID. The refCount of the entry is
- * not changed. Must be called with the server lock held. */
+ * not changed. Must be called with the server lock held. Reallocates the
+ * array. */
 static UA_StatusCode
 findOrCreateEntry(UA_Server *server, const EntryContent *c,
                   UA_PermissionIndex *outIndex) {
@@ -559,6 +581,7 @@ findOrCreateEntry(UA_Server *server, const EntryContent *c,
     if(res != UA_STATUSCODE_GOOD)
         return res;
     entry->hasRolePermissions = c->hasRolePermissions;
+    entry->modelOnly = c->modelOnly;
     entry->hasAccessRestrictions = c->hasAccessRestrictions;
     entry->accessRestrictions = c->accessRestrictions;
 
@@ -872,6 +895,16 @@ UA_Server_initRBAC(UA_Server *server) {
     UA_StatusCode rsRes = initRoleSetRolePermissions(server);
     if(rsRes != UA_STATUSCODE_GOOD)
         return rsRes;
+
+    /* Protect the sensitive Nodes of Namespace Zero that the NS0 template
+     * would otherwise open to every Session */
+    UA_StatusCode protRes = initNS0SensitiveRolePermissions(server);
+    if(protRes != UA_STATUSCODE_GOOD) {
+        UA_LOG_ERROR(server->config.logging, UA_LOGCATEGORY_SERVER,
+                     "RBAC: Could not protect the sensitive Nodes of "
+                     "Namespace Zero (%s)", UA_StatusCode_name(protRes));
+        return protRes;
+    }
 
     /* Publish the defaults of Namespace Zero. Protecting its
      * DefaultRolePermissions Property needs the Roles registered above. The
@@ -1555,8 +1588,9 @@ setNodeEntryContent(UA_Server *server, const UA_NodeId *nodeId,
 
 /* Internal helper: replace the RolePermissions of a node and keep its
  * AccessRestrictions. With hasRolePermissions == false the node no longer has
- * RolePermissions of its own (the namespace default applies).
- * Must be called with the server lock held. */
+ * RolePermissions of its own (the namespace default applies). The new
+ * RolePermissions are an ordinary override, also if they replace a built-in
+ * protection. Must be called with the server lock held. */
 static UA_StatusCode
 setNodeRolePermissionsLocked(UA_Server *server, const UA_NodeId *nodeId,
                              UA_Boolean hasRolePermissions, size_t rpSize,
@@ -1571,7 +1605,7 @@ setNodeRolePermissionsLocked(UA_Server *server, const UA_NodeId *nodeId,
     UA_StatusCode res = getEntryContent(server, nodeId, currentIndex, true, &c);
     if(res != UA_STATUSCODE_GOOD)
         return res;
-    EntryContent_setRolePermissions(&c, hasRolePermissions, rpSize, rp);
+    EntryContent_setRolePermissions(&c, hasRolePermissions, rpSize, rp, false);
     return setNodeEntryContent(server, nodeId, &c);
 }
 
@@ -1681,19 +1715,18 @@ UA_Server_getNodeRolePermissions(UA_Server *server,
         return UA_STATUSCODE_BADNODEIDUNKNOWN;
     }
 
-    const UA_RolePermissionEntry *rp =
-        getRolePermissionsEntry(server, node->head.permissionIndex);
+    /* The Node's own RolePermissions, as reported by the RolePermissions
+     * Attribute. A built-in protection that is not enforced (legacy mode
+     * without a namespace default) is not reported. */
+    size_t entriesSize = 0;
+    const UA_RolePermission *entries = NULL;
+    UA_Boolean isOverride = false;
+    UA_StatusCode res = resolveNodeRolePermissions(server, node, &entriesSize,
+                                                   &entries, &isOverride, NULL);
     UA_NODESTORE_RELEASE(server, node);
-
-    if(!rp) {
-        unlockServer(server);
-        return UA_STATUSCODE_GOOD; /* No role permissions set */
-    }
-
-    UA_StatusCode res = copyRolePermissionArray(rp->rolePermissionsSize,
-                                                rp->rolePermissions,
-                                                rolePermissionsSize,
-                                                rolePermissions);
+    if(res == UA_STATUSCODE_GOOD && isOverride)
+        res = copyRolePermissionArray(entriesSize, entries,
+                                      rolePermissionsSize, rolePermissions);
     unlockServer(server);
     return res;
 }
@@ -1716,6 +1749,30 @@ UA_Server_removeNodeRolePermissions(UA_Server *server,
 
     unlockServer(server);
     return res;
+}
+
+UA_StatusCode
+protectNodeRolePermissions(UA_Server *server, const UA_NodeId *nodeId,
+                           size_t entriesSize, const UA_RolePermission *entries) {
+    UA_LOCK_ASSERT(&server->serviceMutex);
+    const UA_Node *node = UA_NODESTORE_GET(server, nodeId);
+    if(!node)
+        return UA_STATUSCODE_BADNODEIDUNKNOWN;
+    UA_PermissionIndex currentIndex = node->head.permissionIndex;
+    UA_NODESTORE_RELEASE(server, node);
+
+    /* Never replace RolePermissions that were configured for the Node */
+    const UA_RolePermissionEntry *rp = getRolePermissionsEntry(server, currentIndex);
+    if(rp && rp->rolePermissionsSize > 0)
+        return UA_STATUSCODE_GOOD;
+
+    /* Copy-on-write: the Node keeps its AccessRestrictions */
+    EntryContent c;
+    UA_StatusCode res = getEntryContent(server, nodeId, currentIndex, true, &c);
+    if(res != UA_STATUSCODE_GOOD)
+        return res;
+    EntryContent_setRolePermissions(&c, true, entriesSize, entries, true);
+    return setNodeEntryContent(server, nodeId, &c);
 }
 
 /*****************************************/
@@ -2665,8 +2722,10 @@ addRolePermissionsInternal(UA_Server *server, const UA_NodeId *nodeId,
     }
 
     /* Find or create a slot for the new permissions, update the refcounts and
-     * the node's permissionIndex */
-    EntryContent_setRolePermissions(&c, true, newEntriesSize, newEntries);
+     * the node's permissionIndex. Extending a built-in protection keeps it
+     * conditional on the namespace model. */
+    EntryContent_setRolePermissions(&c, true, newEntriesSize, newEntries,
+                                    c.modelOnly);
     res = setNodeEntryContent(server, nodeId, &c);
     UA_free(newEntries);
     return res;
@@ -2757,7 +2816,8 @@ removeRolePermissionsInternal(UA_Server *server, const UA_NodeId *nodeId,
         c.rolePermissions[roleEntryIdx].permissions & ~permissions;
 
     /* Build new entries array. The NodeIds are borrowed, the array is copied
-     * when a new entry is created. */
+     * when a new entry is created. The reduced list of a built-in protection
+     * stays conditional on the namespace model. */
     size_t newEntriesSize = (newPerms == 0) ?
         c.rolePermissionsSize - 1 : c.rolePermissionsSize;
     UA_RolePermission denyEntry;
@@ -2769,7 +2829,7 @@ removeRolePermissionsInternal(UA_Server *server, const UA_NodeId *nodeId,
          * override entirely. */
         denyEntry.roleId = UA_NODEID_NUMERIC(0, UA_NS0ID_WELLKNOWNROLE_ANONYMOUS);
         denyEntry.permissions = 0;
-        EntryContent_setRolePermissions(&c, true, 1, &denyEntry);
+        EntryContent_setRolePermissions(&c, true, 1, &denyEntry, c.modelOnly);
     } else {
         newEntries = (UA_RolePermission*)
             UA_malloc(newEntriesSize * sizeof(UA_RolePermission));
@@ -2784,7 +2844,8 @@ removeRolePermissionsInternal(UA_Server *server, const UA_NodeId *nodeId,
                 newEntries[j].permissions = newPerms;
             j++;
         }
-        EntryContent_setRolePermissions(&c, true, newEntriesSize, newEntries);
+        EntryContent_setRolePermissions(&c, true, newEntriesSize, newEntries,
+                                    c.modelOnly);
     }
 
     /* The AccessRestrictions are kept */
@@ -3028,14 +3089,18 @@ UA_Server_getRolePermissionConfig(UA_Server *server, UA_PermissionIndex index) {
 
 /* An entry that a node reaches with the RolePermissions of the configuration
  * and its own AccessRestrictions (copy-on-write). The configuration is shared
- * by content: every entry with the same RolePermissions and with
- * AccessRestrictions counts, regardless of how the node reached it. */
+ * by content: every entry with the same RolePermissions part (the list and
+ * modelOnly) and with AccessRestrictions counts, regardless of how the node
+ * reached it. A built-in protection and an ordinary override with the same
+ * list are different configurations. */
 static UA_Boolean
 isDerivedEntry(const UA_RolePermissionEntry *config,
                const UA_RolePermissionEntry *e) {
     if(!config->hasRolePermissions || config->hasAccessRestrictions)
         return false; /* Not a RolePermission configuration */
     if(e == config || !e->hasRolePermissions || !e->hasAccessRestrictions)
+        return false;
+    if(e->modelOnly != config->modelOnly)
         return false;
     return compareRolePermissions(config->rolePermissionsSize,
                                   config->rolePermissions,
@@ -3203,9 +3268,10 @@ resolveNodeRolePermissions(UA_Server *server, const UA_Node *node,
 
     /* The Node has its own RolePermissions. An entry with only
      * AccessRestrictions or with an empty list (e.g. an empty preset) is no
-     * override (Part 3 §5.2.9). */
+     * override (Part 3 §5.2.9). A built-in protection applies only while the
+     * namespace has a model. */
     const UA_RolePermissionEntry *rp = getRolePermissionsEntry(server, permIdx);
-    if(rp && rp->rolePermissionsSize > 0) {
+    if(rp && rp->rolePermissionsSize > 0 && (model || !rp->modelOnly)) {
         if(isOverride)
             *isOverride = true;
         *entriesSize = rp->rolePermissionsSize;
@@ -3375,26 +3441,31 @@ UA_Server_getEffectiveNamespacePermissions(UA_Server *server,
     return UA_STATUSCODE_GOOD;
 }
 
-/* Internal helper. Caller holds the lock.
- * Missing node -> UA_PERMISSIONTYPE_ALL (permissive sentinel). */
-UA_StatusCode
-getEffectivePermissions(UA_Server *server,
-                        const UA_Session *session,
-                        const UA_NodeId *nodeId,
-                        UA_PermissionType *effectivePermissions) {
-    if(!server || !nodeId || !effectivePermissions)
-        return UA_STATUSCODE_BADINVALIDARGUMENT;
+UA_Boolean
+mayReceiveEvent(UA_Server *server, const UA_Session *session,
+                const UA_NodeId *eventType, const UA_NodeId *sourceNode) {
     UA_LOCK_ASSERT(&server->serviceMutex);
-
-    const UA_Node *node = UA_NODESTORE_GET(server, nodeId);
-    if(!node) {
-        *effectivePermissions = UA_PERMISSIONTYPE_ALL;
-        return UA_STATUSCODE_GOOD;
-    }
-
-    *effectivePermissions = getNodeEffectivePermissions(server, session, node);
-    UA_NODESTORE_RELEASE(server, node);
-    return UA_STATUSCODE_GOOD;
+    const UA_Node *typeNode = UA_NODESTORE_GET(server, eventType);
+    const UA_Node *srcNode = UA_NODESTORE_GET(server, sourceNode);
+    UA_Boolean allowed =
+        typeNode && srcNode &&
+        (getNodeEffectivePermissions(server, session, typeNode) &
+         UA_PERMISSIONTYPE_RECEIVEEVENTS) != 0 &&
+        (getNodeEffectivePermissions(server, session, srcNode) &
+         UA_PERMISSIONTYPE_RECEIVEEVENTS) != 0 &&
+        /* Event delivery does not go through the Read service. Apply the
+         * AccessRestrictions of both Nodes here, so a transferred
+         * Subscription or changed channel cannot receive an Event over an
+         * insufficient SecureChannel. */
+        checkNodeAccessRestrictions(server, session, typeNode,
+                                    false) == UA_STATUSCODE_GOOD &&
+        checkNodeAccessRestrictions(server, session, srcNode,
+                                    false) == UA_STATUSCODE_GOOD;
+    if(typeNode)
+        UA_NODESTORE_RELEASE(server, typeNode);
+    if(srcNode)
+        UA_NODESTORE_RELEASE(server, srcNode);
+    return allowed;
 }
 
 UA_StatusCode
@@ -3592,19 +3663,27 @@ UA_Server_decrementRolePermissionsRefCount(UA_Server *server,
 }
 
 UA_StatusCode
-retainInstanceAccessRestrictions(UA_Server *server, UA_PermissionIndex declIndex,
-                                 UA_PermissionIndex *outIndex) {
+retainCopiedNodePermissionIndex(UA_Server *server, UA_NodeClass nodeClass,
+                                UA_PermissionIndex declIndex,
+                                UA_PermissionIndex *outIndex) {
     UA_LOCK_ASSERT(&server->serviceMutex);
     *outIndex = UA_PERMISSION_INDEX_INVALID;
     if(declIndex == UA_PERMISSION_INDEX_INVALID ||
-       declIndex >= server->rolePermissionsSize ||
-       !server->rolePermissions[declIndex].hasAccessRestrictions)
+       declIndex >= server->rolePermissionsSize)
         return UA_STATUSCODE_GOOD;
 
+    /* Keep the AccessRestrictions and, for a Method, the built-in protection.
+     * Ordinary RolePermissions are not inherited. The RolePermission array is
+     * borrowed from the entry and stays valid when findOrCreateEntry
+     * reallocates the entry array. */
+    const UA_RolePermissionEntry *e = &server->rolePermissions[declIndex];
+    UA_Boolean keepProtection = (nodeClass == UA_NODECLASS_METHOD &&
+                                 e->hasRolePermissions && e->modelOnly);
     EntryContent c;
-    EntryContent_setRolePermissions(&c, false, 0, NULL);
-    EntryContent_setAccessRestrictions(&c, true,
-        server->rolePermissions[declIndex].accessRestrictions);
+    EntryContent_setRolePermissions(&c, keepProtection, e->rolePermissionsSize,
+                                    e->rolePermissions, true);
+    EntryContent_setAccessRestrictions(&c, e->hasAccessRestrictions,
+                                       e->accessRestrictions);
     UA_StatusCode res = findOrCreateEntry(server, &c, outIndex);
     if(res != UA_STATUSCODE_GOOD)
         return res;

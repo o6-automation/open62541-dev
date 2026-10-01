@@ -81,16 +81,20 @@ void
 UA_Server_decrementRolePermissionsRefCount(UA_Server *server,
                                            UA_PermissionIndex index);
 
-/* An instance child does not inherit the RolePermissions of its
- * InstanceDeclaration but keeps its AccessRestrictions. Returns the index of
- * the shared entry with only the AccessRestrictions of the entry at declIndex
- * and takes a reference on it (release it with
- * UA_Server_decrementRolePermissionsRefCount if the node is not added).
- * Without AccessRestrictions at declIndex, outIndex is
- * UA_PERMISSION_INDEX_INVALID. Must be called with the server lock held. */
+/* The permission index that the copy of an instance declaration gets
+ * (copyChildNode). The copy keeps the AccessRestrictions of the declaration.
+ * It does not inherit the RolePermissions and uses the namespace default, but
+ * a copied Method keeps the built-in protection of its declaration (see
+ * protectNodeRolePermissions), so that copyMethodsOnInstances gives the
+ * instance the same RolePermissions as the referenced declaration. Returns the
+ * index of the shared entry with these parts and takes a reference on it
+ * (release it with UA_Server_decrementRolePermissionsRefCount if the node is
+ * not added). Without either part, outIndex is UA_PERMISSION_INDEX_INVALID.
+ * Must be called with the server lock held. */
 UA_StatusCode
-retainInstanceAccessRestrictions(UA_Server *server, UA_PermissionIndex declIndex,
-                                 UA_PermissionIndex *outIndex);
+retainCopiedNodePermissionIndex(UA_Server *server, UA_NodeClass nodeClass,
+                                UA_PermissionIndex declIndex,
+                                UA_PermissionIndex *outIndex);
 
 /* Low-level permission index functions (internal, used by tests). A
  * configuration slot with an empty list is no override: Nodes referencing it
@@ -163,6 +167,36 @@ bindRoleRepresentation(UA_Server *server, const UA_NodeId *roleId,
 UA_StatusCode
 initRoleSetRolePermissions(UA_Server *server);
 
+/* Give a sensitive Node built-in RolePermissions that are enforced only while
+ * its namespace has a RolePermission model (an explicit default or strict
+ * mode). In legacy mode the Node stays unrestricted like every other Node
+ * without RolePermissions, so allPermissionsForAnonymous still restores the
+ * legacy behavior. RolePermissions already configured for the Node are kept;
+ * a Node with only AccessRestrictions has none and is protected. The Node
+ * keeps its AccessRestrictions (copy-on-write of its shared entry).
+ * Adding or removing the permissions of a Role later keeps the protection
+ * conditional; UA_Server_setNodeRolePermissions replaces it with an ordinary
+ * override. Must be called with the server lock held. */
+UA_StatusCode
+protectNodeRolePermissions(UA_Server *server, const UA_NodeId *nodeId,
+                           size_t entriesSize, const UA_RolePermission *entries);
+
+/* Protect the Namespace Zero Nodes that the NS0 template would open to every
+ * Session (defined in ua_server_ns0_rbac.c): the PubSub configuration and
+ * Security Key Service Methods, the Condition Methods that change the state of
+ * an Alarm, the AuditEventType hierarchy and the writable Properties of
+ * RoleType, which ConfigureAdmin could otherwise write. Runs at the end of
+ * UA_Server_initRBAC, before the PubSub information model binds its Method
+ * callbacks to the same Nodes. */
+UA_StatusCode
+initNS0SensitiveRolePermissions(UA_Server *server);
+
+/* Restrict a PubSub configuration Method to ConfigureAdmin (built-in
+ * protection). Used for the Methods that the PubSub information model creates
+ * at runtime. */
+UA_StatusCode
+protectPubSubConfigurationMethod(UA_Server *server, const UA_NodeId *methodId);
+
 /* RolePermission resolution (Part 3 §4.9.3, §5.2.9). Single source of truth
  * for the effective permission checks and the RolePermission attributes and
  * Properties. All of them must be called with the server lock held. */
@@ -218,13 +252,16 @@ UA_Server_getEffectivePermissions(UA_Server *server,
                                   const UA_NodeId *nodeId,
                                   UA_PermissionType *effectivePermissions);
 
-/* Internal helper. Requires the server lock to be held.
- * Missing node -> UA_PERMISSIONTYPE_ALL (permissive sentinel). */
-UA_StatusCode
-getEffectivePermissions(UA_Server *server,
-                        const UA_Session *session,
-                        const UA_NodeId *nodeId,
-                        UA_PermissionType *effectivePermissions);
+/* Whether the Session receives an Event: the ReceiveEvents bit must be set on
+ * the EventType and on the SourceNode (Part 3 §8.55) and the AccessRestrictions
+ * of both Nodes must be met at delivery time. Legacy mode yields all bits for
+ * Nodes without RolePermissions. An Event whose EventType or SourceNode is not
+ * in the AddressSpace is not delivered: neither its RolePermissions nor its
+ * AccessRestrictions can be checked. The caller exempts the local admin
+ * Session. Must be called with the server lock held. */
+UA_Boolean
+mayReceiveEvent(UA_Server *server, const UA_Session *session,
+                const UA_NodeId *eventType, const UA_NodeId *sourceNode);
 
 UA_StatusCode
 UA_Server_getEffectiveNamespacePermissions(UA_Server *server,

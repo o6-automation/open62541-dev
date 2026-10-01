@@ -11,6 +11,10 @@
 #include "ua_subscription.h"
 #include "itoa.h"
 
+#ifdef UA_ENABLE_RBAC
+#include "ua_server_rbac.h"
+#endif
+
 #ifdef UA_ENABLE_DIAGNOSTICS
 
 static UA_Boolean
@@ -218,8 +222,11 @@ createSubscriptionObject(UA_Server *server, UA_Session *session,
                                 &sub->ns0Id);
     UA_CHECK_STATUS(res, goto cleanup);
 
-    /* Add a second reference from the overall SubscriptionDiagnosticsArray variable */
-    res = addRefWithSession(server, session,  &subDiagArray, &refId, &sub->ns0Id, true);
+    /* Add a second reference from the overall SubscriptionDiagnosticsArray
+     * variable. The diagnostics belong to the server. The Session that creates
+     * the Subscription need not be allowed to add References in Namespace
+     * Zero. */
+    res = addRef(server, subDiagArray, refId, sub->ns0Id, true);
     if(res != UA_STATUSCODE_GOOD)
         goto cleanup;
 
@@ -465,32 +472,72 @@ readSessionDiagnostics(UA_Server *server,
     return res;
 }
 
+/* The security diagnostics of a Session "should not be made accessible to all
+ * users, but only to authorised users" (Part 5 §6.3.4, §6.3.5). While Namespace
+ * Zero has a RolePermission model, a Session sees the entries of other
+ * Sessions only as the local admin or with the SecurityAdmin Role. Without RBAC
+ * or in legacy mode all entries are visible. */
+static UA_Boolean
+showSessionSecurityDiagnostics(UA_Server *server, const UA_Session *reader,
+                               const UA_Session *session) {
+#ifdef UA_ENABLE_RBAC
+    if(reader == session || reader == &server->adminSession)
+        return true;
+    size_t entriesSize = 0;
+    const UA_RolePermission *entries = NULL;
+    if(!getNamespaceRolePermissionModel(server, 0, &entriesSize, &entries))
+        return true;
+    if(!reader)
+        return false;
+    const UA_NodeId securityAdmin =
+        UA_NODEID_NUMERIC(0, UA_NS0ID_WELLKNOWNROLE_SECURITYADMIN);
+    for(size_t i = 0; i < reader->rolesSize; i++) {
+        if(UA_NodeId_equal(&reader->roles[i], &securityAdmin))
+            return true;
+    }
+    return false;
+#else
+    return true;
+#endif
+}
+
 UA_StatusCode
 readSessionSecurityDiagnostics(UA_Server *server,
                                const UA_NodeId *sessionId, void *sessionContext,
                                const UA_NodeId *nodeId, void *nodeContext,
                                UA_Boolean sourceTimestamp,
                                const UA_NumericRange *range, UA_DataValue *value) {
+    lockServer(server);
+
+    /* Count the visible Sessions */
+    const UA_Session *reader = getSessionById(server, sessionId);
+    size_t visible = 0;
+    session_list_entry *session;
+    LIST_FOREACH(session, &server->sessions, pointers) {
+        if(showSessionSecurityDiagnostics(server, reader, &session->session))
+            visible++;
+    }
+
     /* Allocate the output array */
     UA_SessionSecurityDiagnosticsDataType *sd = (UA_SessionSecurityDiagnosticsDataType*)
-        UA_Array_new(server->sessionCount,
-                     &UA_TYPES[UA_TYPES_SESSIONSECURITYDIAGNOSTICSDATATYPE]);
-    if(!sd)
+        UA_Array_new(visible, &UA_TYPES[UA_TYPES_SESSIONSECURITYDIAGNOSTICSDATATYPE]);
+    if(!sd) {
+        unlockServer(server);
         return UA_STATUSCODE_BADOUTOFMEMORY;
-
-    lockServer(server);
+    }
 
     /* Collect the statistics */
     size_t i = 0;
-    session_list_entry *session;
     LIST_FOREACH(session, &server->sessions, pointers) {
+        if(!showSessionSecurityDiagnostics(server, reader, &session->session))
+            continue;
         setSessionSecurityDiagnostics(&session->session, &sd[i]);
         i++;
     }
 
     /* Set the output */
     value->hasValue = true;
-    UA_Variant_setArray(&value->value, sd, server->sessionCount,
+    UA_Variant_setArray(&value->value, sd, visible,
                         &UA_TYPES[UA_TYPES_SESSIONSECURITYDIAGNOSTICSDATATYPE]);
 
     unlockServer(server);

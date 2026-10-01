@@ -21,6 +21,30 @@ UA_Server_getEffectiveNamespacePermissions(UA_Server *server,
                                            const UA_NodeId *sessionId,
                                            UA_UInt16 namespaceIndex,
                                            UA_PermissionType *effectivePermissions);
+
+/* The decisions below follow the RBAC permission bits only. In legacy mode
+ * (allPermissionsForAnonymous) a Node without RolePermissions yields
+ * UA_PERMISSIONTYPE_ALL, which contains every bit. An unknown Node is not
+ * denied, so that the service reports its own Bad_NodeIdUnknown. Every other
+ * error denies. */
+static UA_PermissionType
+getPermissions(UA_Server *server, const UA_NodeId *sessionId,
+               const UA_NodeId *nodeId) {
+    UA_PermissionType permissions = 0;
+    UA_StatusCode res =
+        UA_Server_getEffectivePermissions(server, sessionId, nodeId, &permissions);
+    if(res == UA_STATUSCODE_BADNODEIDUNKNOWN)
+        return UA_PERMISSIONTYPE_ALL;
+    if(res != UA_STATUSCODE_GOOD)
+        return 0;
+    return permissions;
+}
+
+static UA_Boolean
+hasPermission(UA_Server *server, const UA_NodeId *sessionId,
+              const UA_NodeId *nodeId, UA_PermissionType permission) {
+    return (getPermissions(server, sessionId, nodeId) & permission) != 0;
+}
 #endif
 
 /* Example access control management. Anonymous and username / password login.
@@ -164,18 +188,13 @@ closeSession_default(UA_Server *server, UA_AccessControl *ac,
  *   - WriteRolePermissions -> UA_WRITEMASK_ROLEPERMISSIONS (bit 23)
  *   - WriteHistorizing     -> UA_WRITEMASK_HISTORIZING    (bit 9)
  *
- * 0xFFFFFFFF effectivePerms means "no RBAC restrictions configured" for
- * the node, so we return all-bits-set (fully permissive). */
+ * The result is masked with the WriteMask of the Node. */
 static UA_UInt32
 getUserRightsMask_default(UA_Server *server, UA_AccessControl *ac,
                           const UA_NodeId *sessionId, void *sessionContext,
                           const UA_NodeId *nodeId, void *nodeContext) {
 #ifdef UA_ENABLE_RBAC
-    UA_PermissionType effectivePerms = 0;
-    UA_StatusCode res = UA_Server_getEffectivePermissions(server, sessionId,
-                                                          nodeId, &effectivePerms);
-    if(res != UA_STATUSCODE_GOOD || effectivePerms == 0xFFFFFFFF)
-        return 0xFFFFFFFF;
+    UA_PermissionType effectivePerms = getPermissions(server, sessionId, nodeId);
     UA_UInt32 userWriteMask = 0;
     if(effectivePerms & UA_PERMISSIONTYPE_WRITEATTRIBUTE) {
         /* Grant all attribute-write bits, then carve out the two that
@@ -198,30 +217,30 @@ getUserRightsMask_default(UA_Server *server, UA_AccessControl *ac,
  *
  * OPC UA Part 3, Table 8 maps:
  *   - Read          -> ACCESSLEVELMASK_READ         (bit 0)
- *   - Write         -> ACCESSLEVELMASK_WRITE        (bit 1)
+ *   - Write         -> ACCESSLEVELMASK_WRITE        (bit 1),
+ *                      ACCESSLEVELMASK_STATUSWRITE  (bit 5) and
+ *                      ACCESSLEVELMASK_TIMESTAMPWRITE (bit 6)
  *   - ReadHistory   -> ACCESSLEVELMASK_HISTORYREAD  (bit 2)
  *   - InsertHistory |
  *     ModifyHistory |
  *     DeleteHistory -> ACCESSLEVELMASK_HISTORYWRITE (bit 3)
  *
- * StatusWrite (bit 5) and TimestampWrite (bit 6) are not mapped from
- * RBAC permissions — they remain restricted unless the node has no
- * RBAC configuration (0xFFFFFFFF). */
+ * Writing the status or the timestamps of a Value is part of writing the
+ * Value. SemanticChange (bit 4) describes the Variable and is no right; it
+ * passes through. The result is masked with the AccessLevel of the Node, so
+ * a Variable without StatusWrite still rejects a status. */
 static UA_Byte
 getUserAccessLevel_default(UA_Server *server, UA_AccessControl *ac,
                            const UA_NodeId *sessionId, void *sessionContext,
                            const UA_NodeId *nodeId, void *nodeContext) {
 #ifdef UA_ENABLE_RBAC
-    UA_PermissionType effectivePerms = 0;
-    UA_StatusCode res = UA_Server_getEffectivePermissions(server, sessionId,
-                                                          nodeId, &effectivePerms);
-    if(res != UA_STATUSCODE_GOOD || effectivePerms == 0xFFFFFFFF)
-        return 0xFF;
-    UA_Byte userAccessLevel = 0;
+    UA_PermissionType effectivePerms = getPermissions(server, sessionId, nodeId);
+    UA_Byte userAccessLevel = UA_ACCESSLEVELMASK_SEMANTICCHANGE;
     if(effectivePerms & UA_PERMISSIONTYPE_READ)
         userAccessLevel |= UA_ACCESSLEVELMASK_READ;
     if(effectivePerms & UA_PERMISSIONTYPE_WRITE)
-        userAccessLevel |= UA_ACCESSLEVELMASK_WRITE;
+        userAccessLevel |= UA_ACCESSLEVELMASK_WRITE |
+            UA_ACCESSLEVELMASK_STATUSWRITE | UA_ACCESSLEVELMASK_TIMESTAMPWRITE;
     if(effectivePerms & UA_PERMISSIONTYPE_READHISTORY)
         userAccessLevel |= UA_ACCESSLEVELMASK_HISTORYREAD;
     if(effectivePerms & (UA_PERMISSIONTYPE_INSERTHISTORY |
@@ -240,12 +259,7 @@ getUserExecutable_default(UA_Server *server, UA_AccessControl *ac,
                           const UA_NodeId *sessionId, void *sessionContext,
                           const UA_NodeId *methodId, void *methodContext) {
 #ifdef UA_ENABLE_RBAC
-    UA_PermissionType effectivePerms = 0;
-    UA_StatusCode res = UA_Server_getEffectivePermissions(server, sessionId,
-                                                          methodId, &effectivePerms);
-    if(res != UA_STATUSCODE_GOOD || effectivePerms == 0xFFFFFFFF)
-        return true;
-    return (effectivePerms & UA_PERMISSIONTYPE_CALL) != 0;
+    return hasPermission(server, sessionId, methodId, UA_PERMISSIONTYPE_CALL);
 #else
     return true;
 #endif
@@ -259,27 +273,15 @@ getUserExecutableOnObject_default(UA_Server *server, UA_AccessControl *ac,
                                   const UA_NodeId *methodId, void *methodContext,
                                   const UA_NodeId *objectId, void *objectContext) {
 #ifdef UA_ENABLE_RBAC
-    UA_PermissionType objectPerms = 0;
-    UA_StatusCode res = UA_Server_getEffectivePermissions(server, sessionId,
-                                                          objectId, &objectPerms);
-    if(res != UA_STATUSCODE_GOOD)
-        return true;
-    if(objectPerms != 0xFFFFFFFF && !(objectPerms & UA_PERMISSIONTYPE_CALL))
-        return false;
-    UA_PermissionType methodPerms = 0;
-    res = UA_Server_getEffectivePermissions(server, sessionId,
-                                            methodId, &methodPerms);
-    if(res != UA_STATUSCODE_GOOD)
-        return true;
-    if(methodPerms != 0xFFFFFFFF && !(methodPerms & UA_PERMISSIONTYPE_CALL))
-        return false;
-    return true;
+    return hasPermission(server, sessionId, objectId, UA_PERMISSIONTYPE_CALL) &&
+        hasPermission(server, sessionId, methodId, UA_PERMISSIONTYPE_CALL);
 #else
     return true;
 #endif
 }
 
-/* AddNode is granted by the target Namespace's default permissions. */
+/* AddNode is granted by the target Namespace's default permissions. An
+ * unknown namespace is not denied, the service reports it. */
 static UA_Boolean
 allowAddNode_default(UA_Server *server, UA_AccessControl *ac,
                      const UA_NodeId *sessionId, void *sessionContext,
@@ -289,8 +291,10 @@ allowAddNode_default(UA_Server *server, UA_AccessControl *ac,
     UA_StatusCode res = UA_Server_getEffectiveNamespacePermissions(
         server, sessionId, item->requestedNewNodeId.nodeId.namespaceIndex,
         &effectivePerms);
-    if(res != UA_STATUSCODE_GOOD || effectivePerms == 0xFFFFFFFF)
+    if(res == UA_STATUSCODE_BADINDEXRANGEINVALID)
         return true;
+    if(res != UA_STATUSCODE_GOOD)
+        return false;
     return (effectivePerms & UA_PERMISSIONTYPE_ADDNODE) != 0;
 #else
     return true;
@@ -303,13 +307,8 @@ allowAddReference_default(UA_Server *server, UA_AccessControl *ac,
                           const UA_NodeId *sessionId, void *sessionContext,
                           const UA_AddReferencesItem *item) {
 #ifdef UA_ENABLE_RBAC
-    UA_PermissionType effectivePerms = 0;
-    UA_StatusCode res = UA_Server_getEffectivePermissions(server, sessionId,
-                                                          &item->sourceNodeId,
-                                                          &effectivePerms);
-    if(res != UA_STATUSCODE_GOOD || effectivePerms == 0xFFFFFFFF)
-        return true;
-    return (effectivePerms & UA_PERMISSIONTYPE_ADDREFERENCE) != 0;
+    return hasPermission(server, sessionId, &item->sourceNodeId,
+                         UA_PERMISSIONTYPE_ADDREFERENCE);
 #else
     return true;
 #endif
@@ -321,13 +320,8 @@ allowDeleteNode_default(UA_Server *server, UA_AccessControl *ac,
                         const UA_NodeId *sessionId, void *sessionContext,
                         const UA_DeleteNodesItem *item) {
 #ifdef UA_ENABLE_RBAC
-    UA_PermissionType effectivePerms = 0;
-    UA_StatusCode res = UA_Server_getEffectivePermissions(server, sessionId,
-                                                          &item->nodeId,
-                                                          &effectivePerms);
-    if(res != UA_STATUSCODE_GOOD || effectivePerms == 0xFFFFFFFF)
-        return true;
-    return (effectivePerms & UA_PERMISSIONTYPE_DELETENODE) != 0;
+    return hasPermission(server, sessionId, &item->nodeId,
+                         UA_PERMISSIONTYPE_DELETENODE);
 #else
     return true;
 #endif
@@ -339,13 +333,8 @@ allowDeleteReference_default(UA_Server *server, UA_AccessControl *ac,
                              const UA_NodeId *sessionId, void *sessionContext,
                              const UA_DeleteReferencesItem *item) {
 #ifdef UA_ENABLE_RBAC
-    UA_PermissionType effectivePerms = 0;
-    UA_StatusCode res = UA_Server_getEffectivePermissions(server, sessionId,
-                                                          &item->sourceNodeId,
-                                                          &effectivePerms);
-    if(res != UA_STATUSCODE_GOOD || effectivePerms == 0xFFFFFFFF)
-        return true;
-    return (effectivePerms & UA_PERMISSIONTYPE_REMOVEREFERENCE) != 0;
+    return hasPermission(server, sessionId, &item->sourceNodeId,
+                         UA_PERMISSIONTYPE_REMOVEREFERENCE);
 #else
     return true;
 #endif
@@ -357,12 +346,7 @@ allowBrowseNode_default(UA_Server *server, UA_AccessControl *ac,
                         const UA_NodeId *sessionId, void *sessionContext,
                         const UA_NodeId *nodeId, void *nodeContext) {
 #ifdef UA_ENABLE_RBAC
-    UA_PermissionType effectivePerms = 0;
-    UA_StatusCode res = UA_Server_getEffectivePermissions(server, sessionId,
-                                                          nodeId, &effectivePerms);
-    if(res != UA_STATUSCODE_GOOD || effectivePerms == 0xFFFFFFFF)
-        return true;
-    return (effectivePerms & UA_PERMISSIONTYPE_BROWSE) != 0;
+    return hasPermission(server, sessionId, nodeId, UA_PERMISSIONTYPE_BROWSE);
 #else
     return true;
 #endif
@@ -501,11 +485,7 @@ allowHistoryUpdateUpdateData_default(UA_Server *server, UA_AccessControl *ac,
                                      UA_PerformUpdateType performInsertReplace,
                                      const UA_DataValue *value) {
 #ifdef UA_ENABLE_RBAC
-    UA_PermissionType effectivePerms = 0;
-    UA_StatusCode res = UA_Server_getEffectivePermissions(server, sessionId,
-                                                          nodeId, &effectivePerms);
-    if(res != UA_STATUSCODE_GOOD || effectivePerms == 0xFFFFFFFF)
-        return true;
+    UA_PermissionType effectivePerms = getPermissions(server, sessionId, nodeId);
     if(performInsertReplace == UA_PERFORMUPDATETYPE_INSERT)
         return (effectivePerms & UA_PERMISSIONTYPE_INSERTHISTORY) != 0;
     else if(performInsertReplace == UA_PERFORMUPDATETYPE_REPLACE ||
@@ -526,12 +506,8 @@ allowHistoryUpdateDeleteRawModified_default(UA_Server *server, UA_AccessControl 
                                             UA_DateTime endTimestamp,
                                             bool isDeleteModified) {
 #ifdef UA_ENABLE_RBAC
-    UA_PermissionType effectivePerms = 0;
-    UA_StatusCode res = UA_Server_getEffectivePermissions(server, sessionId,
-                                                          nodeId, &effectivePerms);
-    if(res != UA_STATUSCODE_GOOD || effectivePerms == 0xFFFFFFFF)
-        return true;
-    return (effectivePerms & UA_PERMISSIONTYPE_DELETEHISTORY) != 0;
+    return hasPermission(server, sessionId, nodeId,
+                         UA_PERMISSIONTYPE_DELETEHISTORY);
 #else
     return true;
 #endif

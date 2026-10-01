@@ -17,6 +17,7 @@
 #include "server/ua_server_internal.h"
 #include "server/ua_server_rbac.h"
 #include "server/ua_services.h"
+#include "server/ua_subscription.h"
 
 #include "test_helpers.h"
 
@@ -28,6 +29,7 @@
 #define B   UA_PERMISSIONTYPE_BROWSE
 #define R   UA_PERMISSIONTYPE_READ
 #define W   UA_PERMISSIONTYPE_WRITE
+#define WA  UA_PERMISSIONTYPE_WRITEATTRIBUTE
 #define C   UA_PERMISSIONTYPE_CALL
 #define RE  UA_PERMISSIONTYPE_RECEIVEEVENTS
 #define RH  UA_PERMISSIONTYPE_READHISTORY
@@ -159,8 +161,9 @@ expectRolePermissions(UA_Session *session, const UA_NodeId nodeId,
 /* Namespace Default RolePermission Templates */
 /*****************************************/
 
-/* Namespace Zero: Browse, Read, Call and ReceiveEvents for everybody, nobody
- * may write. The Observer-like Roles may additionally read history. */
+/* Namespace Zero: Browse, Read, Call and ReceiveEvents for everybody. Only
+ * ConfigureAdmin writes (the non-security configuration). The Observer-like
+ * Roles may additionally read history. */
 START_TEST(template_namespaceZero) {
     const UA_NodeId serverStatus = UA_NS0ID(SERVER_SERVERSTATUS);
     UA_Session *anonymous = createSessionWithRole(ROLE(ANONYMOUS));
@@ -174,8 +177,9 @@ START_TEST(template_namespaceZero) {
 
     UA_Session *configureAdmin = createSessionWithRole(ROLE(CONFIGUREADMIN));
     UA_PermissionType ca = effective(configureAdmin, serverStatus);
-    ck_assert_uint_eq(ca, B | R | C | RE);
-    ck_assert(!(ca & (W | AN)));
+    ck_assert_uint_eq(ca, B | R | W | WA | C | RE);
+    ck_assert(!(ca & AN));
+    ck_assert(!(effective(operatorSession, serverStatus) & (W | WA)));
 } END_TEST
 
 /* The other namespaces: Anonymous may only browse, authenticated users read,
@@ -913,6 +917,281 @@ START_TEST(metadata_legacyPropertiesFollowModel) {
     UA_NodeId_clear(&ns1Object);
 } END_TEST
 
+/************************************/
+/* Access decisions in strict mode  */
+/************************************/
+
+static UA_NodeId
+addVariable(const char *name, UA_Byte accessLevel) {
+    UA_VariableAttributes attr = UA_VariableAttributes_default;
+    attr.displayName = UA_LOCALIZEDTEXT("en-US", (char*)(uintptr_t)name);
+    attr.accessLevel = accessLevel;
+    UA_Double value = 1.0;
+    UA_Variant_setScalar(&attr.value, &value, &UA_TYPES[UA_TYPES_DOUBLE]);
+    UA_NodeId nodeId = UA_NODEID_STRING(1, (char*)(uintptr_t)name);
+    ck_assert_uint_eq(UA_Server_addVariableNode(server, nodeId, UA_NS0ID(OBJECTSFOLDER),
+                                                UA_NS0ID(ORGANIZES),
+                                                UA_QUALIFIEDNAME(1, (char*)(uintptr_t)name),
+                                                UA_NS0ID(BASEDATAVARIABLETYPE),
+                                                attr, NULL, NULL),
+                      UA_STATUSCODE_GOOD);
+    return nodeId;
+}
+
+/* Write a value with a SourceTimestamp and a status, as a Client does that
+ * forwards a measurement */
+static UA_StatusCode
+writeMeasurementAs(UA_Session *session, const UA_NodeId nodeId) {
+    UA_Double value = 2.0;
+    UA_WriteValue wv;
+    UA_WriteValue_init(&wv);
+    wv.nodeId = nodeId;
+    wv.attributeId = UA_ATTRIBUTEID_VALUE;
+    wv.value.hasValue = true;
+    UA_Variant_setScalar(&wv.value.value, &value, &UA_TYPES[UA_TYPES_DOUBLE]);
+    wv.value.hasSourceTimestamp = true;
+    wv.value.sourceTimestamp = UA_DateTime_now();
+    wv.value.hasStatus = true;
+    wv.value.status = UA_STATUSCODE_UNCERTAINLASTUSABLEVALUE;
+    UA_StatusCode res = UA_STATUSCODE_BADINTERNALERROR;
+    lockServer(server);
+    Operation_Write(server, session, &wv, &res);
+    unlockServer(server);
+    return res;
+}
+
+/* The Write permission covers the status and the timestamps of the Value. The
+ * AccessLevel of the Variable still decides whether they can be written. */
+START_TEST(strict_writeWithSourceTimestamp) {
+    const UA_Byte full = UA_ACCESSLEVELMASK_READ | UA_ACCESSLEVELMASK_WRITE |
+        UA_ACCESSLEVELMASK_STATUSWRITE | UA_ACCESSLEVELMASK_TIMESTAMPWRITE |
+        UA_ACCESSLEVELMASK_SEMANTICCHANGE;
+    UA_NodeId measurement = addVariable("Measurement", full);
+    UA_NodeId plain = addVariable("Plain", UA_ACCESSLEVELMASK_READ |
+                                  UA_ACCESSLEVELMASK_WRITE);
+
+    const UA_NodeId opRoles[2] = {ROLE(ANONYMOUS), ROLE(OPERATOR)};
+    const UA_NodeId obsRoles[2] = {ROLE(ANONYMOUS), ROLE(OBSERVER)};
+    UA_Session *op = createSessionWithRoles(2, opRoles);
+    UA_Session *obs = createSessionWithRoles(2, obsRoles);
+    ck_assert_uint_eq(writeMeasurementAs(op, measurement), UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(writeMeasurementAs(obs, measurement),
+                      UA_STATUSCODE_BADUSERACCESSDENIED);
+    ck_assert_uint_eq(writeMeasurementAs(op, plain),
+                      UA_STATUSCODE_BADWRITENOTSUPPORTED);
+
+    /* UserAccessLevel: Write maps to the three write bits, SemanticChange
+     * passes through from the AccessLevel */
+    UA_DataValue dv = readAs(op, measurement, UA_ATTRIBUTEID_USERACCESSLEVEL);
+    ck_assert(UA_Variant_hasScalarType(&dv.value, &UA_TYPES[UA_TYPES_BYTE]));
+    ck_assert_uint_eq(*(UA_Byte*)dv.value.data, full);
+    UA_DataValue_clear(&dv);
+    dv = readAs(obs, measurement, UA_ATTRIBUTEID_USERACCESSLEVEL);
+    ck_assert(UA_Variant_hasScalarType(&dv.value, &UA_TYPES[UA_TYPES_BYTE]));
+    ck_assert_uint_eq(*(UA_Byte*)dv.value.data,
+                      UA_ACCESSLEVELMASK_READ | UA_ACCESSLEVELMASK_SEMANTICCHANGE);
+    UA_DataValue_clear(&dv);
+}
+END_TEST
+
+/* Legacy mode: an unconfigured Node grants every AccessLevel bit */
+START_TEST(legacy_writeWithSourceTimestamp) {
+    UA_NodeId measurement =
+        addVariable("Measurement", UA_ACCESSLEVELMASK_READ | UA_ACCESSLEVELMASK_WRITE |
+                    UA_ACCESSLEVELMASK_STATUSWRITE | UA_ACCESSLEVELMASK_TIMESTAMPWRITE);
+    UA_Session *anon = createSessionWithRole(ROLE(ANONYMOUS));
+    ck_assert_uint_eq(writeMeasurementAs(anon, measurement), UA_STATUSCODE_GOOD);
+}
+END_TEST
+
+/* An unknown Node is not denied, so the service reports Bad_NodeIdUnknown.
+ * Any other error of the permission lookup denies. */
+START_TEST(accessControl_errorHandling) {
+    UA_Session *anon = createSessionWithRole(ROLE(ANONYMOUS));
+    UA_AccessControl *ac = &UA_Server_getConfig(server)->accessControl;
+    const UA_NodeId unknown = UA_NODEID_STRING(1, "Unknown");
+    ck_assert(ac->allowBrowseNode(server, ac, &anon->sessionId, NULL, &unknown, NULL));
+    ck_assert(ac->getUserExecutable(server, ac, &anon->sessionId, NULL, &unknown, NULL));
+    ck_assert_uint_ne(ac->getUserAccessLevel(server, ac, &anon->sessionId, NULL,
+                                             &unknown, NULL) & UA_ACCESSLEVELMASK_WRITE, 0);
+
+    UA_DeleteNodesItem del;
+    UA_DeleteNodesItem_init(&del);
+    del.nodeId = unknown;
+    ck_assert(ac->allowDeleteNode(server, ac, &anon->sessionId, NULL, &del));
+    UA_DeleteNodesRequest delRequest;
+    UA_DeleteNodesRequest_init(&delRequest);
+    delRequest.nodesToDeleteSize = 1;
+    delRequest.nodesToDelete = &del;
+    UA_DeleteNodesResponse delResponse;
+    UA_DeleteNodesResponse_init(&delResponse);
+    lockServer(server);
+    Service_DeleteNodes(server, anon, &delRequest, &delResponse);
+    unlockServer(server);
+    ck_assert_uint_eq(delResponse.resultsSize, 1);
+    ck_assert_uint_eq(delResponse.results[0], UA_STATUSCODE_BADNODEIDUNKNOWN);
+    UA_DeleteNodesResponse_clear(&delResponse);
+
+    /* An unknown namespace is reported by AddNodes */
+    UA_AddNodesItem add;
+    UA_AddNodesItem_init(&add);
+    add.requestedNewNodeId.nodeId = UA_NODEID_NUMERIC(99, 1);
+    ck_assert(ac->allowAddNode(server, ac, &anon->sessionId, NULL, &add));
+
+    /* A known Node in strict mode: denied without the permission */
+    const UA_NodeId object = addObject(1, "Restricted");
+    ck_assert(!ac->getUserExecutable(server, ac, &anon->sessionId, NULL, &object, NULL));
+
+    /* An invalid lookup denies, in strict and in legacy mode */
+    ck_assert(!ac->allowBrowseNode(server, ac, &anon->sessionId, NULL, NULL, NULL));
+    UA_Server_getConfig(server)->allPermissionsForAnonymous = true;
+    ck_assert(!ac->allowBrowseNode(server, ac, &anon->sessionId, NULL, NULL, NULL));
+    ck_assert_uint_eq(ac->getUserAccessLevel(server, ac, &anon->sessionId, NULL,
+                                             NULL, NULL) &
+                      (UA_ACCESSLEVELMASK_READ | UA_ACCESSLEVELMASK_WRITE), 0);
+    ck_assert(ac->allowBrowseNode(server, ac, &anon->sessionId, NULL, &object, NULL));
+}
+END_TEST
+
+#ifdef UA_ENABLE_SUBSCRIPTIONS_EVENTS
+/* An event MonitoredItem of the Session on the Server Object */
+static UA_MonitoredItem *
+createServerEventItem(UA_Session *session) {
+    UA_CreateSubscriptionRequest subRequest;
+    UA_CreateSubscriptionRequest_init(&subRequest);
+    subRequest.publishingEnabled = true;
+    UA_CreateSubscriptionResponse subResponse;
+    UA_CreateSubscriptionResponse_init(&subResponse);
+    lockServer(server);
+    Service_CreateSubscription(server, session, &subRequest, &subResponse);
+    unlockServer(server);
+    ck_assert_uint_eq(subResponse.responseHeader.serviceResult, UA_STATUSCODE_GOOD);
+
+    UA_QualifiedName message = UA_QUALIFIEDNAME(0, "Message");
+    UA_SimpleAttributeOperand select;
+    UA_SimpleAttributeOperand_init(&select);
+    select.typeDefinitionId = UA_NS0ID(BASEEVENTTYPE);
+    select.browsePathSize = 1;
+    select.browsePath = &message;
+    select.attributeId = UA_ATTRIBUTEID_VALUE;
+    UA_EventFilter filter;
+    UA_EventFilter_init(&filter);
+    filter.selectClausesSize = 1;
+    filter.selectClauses = &select;
+
+    UA_MonitoredItemCreateRequest item;
+    UA_MonitoredItemCreateRequest_init(&item);
+    item.itemToMonitor.nodeId = UA_NS0ID(SERVER);
+    item.itemToMonitor.attributeId = UA_ATTRIBUTEID_EVENTNOTIFIER;
+    item.monitoringMode = UA_MONITORINGMODE_REPORTING;
+    item.requestedParameters.queueSize = 10;
+    UA_ExtensionObject_setValue(&item.requestedParameters.filter, &filter,
+                                &UA_TYPES[UA_TYPES_EVENTFILTER]);
+    UA_CreateMonitoredItemsRequest request;
+    UA_CreateMonitoredItemsRequest_init(&request);
+    request.subscriptionId = subResponse.subscriptionId;
+    request.timestampsToReturn = UA_TIMESTAMPSTORETURN_BOTH;
+    request.itemsToCreateSize = 1;
+    request.itemsToCreate = &item;
+
+    UA_CreateMonitoredItemsResponse response;
+    UA_CreateMonitoredItemsResponse_init(&response);
+    lockServer(server);
+    Service_CreateMonitoredItems(server, session, &request, &response);
+    ck_assert_uint_eq(response.resultsSize, 1);
+    ck_assert_uint_eq(response.results[0].statusCode, UA_STATUSCODE_GOOD);
+    UA_Subscription *sub = getSubscriptionById(server, subResponse.subscriptionId);
+    ck_assert_ptr_ne(sub, NULL);
+    UA_MonitoredItem *mon =
+        UA_Subscription_getMonitoredItem(sub, response.results[0].monitoredItemId);
+    ck_assert_ptr_ne(mon, NULL);
+    unlockServer(server);
+    UA_CreateMonitoredItemsResponse_clear(&response);
+    UA_CreateSubscriptionResponse_clear(&subResponse);
+    return mon;
+}
+
+/* Trigger an Event and return how many of the MonitoredItems received it */
+static size_t
+triggerEvent(const UA_NodeId eventType, const UA_NodeId sourceNode,
+             UA_MonitoredItem **mons, size_t monsSize) {
+    size_t before[4];
+    lockServer(server);
+    for(size_t i = 0; i < monsSize; i++)
+        before[i] = mons[i]->queueSize;
+    unlockServer(server);
+
+    UA_EventDescription ed;
+    memset(&ed, 0, sizeof(ed));
+    ed.eventType = eventType;
+    ed.sourceNode = sourceNode;
+    ed.severity = 100;
+    ed.message = UA_LOCALIZEDTEXT("en-US", "event");
+    ck_assert_uint_eq(UA_Server_createEventEx(server, &ed, NULL), UA_STATUSCODE_GOOD);
+
+    size_t received = 0;
+    lockServer(server);
+    for(size_t i = 0; i < monsSize; i++)
+        received += (mons[i]->queueSize > before[i]) ? 1 : 0;
+    unlockServer(server);
+    return received;
+}
+
+/* ReceiveEvents is needed on the EventType and on the SourceNode */
+START_TEST(strict_receiveEventsOnTypeAndSource) {
+    const UA_NodeId obsRoles[2] = {ROLE(ANONYMOUS), ROLE(OBSERVER)};
+    const UA_NodeId secRoles[2] = {ROLE(ANONYMOUS), ROLE(SECURITYADMIN)};
+    UA_Session *obs = createSessionWithRoles(2, obsRoles);
+    UA_Session *sec = createSessionWithRoles(2, secRoles);
+    UA_MonitoredItem *obsItem = createServerEventItem(obs);
+    UA_MonitoredItem *secItem = createServerEventItem(sec);
+
+    /* The ns=1 template grants ReceiveEvents to Observer, not SecurityAdmin */
+    const UA_NodeId source = addObject(1, "Source");
+    const UA_NodeId baseEvent = UA_NS0ID(BASEEVENTTYPE);
+    ck_assert_uint_eq(triggerEvent(baseEvent, source, &obsItem, 1), 1);
+    ck_assert_uint_eq(triggerEvent(baseEvent, source, &secItem, 1), 0);
+
+    /* The SourceNode withdraws the bit */
+    const UA_RolePermission noEvents[] = {{ROLE(OBSERVER), B | R}};
+    ck_assert_uint_eq(UA_Server_setNodeRolePermissions(server, source, 1, noEvents,
+                                                       false, NULL),
+                      UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(triggerEvent(baseEvent, source, &obsItem, 1), 0);
+    ck_assert_uint_eq(UA_Server_removeNodeRolePermissions(server, source, false),
+                      UA_STATUSCODE_GOOD);
+
+    /* The EventType withdraws the bit: the audit trail is for SecurityAdmin */
+    const UA_NodeId serverObject = UA_NS0ID(SERVER);
+    const UA_NodeId auditEvent = UA_NS0ID(AUDITEVENTTYPE);
+    ck_assert_uint_eq(triggerEvent(auditEvent, serverObject, &obsItem, 1), 0);
+    ck_assert_uint_eq(triggerEvent(auditEvent, serverObject, &secItem, 1), 1);
+
+    /* An Event from a SourceNode outside the AddressSpace is not delivered */
+    const UA_NodeId missing = UA_NODEID_STRING(1, "Missing");
+    ck_assert_uint_eq(triggerEvent(baseEvent, missing, &obsItem, 1), 0);
+}
+END_TEST
+
+/* Legacy mode: Nodes without RolePermissions grant ReceiveEvents to all */
+START_TEST(legacy_receiveEvents) {
+    UA_Session *anon = createSessionWithRole(ROLE(ANONYMOUS));
+    UA_MonitoredItem *item = createServerEventItem(anon);
+    const UA_NodeId source = addObject(1, "Source");
+    ck_assert_uint_eq(triggerEvent(UA_NS0ID(BASEEVENTTYPE), source, &item, 1), 1);
+    ck_assert_uint_eq(triggerEvent(UA_NS0ID(AUDITEVENTTYPE), UA_NS0ID(SERVER),
+                                   &item, 1), 1);
+
+    /* An explicit override is enforced */
+    const UA_RolePermission noEvents[] = {{ROLE(ANONYMOUS), B | R}};
+    ck_assert_uint_eq(UA_Server_setNodeRolePermissions(server, source, 1, noEvents,
+                                                       false, NULL),
+                      UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(triggerEvent(UA_NS0ID(BASEEVENTTYPE), source, &item, 1), 0);
+}
+END_TEST
+#endif /* UA_ENABLE_SUBSCRIPTIONS_EVENTS */
+
 static Suite *testSuite_rbacNamespaces(void) {
     Suite *s = suite_create("RBAC namespaces");
 
@@ -947,6 +1226,23 @@ static Suite *testSuite_rbacNamespaces(void) {
     tcase_add_test(tc_adopt, metadata_adoptsNodesetObject);
     tcase_add_test(tc_adopt, metadata_adoptsNodesetObjectWithAccessRestrictions);
     suite_add_tcase(s, tc_adopt);
+
+    TCase *tc_access = tcase_create("Access decisions (strict)");
+    tcase_add_checked_fixture(tc_access, setupStrict, teardown);
+    tcase_add_test(tc_access, strict_writeWithSourceTimestamp);
+    tcase_add_test(tc_access, accessControl_errorHandling);
+#ifdef UA_ENABLE_SUBSCRIPTIONS_EVENTS
+    tcase_add_test(tc_access, strict_receiveEventsOnTypeAndSource);
+#endif
+    suite_add_tcase(s, tc_access);
+
+    TCase *tc_accessLegacy = tcase_create("Access decisions (legacy)");
+    tcase_add_checked_fixture(tc_accessLegacy, setupLegacy, teardown);
+    tcase_add_test(tc_accessLegacy, legacy_writeWithSourceTimestamp);
+#ifdef UA_ENABLE_SUBSCRIPTIONS_EVENTS
+    tcase_add_test(tc_accessLegacy, legacy_receiveEvents);
+#endif
+    suite_add_tcase(s, tc_accessLegacy);
 
     TCase *tc_metaLegacy = tcase_create("NamespaceMetadata (legacy)");
     tcase_add_checked_fixture(tc_metaLegacy, setupLegacy, teardown);

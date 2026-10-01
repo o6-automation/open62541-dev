@@ -398,11 +398,17 @@ UA_ServerConfig_addAllSecureEndpoints(UA_ServerConfig *config);
  * replaced. Called by the functions above that create a default config.
  *
  * Namespace Zero:
- * - Anonymous and ConfigureAdmin: Browse, Read, Call, ReceiveEvents
+ * - Anonymous: Browse, Read, Call, ReceiveEvents
  * - Observer, Operator, Engineer, Supervisor: additionally ReadHistory
+ * - ConfigureAdmin: Browse, Read, Write, WriteAttribute, Call, ReceiveEvents
  * - SecurityAdmin: Browse, Read, Call, ReceiveEvents, ReadRolePermissions
  *
- * No Role may Write, AddNode or DeleteNode in Namespace Zero by default.
+ * Only ConfigureAdmin may write in Namespace Zero, to change the non-security
+ * configuration of the Server (Part 3 Table 2), such as
+ * ServerDiagnostics/EnabledFlag. The writable security configuration of
+ * Namespace Zero (the Properties of the Roles and of RoleType) has its own
+ * RolePermissions. No Role may AddNode or DeleteNode in Namespace Zero by
+ * default.
  *
  * Other namespaces:
  * - Anonymous: Browse

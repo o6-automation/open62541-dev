@@ -298,7 +298,10 @@ typedef struct {
 
 /* Namespace Zero holds the Server Object and the types. It is readable and
  * its public Methods (GetMonitoredItems, ResendData, ConditionRefresh, ...)
- * are callable. Nobody writes to it or adds Nodes by default. */
+ * are callable. Only ConfigureAdmin writes, to change the non-security
+ * configuration of the Server (e.g. ServerDiagnostics/EnabledFlag). The
+ * writable security configuration (the Role Properties, ...) carries its own
+ * RolePermissions. Nobody adds or deletes Nodes by default. */
 static const DefaultRolePermission namespaceZeroPermissions[] = {
     {UA_NS0ID_WELLKNOWNROLE_ANONYMOUS,
      PERMISSIONS_BROWSE_READ | UA_PERMISSIONTYPE_CALL |
@@ -308,7 +311,8 @@ static const DefaultRolePermission namespaceZeroPermissions[] = {
     {UA_NS0ID_WELLKNOWNROLE_ENGINEER, PERMISSIONS_OBSERVE | UA_PERMISSIONTYPE_CALL},
     {UA_NS0ID_WELLKNOWNROLE_SUPERVISOR, PERMISSIONS_OBSERVE | UA_PERMISSIONTYPE_CALL},
     {UA_NS0ID_WELLKNOWNROLE_CONFIGUREADMIN,
-     PERMISSIONS_BROWSE_READ | UA_PERMISSIONTYPE_CALL |
+     PERMISSIONS_BROWSE_READ | UA_PERMISSIONTYPE_WRITE |
+     UA_PERMISSIONTYPE_WRITEATTRIBUTE | UA_PERMISSIONTYPE_CALL |
      UA_PERMISSIONTYPE_RECEIVEEVENTS},
     {UA_NS0ID_WELLKNOWNROLE_SECURITYADMIN,
      PERMISSIONS_BROWSE_READ | UA_PERMISSIONTYPE_CALL |

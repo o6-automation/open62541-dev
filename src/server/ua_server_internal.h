@@ -80,6 +80,15 @@ typedef struct {
  * UA_Server_addRolePermissionConfig always appends, so equal entries can
  * exist; that is harmless.
  *
+ * A modelOnly entry is the built-in protection of a sensitive Node (see
+ * protectNodeRolePermissions). It is enforced only while the namespace of the
+ * Node has a RolePermission model. In legacy mode without a namespace default
+ * the Node is unrestricted like every other Node without RolePermissions.
+ * modelOnly belongs to the RolePermissions part: an entry with only
+ * AccessRestrictions is never modelOnly, the lookup never matches a protection
+ * with an ordinary override of the same list, and the entries derived from a
+ * configuration (UA_Server_updateRolePermissionConfig) have its modelOnly.
+ *
  * The first two fields must stay in this order: the entry is exposed as a
  * UA_RolePermissionSet by UA_Server_getRolePermissionConfig. */
 typedef struct {
@@ -89,6 +98,8 @@ typedef struct {
     UA_AccessRestrictionType accessRestrictions;
     UA_Boolean hasRolePermissions; /* false: rolePermissions is empty and the
                                     * namespace default applies */
+    UA_Boolean modelOnly; /* The RolePermissions are a built-in protection
+                           * (only with hasRolePermissions) */
     UA_Boolean hasAccessRestrictions; /* false: accessRestrictions is unset and
                                        * the namespace default applies */
 } UA_RolePermissionEntry;

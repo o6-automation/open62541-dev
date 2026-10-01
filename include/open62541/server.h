@@ -2220,6 +2220,24 @@ UA_Server_readObjectProperty(UA_Server *server, const UA_NodeId objectId,
  * namespaces). Explicitly configured RolePermissions are enforced with either
  * setting.
  *
+ * Some Nodes of Namespace Zero are too sensitive for the Namespace Zero
+ * default. While Namespace Zero has a default (an explicit one or the
+ * template), they carry built-in RolePermissions that every Session may browse
+ * and read: the PubSub configuration Methods can only be called by
+ * ConfigureAdmin, the Security Key Service Methods by the SecurityKeyServer
+ * Roles, the Condition Methods that change an Alarm (Enable, Disable,
+ * AddComment, Acknowledge, Confirm) by Operator, Engineer and Supervisor, the
+ * audit Events (AuditEventType and its subtypes) are received by SecurityAdmin
+ * only, and the writable Properties of RoleType are not written by
+ * ConfigureAdmin, who otherwise writes the non-security configuration in
+ * Namespace Zero. UA_Server_setNodeRolePermissions replaces the built-in
+ * RolePermissions of such a Node; UA_Server_addRolePermissions and
+ * UA_Server_removeRolePermissions adjust them and keep them conditional on the
+ * Namespace Zero default. A Method that is copied into an instance
+ * (copyMethodsOnInstances) keeps the built-in RolePermissions of its
+ * declaration. The SessionSecurityDiagnosticsArray then lists the other
+ * Sessions only to SecurityAdmin.
+ *
  * Every namespace is published by a NamespaceMetadata Object under
  * Server/Namespaces (Part 5 §6.3.13): the standard Object of Namespace Zero,
  * an Object brought along by a nodeset, or else one that the Server creates

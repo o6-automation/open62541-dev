@@ -861,9 +861,11 @@ copyChildNode(UA_Server *server, UA_Session *session,
 #ifdef UA_ENABLE_RBAC
     /* The new instance child starts without explicit RolePermissions (falls
      * back to the namespace defaults) but keeps the AccessRestrictions of the
-     * InstanceDeclaration (set up before the node is inserted). Keeping the
-     * copied permissionIndex would reference the shared entry without
-     * adjusting its refCount. */
+     * InstanceDeclaration (set up before the node is inserted). Only a copied
+     * Method keeps the built-in protection of its declaration as well.
+     * Otherwise copyMethodsOnInstances would open e.g. the Acknowledge Method
+     * of a Condition to every Session. Keeping the copied permissionIndex
+     * would reference the shared entry without adjusting its refCount. */
     UA_PermissionIndex declPermissionIndex = node->head.permissionIndex;
     node->head.permissionIndex = UA_PERMISSION_INDEX_INVALID;
 #endif
@@ -930,10 +932,12 @@ copyChildNode(UA_Server *server, UA_Session *session,
     UA_Node_deleteReferencesSubset(node, &reftypes_skipped);
 
 #ifdef UA_ENABLE_RBAC
-    /* Reference the shared entry with only the AccessRestrictions of the
-     * InstanceDeclaration (if it has any). Released by the node deletion. */
-    res = retainInstanceAccessRestrictions(server, declPermissionIndex,
-                                           &node->head.permissionIndex);
+    /* Reference the shared entry with the AccessRestrictions of the
+     * InstanceDeclaration (if it has any) and, for a Method, its built-in
+     * protection. Released by the node deletion. */
+    res = retainCopiedNodePermissionIndex(server, node->head.nodeClass,
+                                          declPermissionIndex,
+                                          &node->head.permissionIndex);
     if(res != UA_STATUSCODE_GOOD) {
         UA_NODESTORE_DELETE(server, node);
         return res;

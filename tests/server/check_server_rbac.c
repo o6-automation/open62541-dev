@@ -4527,6 +4527,60 @@ START_TEST(accessRestrictions_updateConfigReachesDerivedEntries) {
 }
 END_TEST
 
+/* modelOnly belongs to the RolePermissions part. A built-in protection with
+ * AccessRestrictions is not derived from an ordinary configuration with the
+ * same list: it neither blocks the update of the configuration nor follows
+ * it. */
+START_TEST(accessRestrictions_updateConfigSkipsProtection) {
+    const UA_AccessRestrictionType enc = UA_ACCESSRESTRICTIONTYPE_ENCRYPTIONREQUIRED;
+    UA_NodeId role;
+    ck_assert_uint_eq(addTestRole("ArProtRole", 1, 51111, &role), UA_STATUSCODE_GOOD);
+    UA_PermissionType permsA = UA_PERMISSIONTYPE_BROWSE | UA_PERMISSIONTYPE_READ;
+    UA_RolePermission rpA = {role, permsA};
+    UA_RolePermission rpB = {role, UA_PERMISSIONTYPE_BROWSE};
+    UA_PermissionIndex config;
+    ck_assert_uint_eq(UA_Server_addRolePermissionConfig(server, 1, &rpA, &config),
+                      UA_STATUSCODE_GOOD);
+
+    /* A protected node with AccessRestrictions and the same list */
+    UA_NodeId z = addArStorageVariable("ArProtZ");
+    ck_assert_uint_eq(UA_Server_setNodeAccessRestrictions(server, z, enc),
+                      UA_STATUSCODE_GOOD);
+    lockServer(server);
+    UA_StatusCode res = protectNodeRolePermissions(server, &z, 1, &rpA);
+    unlockServer(server);
+    ck_assert_uint_eq(res, UA_STATUSCODE_GOOD);
+    UA_PermissionIndex prot = nodePermIdx(z);
+    ck_assert(server->rolePermissions[prot].modelOnly);
+    ck_assert_uint_eq(entryRefCount(prot), 1);
+
+    /* The protection in use does not block the update and keeps its list */
+    ck_assert_uint_eq(UA_Server_updateRolePermissionConfig(server, config, 1, &rpB),
+                      UA_STATUSCODE_GOOD);
+    ck_assert(entryHasRolePermission(config, &role, UA_PERMISSIONTYPE_BROWSE));
+    ck_assert(entryHasRolePermission(prot, &role, permsA));
+    ck_assert(server->rolePermissions[prot].modelOnly);
+    ck_assert_uint_eq(server->rolePermissions[prot].accessRestrictions, enc);
+    ck_assert_uint_eq(nodePermIdx(z), prot);
+
+    /* A node with AccessRestrictions that selects the configuration gets an
+     * ordinary (derived) entry, not the protection */
+    UA_NodeId y = addArStorageVariable("ArProtY");
+    ck_assert_uint_eq(UA_Server_setNodeAccessRestrictions(server, y, enc),
+                      UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(UA_Server_updateRolePermissionConfig(server, config, 1, &rpA),
+                      UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(UA_Server_setNodePermissionIndex(server, y, config, false),
+                      UA_STATUSCODE_GOOD);
+    UA_PermissionIndex derived = nodePermIdx(y);
+    ck_assert_uint_ne(derived, prot);
+    ck_assert(!server->rolePermissions[derived].modelOnly);
+    ck_assert_uint_eq(server->rolePermissions[derived].accessRestrictions, enc);
+
+    UA_NodeId_clear(&role);
+}
+END_TEST
+
 /* Out-of-range permissionIndex (a Nodestore problem) */
 static void
 corruptPermissionIndex(const UA_NodeId id) {
@@ -5275,6 +5329,7 @@ static Suite *testSuite_AccessRestrictionStorage(void) {
     tcase_add_test(tc, accessRestrictions_recursiveKeepsChildAr);
     tcase_add_test(tc, accessRestrictions_setPermissionIndexRecursive);
     tcase_add_test(tc, accessRestrictions_updateConfigReachesDerivedEntries);
+    tcase_add_test(tc, accessRestrictions_updateConfigSkipsProtection);
     tcase_add_test(tc, accessRestrictions_repairInvalidIndex);
     suite_add_tcase(s, tc);
 
