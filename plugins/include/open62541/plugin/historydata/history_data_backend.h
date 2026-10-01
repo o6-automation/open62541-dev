@@ -63,6 +63,8 @@ struct UA_HistoryDataBackend {
      * backend is the HistoryDataBackend whose storage is to be queried.
      * start is the start time of the HistoryRead request.
      * end is the end time of the HistoryRead request.
+     * An unspecified start or end time (DateTime.MinValue, 0 in the request)
+     * is passed as LLONG_MIN.
      * nodeId is the node id of the node for which historical data is requested.
      * maxSizePerResponse is the maximum number of items per response the server can provide.
      * numValuesPerNode is the maximum number of items per response the client wants to receive.
