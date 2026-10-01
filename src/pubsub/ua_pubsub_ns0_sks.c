@@ -458,6 +458,15 @@ forceKeyRotationAction(UA_Server *server, const UA_NodeId *sessionId,
     return UA_STATUSCODE_GOOD;
 }
 
+UA_UInt32
+getSecurityKeyServiceMethodId(UA_MethodCallback callback) {
+    if(callback == getSecurityKeysAction)
+        return UA_NS0ID_PUBLISHSUBSCRIBE_GETSECURITYKEYS;
+    if(callback == setSecurityKeysAction)
+        return UA_NS0ID_PUBLISHSUBSCRIBE_SETSECURITYKEYS;
+    return 0;
+}
+
 UA_StatusCode
 initPubSubNS0_SKS(UA_Server *server) {
     UA_LOCK_ASSERT(&server->serviceMutex);

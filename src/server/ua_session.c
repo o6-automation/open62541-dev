@@ -419,10 +419,16 @@ UA_Server_deleteSessionAttribute(UA_Server *server, const UA_NodeId *sessionId,
         }
         /* Return to the automatic assignment: re-evaluate the identity mapping
          * rules right away. A Session that carries no identity snapshot (not
-         * activated, or RBAC was not consulted) ends up without Roles. */
+         * activated, or RBAC was not consulted) ends up without Roles. A
+         * Session that must change the password gets the Anonymous Role, as
+         * at ActivateSession, so that ChangePassword stays reachable. */
         session->rolesAssignedManually = false;
         UA_StatusCode res;
-        if(session->hasIdentityContext && !session->passwordChangeRequired) {
+        if(session->hasIdentityContext && session->passwordChangeRequired) {
+            UA_NodeId anonymous =
+                UA_NODEID_NUMERIC(0, UA_NS0ID_WELLKNOWNROLE_ANONYMOUS);
+            res = UA_Session_setRoles(server, session, &anonymous, 1);
+        } else if(session->hasIdentityContext) {
             size_t rolesSize = 0;
             UA_NodeId *roleIds = NULL;
             res = UA_Server_evaluateSessionRoles(server, &session->identityContext,

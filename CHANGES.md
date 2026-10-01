@@ -128,26 +128,17 @@ NodeIds in Namespace Zero.
 New API: `UA_Server_removeNamespaceDefaultRolePermissions`,
 `UA_Server_getNamespaceDefaultAccessRestrictions`,
 `UA_Server_removeNamespaceDefaultAccessRestrictions`,
-`UA_Server_removeNodeAccessRestrictions`,
-`UA_ServerConfig_setDefaultNamespacePermissions` and
-`UA_CertificateUtils_getApplicationUri`. The JSON configuration accepts
-`namespaceZeroDefaultRolePermissions` and `namespaceDefaultRolePermissions` in
-the `rbac` object.
+`UA_Server_removeNodeAccessRestrictions` and
+`UA_ServerConfig_setDefaultNamespacePermissions`.
 
-Further changes of the RBAC behavior:
+The `rbac` object of the JSON server configuration has the new keys
+`namespaceZeroDefaultRolePermissions` and `namespaceDefaultRolePermissions`.
 
-- The default AccessControl plugin derives its decisions from the RBAC
-  permission bits only. Write grants CurrentWrite, StatusWrite and
-  TimestampWrite; ReceiveEvents is required on the EventType and on the
-  SourceNode. A SourceNode that is not in the AddressSpace is evaluated with
-  the defaults of its namespace.
-- Endpoint filters of Roles are evaluated against the configured ServerUrl of
-  the listener that accepted the SecureChannel, not the client-supplied URL.
-- The Application identity criterion uses the ApplicationUri in the client
-  Certificate, not the one declared in CreateSession. X509Subject criteria are
-  validated and fail closed.
-- Audit events no longer contain passwords, access tokens or PubSub security
-  keys.
+The default AccessControl plugin derives its decisions from the RBAC
+permission bits only. Write grants CurrentWrite, StatusWrite and
+TimestampWrite; ReceiveEvents is required on the EventType and on the
+SourceNode. A SourceNode that is not in the AddressSpace is evaluated with
+the defaults of its namespace.
 
 Migration: set `allPermissionsForAnonymous = true` (in C before
 `UA_Server_newWithConfig`, or `"allPermissionsForAnonymous": true` in the

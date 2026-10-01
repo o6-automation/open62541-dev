@@ -104,9 +104,10 @@ UA_CertificateUtils_getSubjectName(UA_ByteString *certificate,
  *
  * The values are UTF-8. Every Table 10 attribute of the name has to be
  * included (§4.4.3). If one of them is empty, contains a control character or
- * the quote that delimits the value, or uses an ASN.1 string type that cannot
- * be converted, the string for that name (subject or issuer) is empty and
- * matches no criterion. Both output strings are newly allocated. */
+ * the quote that delimits the value, uses an ASN.1 string type that cannot be
+ * converted or is malformed for its string type (e.g. invalid UTF-8), the
+ * string for that name (subject or issuer) is empty and matches no criterion.
+ * Both output strings are newly allocated. */
 UA_EXPORT UA_StatusCode
 UA_CertificateUtils_getRoleSubjectCriteria(const UA_ByteString *certificate,
                                            UA_String *subjectCriteria,

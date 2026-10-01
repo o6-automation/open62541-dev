@@ -23,6 +23,92 @@ equalBrowseName(UA_String *bn, char *n) {
     return UA_String_equal(bn, &name);
 }
 
+#ifdef UA_ENABLE_RBAC
+static UA_Boolean
+hasSecurityAdminRole(const UA_Session *session) {
+    const UA_NodeId securityAdmin =
+        UA_NODEID_NUMERIC(0, UA_NS0ID_WELLKNOWNROLE_SECURITYADMIN);
+    for(size_t i = 0; i < session->rolesSize; i++) {
+        if(UA_NodeId_equal(&session->roles[i], &securityAdmin))
+            return true;
+    }
+    return false;
+}
+
+/* The per-Session diagnostics Nodes live in namespace one, where the strict
+ * template lets Anonymous only browse. They get built-in RolePermissions so
+ * that every Session can read them (enforced while the namespace has a model).
+ * The value callbacks restrict the security-related values to the owning
+ * Session, the local admin and SecurityAdmin (Part 5 §6.3.5). */
+static void
+protectSessionDiagnosticsNode(UA_Server *server, const UA_NodeId *nodeId) {
+    const UA_RolePermission entries[2] = {
+        {UA_NODEID_NUMERIC(0, UA_NS0ID_WELLKNOWNROLE_ANONYMOUS),
+         UA_PERMISSIONTYPE_BROWSE | UA_PERMISSIONTYPE_READ},
+        {UA_NODEID_NUMERIC(0, UA_NS0ID_WELLKNOWNROLE_SECURITYADMIN),
+         UA_PERMISSIONTYPE_BROWSE | UA_PERMISSIONTYPE_READ |
+         UA_PERMISSIONTYPE_READROLEPERMISSIONS}
+    };
+    UA_StatusCode res = protectNodeRolePermissions(server, nodeId, 2, entries);
+    if(res != UA_STATUSCODE_GOOD)
+        UA_LOG_WARNING(server->config.logging, UA_LOGCATEGORY_SERVER,
+                       "Could not set the RolePermissions of the diagnostics "
+                       "Node %N (%s)", *nodeId, UA_StatusCode_name(res));
+}
+#endif
+
+/* The Session that owns a Node of a per-Session diagnostics object. The
+ * object has the NodeId of the Session. Its Variables hang below it through
+ * HasComponent and HasProperty References. The values are those of the owning
+ * Session, not of the reading Session. */
+static void *
+copyFirstTarget(void *context, UA_ReferenceTarget *t) {
+    UA_NodeId id = UA_NodePointer_toNodeId(t->targetId);
+    if(UA_NodeId_copy(&id, (UA_NodeId*)context) != UA_STATUSCODE_GOOD)
+        return NULL;
+    return context;
+}
+
+static UA_Session *
+getDiagnosticsOwnerSession(UA_Server *server, const UA_NodeId *nodeId) {
+    UA_LOCK_ASSERT(&server->serviceMutex);
+    UA_NodeId current;
+    if(UA_NodeId_copy(nodeId, &current) != UA_STATUSCODE_GOOD)
+        return NULL;
+    UA_Session *owner = NULL;
+    for(size_t depth = 0; depth < 4; depth++) {
+        owner = getSessionById(server, &current);
+        if(owner)
+            break;
+
+        /* Walk up to the parent */
+        const UA_Node *node = UA_NODESTORE_GET(server, &current);
+        if(!node)
+            break;
+        UA_NodeId parent = UA_NODEID_NULL;
+        void *found = NULL;
+        for(size_t i = 0; i < node->head.referencesSize && !found; i++) {
+            UA_NodeReferenceKind *rk = &node->head.references[i];
+            if(!rk->isInverse ||
+               (rk->referenceTypeIndex != UA_REFERENCETYPEINDEX_HASCOMPONENT &&
+                rk->referenceTypeIndex != UA_REFERENCETYPEINDEX_HASPROPERTY))
+                continue;
+            found = UA_NodeReferenceKind_iterate(rk, copyFirstTarget, &parent);
+        }
+        UA_NODESTORE_RELEASE(server, node);
+        if(!found)
+            break;
+        UA_NodeId_clear(&current);
+        current = parent;
+    }
+    UA_NodeId_clear(&current);
+
+    /* The admin Session has no diagnostics object */
+    if(owner == &server->adminSession)
+        owner = NULL;
+    return owner;
+}
+
 #ifdef UA_ENABLE_SUBSCRIPTIONS
 
 static const UA_NodeId subDiagArray = {0, UA_NODEIDTYPE_NUMERIC, {UA_NS0ID_SERVER_SERVERDIAGNOSTICS_SUBSCRIPTIONDIAGNOSTICSARRAY}};
@@ -244,6 +330,9 @@ createSubscriptionObject(UA_Server *server, UA_Session *session,
     for(size_t i = 0; i < childrenSize; i++) {
         setVariableNode_callbackValueSource(server, children[i].nodeId, subDiagSource);
         setNodeContext(server, children[i].nodeId, sub);
+#ifdef UA_ENABLE_RBAC
+        protectSessionDiagnosticsNode(server, &children[i].nodeId);
+#endif
     }
 
     UA_Array_delete(children, childrenSize, &UA_TYPES[UA_TYPES_EXPANDEDNODEID]);
@@ -371,6 +460,27 @@ setSessionSecurityDiagnostics(UA_Session *session,
     }
 }
 
+/* The security diagnostics of a Session "should not be made accessible to all
+ * users, but only to authorised users" (Part 5 §6.3.4, §6.3.5). While Namespace
+ * Zero has a RolePermission model, a Session sees the entries of other
+ * Sessions only as the local admin or with the SecurityAdmin Role. Without RBAC
+ * or in legacy mode all entries are visible. */
+static UA_Boolean
+showSessionSecurityDiagnostics(UA_Server *server, const UA_Session *reader,
+                               const UA_Session *session) {
+#ifdef UA_ENABLE_RBAC
+    if(reader == session || reader == &server->adminSession)
+        return true;
+    size_t entriesSize = 0;
+    const UA_RolePermission *entries = NULL;
+    if(!getNamespaceRolePermissionModel(server, 0, &entriesSize, &entries))
+        return true;
+    return (reader && hasSecurityAdminRole(reader));
+#else
+    return true;
+#endif
+}
+
 static UA_StatusCode
 readSessionDiagnostics(UA_Server *server,
                        const UA_NodeId *sessionId, void *sessionContext,
@@ -379,12 +489,13 @@ readSessionDiagnostics(UA_Server *server,
                        const UA_NumericRange *range, UA_DataValue *value) {
     lockServer(server);
 
-    /* Get the Session */
-    UA_Session *session = getSessionById(server, sessionId);
+    /* Get the Session that owns the diagnostics object */
+    UA_Session *session = getDiagnosticsOwnerSession(server, nodeId);
     if(!session) {
         unlockServer(server);
         return UA_STATUSCODE_BADINTERNALERROR;
     }
+    const UA_Session *reader = getSessionById(server, sessionId);
 
     /* Read the BrowseName */
     UA_QualifiedName bn;
@@ -451,6 +562,14 @@ readSessionDiagnostics(UA_Server *server,
         }
     }
 
+    /* Only authorised users see the security diagnostics of other Sessions */
+    if(securityDiagnostics &&
+       !showSessionSecurityDiagnostics(server, reader, session)) {
+        res = UA_STATUSCODE_BADUSERACCESSDENIED;
+        UA_SessionSecurityDiagnosticsDataType_clear(&data.ssddt);
+        goto cleanup;
+    }
+
     if(!isArray) {
         res = UA_Variant_setScalarCopy(&value->value, content, type);
     } else {
@@ -470,35 +589,6 @@ readSessionDiagnostics(UA_Server *server,
     UA_QualifiedName_clear(&bn);
     unlockServer(server);
     return res;
-}
-
-/* The security diagnostics of a Session "should not be made accessible to all
- * users, but only to authorised users" (Part 5 §6.3.4, §6.3.5). While Namespace
- * Zero has a RolePermission model, a Session sees the entries of other
- * Sessions only as the local admin or with the SecurityAdmin Role. Without RBAC
- * or in legacy mode all entries are visible. */
-static UA_Boolean
-showSessionSecurityDiagnostics(UA_Server *server, const UA_Session *reader,
-                               const UA_Session *session) {
-#ifdef UA_ENABLE_RBAC
-    if(reader == session || reader == &server->adminSession)
-        return true;
-    size_t entriesSize = 0;
-    const UA_RolePermission *entries = NULL;
-    if(!getNamespaceRolePermissionModel(server, 0, &entriesSize, &entries))
-        return true;
-    if(!reader)
-        return false;
-    const UA_NodeId securityAdmin =
-        UA_NODEID_NUMERIC(0, UA_NS0ID_WELLKNOWNROLE_SECURITYADMIN);
-    for(size_t i = 0; i < reader->rolesSize; i++) {
-        if(UA_NodeId_equal(&reader->roles[i], &securityAdmin))
-            return true;
-    }
-    return false;
-#else
-    return true;
-#endif
 }
 
 UA_StatusCode
@@ -544,6 +634,65 @@ readSessionSecurityDiagnostics(UA_Server *server,
     return UA_STATUSCODE_GOOD;
 }
 
+#ifdef UA_ENABLE_RBAC
+/* CurrentRoleIds lists the Roles granted to the Session. Since this is
+ * security-related, other Sessions than the owning Session see it only as the
+ * local admin or with the SecurityAdmin Role (Part 5 §6.3.5). */
+static UA_StatusCode
+readSessionCurrentRoleIds(UA_Server *server,
+                          const UA_NodeId *sessionId, void *sessionContext,
+                          const UA_NodeId *nodeId, void *nodeContext,
+                          UA_Boolean sourceTimestamp,
+                          const UA_NumericRange *range, UA_DataValue *value) {
+    lockServer(server);
+    UA_Session *owner = getDiagnosticsOwnerSession(server, nodeId);
+    if(!owner) {
+        unlockServer(server);
+        return UA_STATUSCODE_BADINTERNALERROR;
+    }
+    const UA_Session *reader = getSessionById(server, sessionId);
+    if(reader != owner && reader != &server->adminSession &&
+       (!reader || !hasSecurityAdminRole(reader))) {
+        unlockServer(server);
+        return UA_STATUSCODE_BADUSERACCESSDENIED;
+    }
+    UA_StatusCode res =
+        UA_Variant_setArrayCopy(&value->value, owner->roles, owner->rolesSize,
+                                &UA_TYPES[UA_TYPES_NODEID]);
+    if(res == UA_STATUSCODE_GOOD)
+        value->hasValue = true;
+    unlockServer(server);
+    return res;
+}
+
+/* Add the optional CurrentRoleIds Property to the diagnostics object */
+static UA_StatusCode
+addSessionCurrentRoleIds(UA_Server *server, UA_Session *session) {
+    UA_VariableAttributes attr = UA_VariableAttributes_default;
+    attr.displayName = UA_LOCALIZEDTEXT("", "CurrentRoleIds");
+    attr.dataType = UA_TYPES[UA_TYPES_NODEID].typeId;
+    attr.valueRank = UA_VALUERANK_ONE_DIMENSION;
+    UA_UInt32 arrayDimensions = 0;
+    attr.arrayDimensions = &arrayDimensions;
+    attr.arrayDimensionsSize = 1;
+    attr.accessLevel = UA_ACCESSLEVELMASK_READ;
+    UA_NodeId propertyId;
+    UA_StatusCode res =
+        addNode(server, UA_NODECLASS_VARIABLE, UA_NODEID_NUMERIC(1, 0),
+                session->sessionId, UA_NS0ID(HASPROPERTY),
+                UA_QUALIFIEDNAME(0, "CurrentRoleIds"), UA_NS0ID(PROPERTYTYPE),
+                &attr, &UA_TYPES[UA_TYPES_VARIABLEATTRIBUTES], NULL, &propertyId);
+    if(res != UA_STATUSCODE_GOOD)
+        return res;
+    UA_CallbackValueSource src = {readSessionCurrentRoleIds, NULL};
+    res = setVariableNode_callbackValueSource(server, propertyId, src);
+    if(res == UA_STATUSCODE_GOOD)
+        protectSessionDiagnosticsNode(server, &propertyId);
+    UA_NodeId_clear(&propertyId);
+    return res;
+}
+#endif
+
 void
 createSessionObject(UA_Server *server, UA_Session *session) {
     UA_ExpandedNodeId *children = NULL;
@@ -581,6 +730,15 @@ createSessionObject(UA_Server *server, UA_Session *session) {
     for(size_t i = 0; i < childrenSize; i++) {
         setVariableNode_callbackValueSource(server, children[i].nodeId, sessionDiagSource);
     }
+
+#ifdef UA_ENABLE_RBAC
+    /* Every Session can read the diagnostics object. The value callbacks
+     * restrict the security-related values. */
+    protectSessionDiagnosticsNode(server, &session->sessionId);
+    for(size_t i = 0; i < childrenSize; i++)
+        protectSessionDiagnosticsNode(server, &children[i].nodeId);
+    res = addSessionCurrentRoleIds(server, session);
+#endif
 
  cleanup:
     if(res != UA_STATUSCODE_GOOD) {

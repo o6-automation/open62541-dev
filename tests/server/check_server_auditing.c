@@ -317,6 +317,9 @@ START_TEST(ToggleWriteUpdateFlag) {
 static UA_Variant capturedToken;   /* /UserIdentityToken of ActivateSession */
 static UA_Variant capturedInputs;  /* /InputArguments of a Method call */
 static UA_Variant capturedOutputs; /* /OutputArguments of a Method call */
+#ifdef UA_ENABLE_RBAC
+static UA_Variant capturedRoleIds; /* /CurrentRoleIds of ActivateSession */
+#endif
 
 static void
 capturePayloadValue(const UA_KeyValueMap *payload, const char *key,
@@ -334,6 +337,9 @@ secretsAuditCb(UA_Server *s, UA_ApplicationNotificationType type,
     (void)s;
     if(type == UA_APPLICATIONNOTIFICATIONTYPE_AUDIT_SECURITY_SESSION_ACTIVATE) {
         capturePayloadValue(&payload, "/UserIdentityToken", &capturedToken);
+#ifdef UA_ENABLE_RBAC
+        capturePayloadValue(&payload, "/CurrentRoleIds", &capturedRoleIds);
+#endif
     } else if(type == UA_APPLICATIONNOTIFICATIONTYPE_AUDIT_UPDATE_METHOD) {
         capturePayloadValue(&payload, "/InputArguments", &capturedInputs);
         capturePayloadValue(&payload, "/OutputArguments", &capturedOutputs);
@@ -351,6 +357,9 @@ static void setupSecrets(void) {
     UA_Variant_init(&capturedToken);
     UA_Variant_init(&capturedInputs);
     UA_Variant_init(&capturedOutputs);
+#ifdef UA_ENABLE_RBAC
+    UA_Variant_init(&capturedRoleIds);
+#endif
     ck_assert_uint_eq(UA_Server_run_startup(server), UA_STATUSCODE_GOOD);
 }
 
@@ -361,6 +370,9 @@ static void teardownSecrets(void) {
     UA_Variant_clear(&capturedToken);
     UA_Variant_clear(&capturedInputs);
     UA_Variant_clear(&capturedOutputs);
+#ifdef UA_ENABLE_RBAC
+    UA_Variant_clear(&capturedRoleIds);
+#endif
 }
 
 /* Emit the AuditActivateSessionEvent for an ActivateSession request with the
@@ -432,6 +444,45 @@ START_TEST(ActivateSessionAudit_omitsSecrets) {
     ck_assert(UA_ByteString_equal(&publishedX509->certificateData,
                                   &x509.certificateData));
 } END_TEST
+
+#ifdef UA_ENABLE_RBAC
+/* Part 5 §6.4.10: CurrentRoleIds lists the Roles granted to the activated
+ * Session. A failed activation grants no Roles. */
+START_TEST(ActivateSessionAudit_currentRoleIds) {
+    UA_SecureChannel channel;
+    UA_SecureChannel_init(&channel);
+    channel.securityToken.channelId = 42;
+    UA_ActivateSessionRequest req;
+    UA_ActivateSessionRequest_init(&req);
+    UA_ActivateSessionResponse resp;
+    UA_ActivateSessionResponse_init(&resp);
+
+    UA_NodeId roles[2] = {
+        UA_NODEID_NUMERIC(0, UA_NS0ID_WELLKNOWNROLE_ANONYMOUS),
+        UA_NODEID_NUMERIC(0, UA_NS0ID_WELLKNOWNROLE_OPERATOR)};
+    UA_Session session;
+    UA_Session_init(&session);
+    session.sessionId = UA_NODEID_NUMERIC(1, 4711);
+    session.roles = roles;
+    session.rolesSize = 2;
+
+    lockServer(server);
+    auditActivateSessionEvent(server, &channel, &session, &req, &resp);
+    unlockServer(server);
+    ck_assert(UA_Variant_hasArrayType(&capturedRoleIds, &UA_TYPES[UA_TYPES_NODEID]));
+    ck_assert_uint_eq(capturedRoleIds.arrayLength, 2);
+    const UA_NodeId *published = (const UA_NodeId*)capturedRoleIds.data;
+    ck_assert(UA_NodeId_equal(&published[0], &roles[0]));
+    ck_assert(UA_NodeId_equal(&published[1], &roles[1]));
+
+    resp.responseHeader.serviceResult = UA_STATUSCODE_BADIDENTITYTOKENREJECTED;
+    lockServer(server);
+    auditActivateSessionEvent(server, &channel, NULL, &req, &resp);
+    unlockServer(server);
+    ck_assert(UA_Variant_hasArrayType(&capturedRoleIds, &UA_TYPES[UA_TYPES_NODEID]));
+    ck_assert_uint_eq(capturedRoleIds.arrayLength, 0);
+} END_TEST
+#endif
 
 #if defined(UA_GENERATED_NAMESPACE_ZERO_FULL) && defined(UA_ENABLE_METHODCALLS)
 static UA_ByteString receivedPrivateKey;
@@ -637,6 +688,9 @@ static Suite* testSuite(void) {
     TCase *tc_secrets = tcase_create("secrets");
     tcase_add_checked_fixture(tc_secrets, setupSecrets, teardownSecrets);
     tcase_add_test(tc_secrets, ActivateSessionAudit_omitsSecrets);
+#ifdef UA_ENABLE_RBAC
+    tcase_add_test(tc_secrets, ActivateSessionAudit_currentRoleIds);
+#endif
 #if defined(UA_GENERATED_NAMESPACE_ZERO_FULL) && defined(UA_ENABLE_METHODCALLS)
     tcase_add_test(tc_secrets, MethodAudit_omitsPrivateKey);
 #ifdef UA_ENABLE_PUBSUB

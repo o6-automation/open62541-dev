@@ -893,6 +893,371 @@ START_TEST(rbacAttributes_notWritable) {
     ck_assert_uint_eq(UA_Server_write(server, &wv), UA_STATUSCODE_BADNOTWRITABLE);
 } END_TEST
 
+/*************************************/
+/* Recursive RolePermissions changes */
+/*************************************/
+
+static UA_RolePermission
+nodeRolePermission(const UA_NodeId nodeId, const UA_NodeId roleId) {
+    UA_RolePermission result = {roleId, 0};
+    size_t size = 0;
+    UA_RolePermission *entries = NULL;
+    ck_assert_uint_eq(UA_Server_getNodeRolePermissions(server, nodeId, &size,
+                                                       &entries),
+                      UA_STATUSCODE_GOOD);
+    for(size_t i = 0; i < size; i++) {
+        if(UA_NodeId_equal(&entries[i].roleId, &roleId))
+            result.permissions = entries[i].permissions;
+        UA_NodeId_clear(&entries[i].roleId);
+    }
+    UA_free(entries);
+    return result;
+}
+
+static void
+assertOwnAccessRestrictions(const UA_NodeId *nodes,
+                            const UA_AccessRestrictionType *ar, size_t size) {
+    for(size_t i = 0; i < size; i++) {
+        UA_AccessRestrictionType out = UA_ACCESSRESTRICTIONTYPE_NONE;
+        ck_assert_uint_eq(UA_Server_readAccessRestrictions(server, nodes[i], &out),
+                          UA_STATUSCODE_GOOD);
+        ck_assert_uint_eq(out, ar[i]);
+    }
+}
+
+/* The recursive variants follow the hierarchical References. A cycle of
+ * Organizes References terminates and every Node in it is updated. Every Node
+ * keeps its own AccessRestrictions (held in its shared entry next to the
+ * RolePermissions). */
+START_TEST(recursivePermissions_hierarchyCycle) {
+    UA_NodeId a = addObject("CycleA", UA_NS0ID(OBJECTSFOLDER), UA_NS0ID(ORGANIZES), 0);
+    UA_NodeId b = addObject("CycleB", a, UA_NS0ID(ORGANIZES), 0);
+    UA_NodeId c = addObject("CycleC", b, UA_NS0ID(ORGANIZES), 0);
+    ck_assert_uint_eq(UA_Server_addReference(server, c, UA_NS0ID(ORGANIZES),
+                                             UA_EXPANDEDNODEID_NODEID(a), true),
+                      UA_STATUSCODE_GOOD);
+    const UA_NodeId nodes[3] = {a, b, c};
+    const UA_NodeId observer = ROLE(OBSERVER);
+    const UA_NodeId operatorRole = ROLE(OPERATOR);
+
+    /* Different AccessRestrictions on every Node */
+    const UA_AccessRestrictionType ar[3] = {
+        UA_ACCESSRESTRICTIONTYPE_SIGNINGREQUIRED,
+        UA_ACCESSRESTRICTIONTYPE_ENCRYPTIONREQUIRED,
+        UA_ACCESSRESTRICTIONTYPE_SESSIONREQUIRED |
+        UA_ACCESSRESTRICTIONTYPE_APPLYRESTRICTIONSTOBROWSE};
+    for(size_t i = 0; i < 3; i++)
+        ck_assert_uint_eq(UA_Server_setNodeAccessRestrictions(server, nodes[i], ar[i]),
+                          UA_STATUSCODE_GOOD);
+
+    UA_RolePermission rp = {observer, UA_PERMISSIONTYPE_BROWSE};
+    ck_assert_uint_eq(UA_Server_setNodeRolePermissions(server, b, 1, &rp,
+                                                       true, NULL),
+                      UA_STATUSCODE_GOOD);
+    for(size_t i = 0; i < 3; i++)
+        ck_assert_uint_eq(nodeRolePermission(nodes[i], observer).permissions,
+                          UA_PERMISSIONTYPE_BROWSE);
+    assertOwnAccessRestrictions(nodes, ar, 3);
+
+    ck_assert_uint_eq(UA_Server_addRolePermissions(server, b, operatorRole,
+                                                   UA_PERMISSIONTYPE_READ,
+                                                   false, true),
+                      UA_STATUSCODE_GOOD);
+    for(size_t i = 0; i < 3; i++)
+        ck_assert_uint_eq(nodeRolePermission(nodes[i], operatorRole).permissions,
+                          UA_PERMISSIONTYPE_READ);
+    assertOwnAccessRestrictions(nodes, ar, 3);
+
+    ck_assert_uint_eq(UA_Server_removeRolePermissions(server, b, operatorRole,
+                                                      UA_PERMISSIONTYPE_READ, true),
+                      UA_STATUSCODE_GOOD);
+    for(size_t i = 0; i < 3; i++)
+        ck_assert_uint_eq(nodeRolePermission(nodes[i], operatorRole).permissions, 0);
+    assertOwnAccessRestrictions(nodes, ar, 3);
+
+    /* An empty set removes the overrides */
+    ck_assert_uint_eq(UA_Server_setNodeRolePermissions(server, b, 0, NULL,
+                                                       true, NULL),
+                      UA_STATUSCODE_GOOD);
+    for(size_t i = 0; i < 3; i++)
+        ck_assert_uint_eq(nodeRolePermission(nodes[i], observer).permissions, 0);
+    assertOwnAccessRestrictions(nodes, ar, 3);
+
+    ck_assert_uint_eq(UA_Server_setNodeRolePermissions(server, b, 1, &rp,
+                                                       true, NULL),
+                      UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(UA_Server_removeNodeRolePermissions(server, b, true),
+                      UA_STATUSCODE_GOOD);
+    for(size_t i = 0; i < 3; i++)
+        ck_assert_uint_eq(nodeRolePermission(nodes[i], observer).permissions, 0);
+    assertOwnAccessRestrictions(nodes, ar, 3);
+} END_TEST
+
+/*****************/
+/* Session Roles */
+/*****************/
+
+/* Deleting the "roles" attribute returns the Session to the automatic
+ * assignment. A Session that must change its password gets the Anonymous Role
+ * as at ActivateSession, not an empty set: ChangePassword stays reachable. */
+START_TEST(sessionRoles_deleteKeepsAnonymousForPasswordChange) {
+    UA_Session *session = createSessionWithRole(UA_NS0ID_WELLKNOWNROLE_CONFIGUREADMIN);
+    lockServer(server);
+    session->hasIdentityContext = true;
+    session->passwordChangeRequired = true;
+    session->identityContext.userName = UA_STRING_ALLOC("user");
+    unlockServer(server);
+
+    ck_assert_uint_eq(UA_Server_deleteSessionAttribute(server, &session->sessionId,
+                                                       UA_QUALIFIEDNAME(0, "roles")),
+                      UA_STATUSCODE_GOOD);
+    const UA_NodeId anonymous =
+        UA_NODEID_NUMERIC(0, UA_NS0ID_WELLKNOWNROLE_ANONYMOUS);
+    ck_assert_uint_eq(session->rolesSize, 1);
+    ck_assert(UA_NodeId_equal(&session->roles[0], &anonymous));
+    ck_assert(!session->rolesAssignedManually);
+} END_TEST
+
+/*******************/
+/* ActivateSession */
+/*******************/
+
+#ifdef UA_ENABLE_SUBSCRIPTIONS
+/* An open SecureChannel with SecurityPolicy None, accepted by the listener with
+ * the given URL. It is not connected to a transport. */
+static UA_SecureChannel *
+newNoneChannel(const char *listenerUrl) {
+    UA_ServerConfig *config = UA_Server_getConfig(server);
+    UA_SecurityPolicy *none = NULL;
+    for(size_t i = 0; i < config->securityPoliciesSize; i++) {
+        if(config->securityPolicies[i].policyType == UA_SECURITYPOLICYTYPE_NONE)
+            none = &config->securityPolicies[i];
+    }
+    ck_assert_ptr_ne(none, NULL);
+    UA_SecureChannel *channel = (UA_SecureChannel*)UA_calloc(1, sizeof(UA_SecureChannel));
+    ck_assert_ptr_ne(channel, NULL);
+    UA_SecureChannel_init(channel);
+    ck_assert_uint_eq(UA_SecureChannel_setSecurityPolicy(channel, none, NULL),
+                      UA_STATUSCODE_GOOD);
+    channel->state = UA_SECURECHANNELSTATE_OPEN;
+    channel->listenerUrl = UA_STRING_ALLOC(listenerUrl);
+    return channel;
+}
+
+static void
+deleteChannel(UA_SecureChannel *channel) {
+    UA_SecureChannel_clear(channel);
+    UA_free(channel);
+}
+
+/* Anonymous ActivateSession (an empty identity token) on the channel */
+static UA_StatusCode
+activateOn(UA_SecureChannel *channel, const UA_NodeId *authenticationToken) {
+    UA_ActivateSessionRequest request;
+    UA_ActivateSessionRequest_init(&request);
+    request.requestHeader.authenticationToken = *authenticationToken;
+    UA_ActivateSessionResponse response;
+    UA_ActivateSessionResponse_init(&response);
+    lockServer(server);
+    Service_ActivateSession(server, channel, &request, &response);
+    unlockServer(server);
+    UA_StatusCode res = response.responseHeader.serviceResult;
+    UA_ActivateSessionResponse_clear(&response);
+    return res;
+}
+
+/* Create and activate an anonymous Session on the channel */
+static UA_Session *
+createActivatedSession(UA_SecureChannel *channel, UA_NodeId *authenticationToken) {
+    UA_CreateSessionRequest request;
+    UA_CreateSessionRequest_init(&request);
+    request.requestedSessionTimeout = 600000.0;
+    request.sessionName = UA_STRING("in-process");
+    UA_CreateSessionResponse response;
+    UA_CreateSessionResponse_init(&response);
+    lockServer(server);
+    Service_CreateSession(server, channel, &request, &response);
+    unlockServer(server);
+    ck_assert_uint_eq(response.responseHeader.serviceResult, UA_STATUSCODE_GOOD);
+    UA_NodeId_copy(&response.authenticationToken, authenticationToken);
+    UA_CreateSessionResponse_clear(&response);
+    ck_assert_uint_eq(activateOn(channel, authenticationToken), UA_STATUSCODE_GOOD);
+    lockServer(server);
+    UA_Session *session = getSessionByToken(server, authenticationToken);
+    unlockServer(server);
+    ck_assert_ptr_ne(session, NULL);
+    return session;
+}
+
+static UA_NodeId
+addInt32Variable(const char *name, UA_Int32 value) {
+    UA_VariableAttributes attr = UA_VariableAttributes_default;
+    attr.displayName = UA_LOCALIZEDTEXT("en-US", (char*)(uintptr_t)name);
+    attr.accessLevel = UA_ACCESSLEVELMASK_READ | UA_ACCESSLEVELMASK_WRITE;
+    UA_Variant_setScalar(&attr.value, &value, &UA_TYPES[UA_TYPES_INT32]);
+    UA_NodeId nodeId = UA_NODEID_STRING(1, (char*)(uintptr_t)name);
+    ck_assert_uint_eq(UA_Server_addVariableNode(server, nodeId,
+                          UA_NS0ID(OBJECTSFOLDER), UA_NS0ID(ORGANIZES),
+                          UA_QUALIFIEDNAME(1, (char*)(uintptr_t)name),
+                          UA_NS0ID(BASEDATAVARIABLETYPE), attr, NULL, NULL),
+                      UA_STATUSCODE_GOOD);
+    return nodeId;
+}
+
+static void
+writeInt32(const UA_NodeId nodeId, UA_Int32 value) {
+    UA_Variant v;
+    UA_Variant_setScalar(&v, &value, &UA_TYPES[UA_TYPES_INT32]);
+    ck_assert_uint_eq(UA_Server_writeValue(server, nodeId, v), UA_STATUSCODE_GOOD);
+}
+
+/* Monitor the Value with a long sampling interval. The server is not iterated,
+ * so the item is sampled only when it is created or re-sampled. */
+static UA_MonitoredItem *
+monitorValueAs(UA_Session *session, const UA_NodeId nodeId) {
+    UA_CreateSubscriptionRequest subRequest;
+    UA_CreateSubscriptionRequest_init(&subRequest);
+    subRequest.publishingEnabled = true;
+    UA_CreateSubscriptionResponse subResponse;
+    UA_CreateSubscriptionResponse_init(&subResponse);
+    lockServer(server);
+    Service_CreateSubscription(server, session, &subRequest, &subResponse);
+    unlockServer(server);
+    ck_assert_uint_eq(subResponse.responseHeader.serviceResult, UA_STATUSCODE_GOOD);
+
+    UA_MonitoredItemCreateRequest item;
+    UA_MonitoredItemCreateRequest_init(&item);
+    item.itemToMonitor.nodeId = nodeId;
+    item.itemToMonitor.attributeId = UA_ATTRIBUTEID_VALUE;
+    item.monitoringMode = UA_MONITORINGMODE_REPORTING;
+    item.requestedParameters.samplingInterval = 3600000.0;
+    item.requestedParameters.queueSize = 1;
+    UA_CreateMonitoredItemsRequest request;
+    UA_CreateMonitoredItemsRequest_init(&request);
+    request.subscriptionId = subResponse.subscriptionId;
+    request.timestampsToReturn = UA_TIMESTAMPSTORETURN_NEITHER;
+    request.itemsToCreateSize = 1;
+    request.itemsToCreate = &item;
+    UA_CreateMonitoredItemsResponse response;
+    UA_CreateMonitoredItemsResponse_init(&response);
+    lockServer(server);
+    Service_CreateMonitoredItems(server, session, &request, &response);
+    UA_Subscription *sub =
+        UA_Session_getSubscriptionById(session, subResponse.subscriptionId);
+    ck_assert_ptr_ne(sub, NULL);
+    ck_assert_uint_eq(response.resultsSize, 1);
+    ck_assert_uint_eq(response.results[0].statusCode, UA_STATUSCODE_GOOD);
+    UA_MonitoredItem *mon =
+        UA_Subscription_getMonitoredItem(sub, response.results[0].monitoredItemId);
+    unlockServer(server);
+    ck_assert_ptr_ne(mon, NULL);
+    UA_CreateMonitoredItemsResponse_clear(&response);
+    UA_CreateSubscriptionResponse_clear(&subResponse);
+    return mon;
+}
+
+/* The single queued notification of the item */
+static const UA_DataValue *
+queuedValue(UA_MonitoredItem *mon) {
+    ck_assert_uint_eq(mon->queueSize, 1);
+    UA_Notification *n = TAILQ_FIRST(&mon->queue);
+    ck_assert_ptr_ne(n, NULL);
+    return &n->data.dataChange.value;
+}
+
+static void
+expectQueuedInt32(UA_MonitoredItem *mon, UA_Int32 expected) {
+    const UA_DataValue *dv = queuedValue(mon);
+    ck_assert(!dv->hasStatus || dv->status == UA_STATUSCODE_GOOD);
+    ck_assert(UA_Variant_hasScalarType(&dv->value, &UA_TYPES[UA_TYPES_INT32]));
+    ck_assert_int_eq(*(UA_Int32*)dv->value.data, expected);
+}
+
+/* Reconnecting over an equivalent SecureChannel keeps the queued
+ * notifications. The Roles and the security did not change. */
+START_TEST(activateSession_equivalentChannelKeepsNotifications) {
+    UA_NodeId var = addInt32Variable("Value", 42);
+    UA_SecureChannel *first = newNoneChannel("opc.tcp://localhost:5050");
+    UA_SecureChannel *second = newNoneChannel("opc.tcp://localhost:5050");
+    UA_NodeId token;
+    UA_Session *session = createActivatedSession(first, &token);
+    UA_MonitoredItem *mon = monitorValueAs(session, var);
+    expectQueuedInt32(mon, 42);
+
+    writeInt32(var, 43);
+    ck_assert_uint_eq(activateOn(second, &token), UA_STATUSCODE_GOOD);
+    ck_assert_ptr_eq(session->channel, second);
+    expectQueuedInt32(mon, 42);
+
+    UA_NodeId sessionId = session->sessionId;
+    ck_assert_uint_eq(UA_Server_closeSession(server, &sessionId), UA_STATUSCODE_GOOD);
+    UA_NodeId_clear(&token);
+    deleteChannel(first);
+    deleteChannel(second);
+} END_TEST
+
+/* A SecureChannel accepted by another listener can match other Endpoint
+ * filters. The items are re-sampled in the new context. */
+START_TEST(activateSession_otherListenerResamples) {
+    UA_NodeId var = addInt32Variable("Value", 42);
+    UA_SecureChannel *first = newNoneChannel("opc.tcp://localhost:5050");
+    UA_SecureChannel *second = newNoneChannel("opc.tcp://localhost:5051");
+    UA_NodeId token;
+    UA_Session *session = createActivatedSession(first, &token);
+    UA_MonitoredItem *mon = monitorValueAs(session, var);
+    expectQueuedInt32(mon, 42);
+
+    writeInt32(var, 43);
+    ck_assert_uint_eq(activateOn(second, &token), UA_STATUSCODE_GOOD);
+    ck_assert_ptr_eq(session->channel, second);
+    expectQueuedInt32(mon, 43);
+
+    UA_NodeId sessionId = session->sessionId;
+    ck_assert_uint_eq(UA_Server_closeSession(server, &sessionId), UA_STATUSCODE_GOOD);
+    UA_NodeId_clear(&token);
+    deleteChannel(first);
+    deleteChannel(second);
+} END_TEST
+
+/* The activation returns a Session with application-assigned Roles to the
+ * automatic assignment. A value sampled with the former Roles must not be
+ * delivered. */
+START_TEST(activateSession_changedRolesResample) {
+    UA_NodeId var = addInt32Variable("Secret", 42);
+    UA_RolePermission rp[2];
+    rp[0].roleId = UA_NODEID_NUMERIC(0, UA_NS0ID_WELLKNOWNROLE_ANONYMOUS);
+    rp[0].permissions = UA_PERMISSIONTYPE_BROWSE;
+    rp[1].roleId = UA_NODEID_NUMERIC(0, UA_NS0ID_WELLKNOWNROLE_CONFIGUREADMIN);
+    rp[1].permissions = UA_PERMISSIONTYPE_BROWSE | UA_PERMISSIONTYPE_READ;
+    ck_assert_uint_eq(UA_Server_setNodeRolePermissions(server, var, 2, rp,
+                                                       false, NULL),
+                      UA_STATUSCODE_GOOD);
+    UA_SecureChannel *channel = newNoneChannel("opc.tcp://localhost:5050");
+    UA_NodeId token;
+    UA_Session *session = createActivatedSession(channel, &token);
+    UA_NodeId roles[2] = {rp[0].roleId, rp[1].roleId};
+    UA_Variant v;
+    UA_Variant_setArray(&v, roles, 2, &UA_TYPES[UA_TYPES_NODEID]);
+    ck_assert_uint_eq(UA_Server_setSessionAttribute(server, &session->sessionId,
+                                                    UA_QUALIFIEDNAME(0, "roles"), &v),
+                      UA_STATUSCODE_GOOD);
+    UA_MonitoredItem *mon = monitorValueAs(session, var);
+    expectQueuedInt32(mon, 42);
+
+    ck_assert_uint_eq(activateOn(channel, &token), UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(session->rolesSize, 1);
+    ck_assert(UA_NodeId_equal(&session->roles[0], &rp[0].roleId));
+    const UA_DataValue *dv = queuedValue(mon);
+    ck_assert(dv->hasStatus);
+    ck_assert_uint_eq(dv->status, UA_STATUSCODE_BADUSERACCESSDENIED);
+
+    UA_NodeId sessionId = session->sessionId;
+    ck_assert_uint_eq(UA_Server_closeSession(server, &sessionId), UA_STATUSCODE_GOOD);
+    UA_NodeId_clear(&token);
+    deleteChannel(channel);
+} END_TEST
+#endif /* UA_ENABLE_SUBSCRIPTIONS */
+
 static Suite *testSuite_rbacServices(void) {
     Suite *s = suite_create("RBAC Services");
 
@@ -937,6 +1302,25 @@ static Suite *testSuite_rbacServices(void) {
     tcase_add_checked_fixture(tc_eventsStrict, setupStrict, teardown);
     tcase_add_test(tc_eventsStrict, eventItem_unknownSourceStrict);
     suite_add_tcase(s, tc_eventsStrict);
+#endif
+
+    TCase *tc_recursive = tcase_create("Recursive RolePermissions");
+    tcase_add_checked_fixture(tc_recursive, setup, teardown);
+    tcase_add_test(tc_recursive, recursivePermissions_hierarchyCycle);
+    suite_add_tcase(s, tc_recursive);
+
+    TCase *tc_roles = tcase_create("Session Roles");
+    tcase_add_checked_fixture(tc_roles, setup, teardown);
+    tcase_add_test(tc_roles, sessionRoles_deleteKeepsAnonymousForPasswordChange);
+    suite_add_tcase(s, tc_roles);
+
+#ifdef UA_ENABLE_SUBSCRIPTIONS
+    TCase *tc_activate = tcase_create("ActivateSession");
+    tcase_add_checked_fixture(tc_activate, setup, teardown);
+    tcase_add_test(tc_activate, activateSession_equivalentChannelKeepsNotifications);
+    tcase_add_test(tc_activate, activateSession_otherListenerResamples);
+    tcase_add_test(tc_activate, activateSession_changedRolesResample);
+    suite_add_tcase(s, tc_activate);
 #endif
 
     return s;

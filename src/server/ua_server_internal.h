@@ -564,19 +564,25 @@ auditWriteUpdateEvent(UA_Server *server, UA_SecureChannel *channel, UA_Session *
                       UA_UInt32 attributeId, const UA_String indexRange,
                       const UA_Variant *newValue, const UA_Variant *oldValue);
 
+/* The callback of the Method identifies the secret arguments also for a copy
+ * of a standard Method outside Namespace Zero (copyMethodsOnInstances) */
 void
 auditMethodUpdateEvent(UA_Server *server, UA_SecureChannel *channel, UA_Session *session,
                        UA_Boolean status, const UA_NodeId *sourceNode,
-                       const UA_NodeId *methodNode, UA_StatusCode statusCodeId,
+                       const UA_NodeId *methodNode, UA_MethodCallback callback,
+                       UA_StatusCode statusCodeId,
                        size_t inputsSize, UA_Variant *inputs,
                        size_t outputsSize, UA_Variant *outputs);
 
+/* Raised by the mapping Methods of the RoleType that updated a Role (Part 18
+ * §4.5). The SourceNode is the Role Object. */
 void
 auditRoleMappingRuleChangedEvent(UA_Server *server, UA_SecureChannel *channel,
                                  UA_Session *session, UA_Boolean status,
                                  const UA_NodeId *sourceNode, const UA_NodeId *methodNode,
                                  UA_StatusCode statusCodeId,
-                                 size_t inputsSize, UA_Variant *inputs);
+                                 size_t inputsSize, UA_Variant *inputs,
+                                 size_t outputsSize, UA_Variant *outputs);
 #endif
 
 void setServerLifecycleState(UA_Server *server, UA_LifecycleState state);
@@ -1056,6 +1062,15 @@ deleteServerSecureChannel(UA_Server *server, UA_SecureChannel *channel);
 
 #ifdef UA_ENABLE_PUBSUB
 UA_Driver * UA_PubSubManager_new(UA_Server *server);
+
+#if defined(UA_ENABLE_PUBSUB_SKS) && defined(UA_ENABLE_PUBSUB_INFORMATIONMODEL)
+/* The NodeId (numeric in Namespace Zero) of the Security Key Service Method
+ * that the server binds the callback to, or 0 for another callback. Copies of
+ * the Methods share the callback. Used to redact the keys in audit events
+ * (defined in ua_pubsub_ns0_sks.c). */
+UA_UInt32
+getSecurityKeyServiceMethodId(UA_MethodCallback callback);
+#endif
 #endif
 
 #ifdef FUZZING_BUILD_MODE_UNSAFE_FOR_PRODUCTION

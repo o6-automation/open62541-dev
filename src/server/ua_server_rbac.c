@@ -1372,18 +1372,10 @@ addRole(UA_Server *server, const UA_Role *role, UA_NodeId *outRoleNodeId,
         }
     }
 
-    /* A new role may match active sessions (Part 18 §4.4.1) */
+    /* A new role may match active sessions (Part 18 §4.4.1). A role added
+     * through the C API raises no audit event. A call of the AddRole Method is
+     * audited by the Call service (AuditUpdateMethodEventType). */
     UA_Server_reevaluateSessionRoles(server);
-
-#ifdef UA_ENABLE_AUDITING
-    if(!wellKnown) {
-        const UA_NodeId method = UA_NODEID_NUMERIC(
-            0, UA_NS0ID_SERVER_SERVERCAPABILITIES_ROLESET_ADDROLE);
-        auditRoleMappingRuleChangedEvent(server, NULL, NULL, true,
-                                         &newRole->roleId, &method,
-                                         UA_STATUSCODE_GOOD, 0, NULL);
-    }
-#endif
 
     unlockServer(server);
     return UA_STATUSCODE_GOOD;
@@ -1535,16 +1527,9 @@ UA_Server_removeRole(UA_Server *server,
         server->rolesProtected = NULL;
     }
 
-    /* Sessions that were granted the removed role must lose it */
+    /* Sessions that were granted the removed role must lose it. As for
+     * addRole, the RemoveRole Method is audited by the Call service. */
     UA_Server_reevaluateSessionRoles(server);
-
-#ifdef UA_ENABLE_AUDITING
-    const UA_NodeId method = UA_NODEID_NUMERIC(
-        0, UA_NS0ID_SERVER_SERVERCAPABILITIES_ROLESET_REMOVEROLE);
-    auditRoleMappingRuleChangedEvent(server, NULL, NULL, true,
-                                     &removedRoleId, &method,
-                                     UA_STATUSCODE_GOOD, 0, NULL);
-#endif
 
     UA_NodeId_clear(&removedRoleId);
 
@@ -1685,60 +1670,42 @@ setNodeRolePermissionsLocked(UA_Server *server, const UA_NodeId *nodeId,
     return setNodeEntryContent(server, nodeId, &c);
 }
 
-/* Internal helper: recursively set the RolePermissions of a node and its
- * children. Each node keeps its own AccessRestrictions. The server lock is
- * released for the browse call and re-acquired for each node edit. A failure
- * on the root node is returned. Failures on children are logged and ignored;
- * the descent continues below a failing child. */
+static UA_StatusCode
+collectHierarchicalTree(UA_Server *server, const UA_NodeId *nodeId, RefTree *rt);
+
+/* Internal helper: set the RolePermissions of a node and of all its
+ * hierarchical children, each once (a cycle in the hierarchy terminates). Each
+ * node keeps its own AccessRestrictions. A failure on the node itself is
+ * returned. Failures on children are logged and ignored; the nodes below a
+ * failing child are changed as well. Must be called with the server lock
+ * held. */
 static UA_StatusCode
 setRolePermissionsRecursive(UA_Server *server, const UA_NodeId *nodeId,
                             UA_Boolean hasRolePermissions, size_t rpSize,
-                            const UA_RolePermission *rp, UA_Boolean isRoot) {
-    /* Set on this node (already locked by caller) */
+                            const UA_RolePermission *rp) {
     UA_StatusCode res = setNodeRolePermissionsLocked(server, nodeId,
                                                      hasRolePermissions,
                                                      rpSize, rp);
-    if(res != UA_STATUSCODE_GOOD) {
-        if(isRoot)
-            return res;
-        UA_LOG_WARNING(server->config.logging, UA_LOGCATEGORY_SERVER,
-                       "RBAC: Could not set the RolePermissions of Node %N (%s)",
-                       *nodeId, UA_StatusCode_name(res));
-    }
-
-    /* Browse for hierarchical children - need to release lock since
-     * UA_Server_browse does its own locking */
-    unlockServer(server);
-
-    UA_BrowseDescription bd;
-    UA_BrowseDescription_init(&bd);
-    bd.nodeId = *nodeId;
-    bd.browseDirection = UA_BROWSEDIRECTION_FORWARD;
-    bd.referenceTypeId = UA_NS0ID(HIERARCHICALREFERENCES);
-    bd.includeSubtypes = true;
-    bd.resultMask = UA_BROWSERESULTMASK_TARGETINFO;
-
-    UA_BrowseResult br = UA_Server_browse(server, 0, &bd);
-
-    lockServer(server);
-
-    if(br.statusCode != UA_STATUSCODE_GOOD) {
-        res = br.statusCode;
-        UA_BrowseResult_clear(&br);
+    if(res != UA_STATUSCODE_GOOD)
         return res;
-    }
 
-    for(size_t i = 0; i < br.referencesSize; i++) {
-        UA_ReferenceDescription *ref = &br.references[i];
-        if(!UA_ExpandedNodeId_isLocal(&ref->nodeId))
-            continue;
-        /* Recurse - ignore errors on individual children */
-        setRolePermissionsRecursive(server, &ref->nodeId.nodeId,
-                                    hasRolePermissions, rpSize, rp, false);
+    RefTree rt;
+    res = RefTree_init(&rt);
+    if(res != UA_STATUSCODE_GOOD)
+        return res;
+    res = collectHierarchicalTree(server, nodeId, &rt);
+    /* Skip the first entry, the Node itself */
+    for(size_t i = 1; i < rt.size && res == UA_STATUSCODE_GOOD; i++) {
+        UA_StatusCode childRes =
+            setNodeRolePermissionsLocked(server, &rt.targets[i].nodeId,
+                                         hasRolePermissions, rpSize, rp);
+        if(childRes != UA_STATUSCODE_GOOD)
+            UA_LOG_WARNING(server->config.logging, UA_LOGCATEGORY_SERVER,
+                           "RBAC: Could not set the RolePermissions of Node %N (%s)",
+                           rt.targets[i].nodeId, UA_StatusCode_name(childRes));
     }
-
-    UA_BrowseResult_clear(&br);
-    return UA_STATUSCODE_GOOD;
+    RefTree_clear(&rt);
+    return res;
 }
 
 UA_StatusCode
@@ -1762,8 +1729,7 @@ UA_Server_setNodeRolePermissions(UA_Server *server,
     UA_StatusCode res;
     if(recursive)
         res = setRolePermissionsRecursive(server, &nodeId, hasRolePermissions,
-                                          rolePermissionsSize, rolePermissions,
-                                          true);
+                                          rolePermissionsSize, rolePermissions);
     else
         res = setNodeRolePermissionsLocked(server, &nodeId, hasRolePermissions,
                                            rolePermissionsSize, rolePermissions);
@@ -1819,7 +1785,7 @@ UA_Server_removeNodeRolePermissions(UA_Server *server,
     /* The AccessRestrictions of the nodes are kept */
     UA_StatusCode res;
     if(recursive)
-        res = setRolePermissionsRecursive(server, &nodeId, false, 0, NULL, true);
+        res = setRolePermissionsRecursive(server, &nodeId, false, 0, NULL);
     else
         res = setNodeRolePermissionsLocked(server, &nodeId, false, 0, NULL);
 
@@ -1888,17 +1854,6 @@ UA_Server_getRoleById(UA_Server *server, UA_NodeId roleId,
 /************************************/
 /* Public API: Role Update          */
 /************************************/
-
-#ifdef UA_ENABLE_AUDITING
-typedef struct {
-    const UA_NodeId *sessionId;
-    const UA_NodeId *methodId;
-    size_t inputSize;
-    const UA_Variant *input;
-} RoleMethodAuditContext;
-
-UA_STATIC_THREAD_LOCAL RoleMethodAuditContext roleMethodAuditContext;
-#endif
 
 UA_StatusCode UA_EXPORT
 UA_Server_updateRole(UA_Server *server, const UA_Role *role) {
@@ -1982,54 +1937,35 @@ UA_Server_updateRole(UA_Server *server, const UA_Role *role) {
     warnUnsupportedRoleFeatures(server, role);
 
     /* The changed identity mapping rules / filters may change which sessions
-     * hold this role (Part 18 §4.4.1) */
+     * hold this role (Part 18 §4.4.1). An update through the C API raises no
+     * audit event. The mapping Methods of the RoleType are audited by the Call
+     * service (RoleMappingRuleChangedAuditEventType, Part 18 §4.5). */
     UA_Server_reevaluateSessionRoles(server);
-
-#ifdef UA_ENABLE_AUDITING
-    UA_Session *auditSession = NULL;
-    UA_SecureChannel *auditChannel = NULL;
-    UA_NodeId localOperation = UA_NODEID_NULL;
-    const UA_NodeId *method = &localOperation;
-    size_t auditInputSize = 0;
-    UA_Variant *auditInput = NULL;
-    if(roleMethodAuditContext.methodId) {
-        method = roleMethodAuditContext.methodId;
-        auditInputSize = roleMethodAuditContext.inputSize;
-        auditInput = (UA_Variant*)(uintptr_t)roleMethodAuditContext.input;
-        if(roleMethodAuditContext.sessionId) {
-            auditSession = getSessionById(server,
-                                          roleMethodAuditContext.sessionId);
-            if(auditSession)
-                auditChannel = auditSession->channel;
-        }
-    }
-    auditRoleMappingRuleChangedEvent(server, auditChannel, auditSession, true,
-                                     &existing->roleId, method,
-                                     UA_STATUSCODE_GOOD, auditInputSize,
-                                     auditInput);
-#endif
 
     unlockServer(server);
     return UA_STATUSCODE_GOOD;
 }
 
 UA_StatusCode
-UA_Server_updateRoleFromMethod(UA_Server *server, const UA_Role *role,
-                               const UA_NodeId *sessionId,
-                               const UA_NodeId *methodId,
-                               size_t inputSize, const UA_Variant *input) {
-#ifdef UA_ENABLE_AUDITING
-    RoleMethodAuditContext previous = roleMethodAuditContext;
-    roleMethodAuditContext.sessionId = sessionId;
-    roleMethodAuditContext.methodId = methodId;
-    roleMethodAuditContext.inputSize = inputSize;
-    roleMethodAuditContext.input = input;
-#endif
-    UA_StatusCode res = UA_Server_updateRole(server, role);
-#ifdef UA_ENABLE_AUDITING
-    roleMethodAuditContext = previous;
-#endif
-    return res;
+updateRoleExcludeFlag(UA_Server *server, const UA_NodeId *roleId,
+                      UA_Boolean endpoints, UA_Boolean exclude) {
+    lockServer(server);
+    UA_Role *role = findRoleById(server, roleId);
+    if(!role) {
+        unlockServer(server);
+        return UA_STATUSCODE_BADNOTFOUND;
+    }
+    if(isMandatoryWellKnownRole(&role->roleId)) {
+        unlockServer(server);
+        return UA_STATUSCODE_BADUSERACCESSDENIED;
+    }
+    if(endpoints)
+        role->endpointsExclude = exclude;
+    else
+        role->applicationsExclude = exclude;
+    UA_Server_reevaluateSessionRoles(server);
+    unlockServer(server);
+    return UA_STATUSCODE_GOOD;
 }
 
 /************************************/
@@ -2525,9 +2461,9 @@ UA_Server_evaluateSessionRoles(UA_Server *server,
     return UA_STATUSCODE_GOOD;
 }
 
-static UA_Boolean
-sessionRolesEqual(const UA_Session *session,
-                  size_t rolesSize, const UA_NodeId *roleIds) {
+UA_Boolean
+UA_Session_rolesEqual(const UA_Session *session,
+                      const UA_NodeId *roleIds, size_t rolesSize) {
     if(session->rolesSize != rolesSize)
         return false;
     for(size_t i = 0; i < session->rolesSize; i++) {
@@ -2612,7 +2548,7 @@ UA_Server_reevaluateSessionRoles(UA_Server *server) {
                                  UA_StatusCode_name(res));
             continue;
         }
-        UA_Boolean changed = !sessionRolesEqual(session, rolesSize, roleIds);
+        UA_Boolean changed = !UA_Session_rolesEqual(session, roleIds, rolesSize);
         UA_Boolean hadRoles = (session->rolesSize > 0);
         res = UA_Session_setRoles(server, session, roleIds, rolesSize);
         if(res != UA_STATUSCODE_GOOD) {
@@ -2637,85 +2573,22 @@ UA_Server_reevaluateSessionRoles(UA_Server *server) {
 /* Internal Helpers: Hierarchy Traversal */
 /*****************************************/
 
-/* Context for recursive hierarchy traversal using internal reference iterators */
-struct ApplyToHierarchicalChildrenContext {
-    UA_Server *server;
-    const UA_ReferenceTypeSet *hierarchRefsSet;
-    void *callbackContext;
-    UA_StatusCode (*applyCallback)(UA_Server *server, const UA_NodeId *nodeId,
-                                   void *context);
-    UA_Boolean continueOnError;
-    UA_StatusCode status; /* The first error */
-};
-
-/* Stop the traversal at the first error unless continueOnError is set */
-static UA_Boolean
-applyAborted(const struct ApplyToHierarchicalChildrenContext *ctx) {
-    return !ctx->continueOnError && ctx->status != UA_STATUSCODE_GOOD;
-}
-
 static void *
-applyToHierarchicalChildrenIterator(void *context, UA_ReferenceTarget *t) {
-    struct ApplyToHierarchicalChildrenContext *ctx =
-        (struct ApplyToHierarchicalChildrenContext*)context;
-
-    /* A non-NULL return value stops the iteration of the parent's references */
-    if(applyAborted(ctx))
-        return ctx;
-
+addLocalTarget(void *context, UA_ReferenceTarget *t) {
     if(!UA_NodePointer_isLocal(t->targetId))
         return NULL;
-
-    UA_NodeId childId = UA_NodePointer_toNodeId(t->targetId);
-
-    UA_StatusCode res = ctx->applyCallback(ctx->server, &childId,
-                                           ctx->callbackContext);
-    if(res != UA_STATUSCODE_GOOD) {
-        if(ctx->status == UA_STATUSCODE_GOOD)
-            ctx->status = res;
-        if(!ctx->continueOnError)
-            return ctx;
-        /* A failing child does not stop the descent into its children */
-        UA_LOG_WARNING(ctx->server->config.logging, UA_LOGCATEGORY_SERVER,
-                       "RBAC: Could not apply the change to Node %N (%s)",
-                       childId, UA_StatusCode_name(res));
-    }
-
-    const UA_Node *childNode = UA_NODESTORE_GET(ctx->server, &childId);
-    if(!childNode)
-        return NULL;
-
-    for(size_t i = 0; i < childNode->head.referencesSize; i++) {
-        UA_NodeReferenceKind *rk = &childNode->head.references[i];
-
-        if(rk->isInverse)
-            continue;
-        if(!UA_ReferenceTypeSet_contains(ctx->hierarchRefsSet, rk->referenceTypeIndex))
-            continue;
-
-        void *stop =
-            UA_NodeReferenceKind_iterate(rk, applyToHierarchicalChildrenIterator, ctx);
-        if(stop != NULL) {
-            UA_NODESTORE_RELEASE(ctx->server, childNode);
-            return stop;
-        }
-    }
-
-    UA_NODESTORE_RELEASE(ctx->server, childNode);
-    return NULL;
+    UA_NodeId targetId = UA_NodePointer_toNodeId(t->targetId);
+    UA_StatusCode res = RefTree_addNodeId((RefTree*)context, &targetId, NULL);
+    return (res == UA_STATUSCODE_GOOD) ? NULL : (void*)0x01;
 }
 
-/* Apply a callback to all hierarchical children of a node. Without
- * continueOnError the traversal stops at the first error. With continueOnError
- * all nodes are visited (a failing node does not cut off its subtree). Returns
- * the first error.
+/* Collect a Node and all Nodes below it over forward hierarchical References
+ * in the RefTree. The Node itself is the first entry. Every Node is added and
+ * expanded once, so a cycle in the hierarchy (e.g. of Organizes References)
+ * terminates. The RefTree is used as the work list to avoid recursion.
  * Must be called with the server lock held. */
 static UA_StatusCode
-applyToHierarchicalChildren(UA_Server *server, const UA_NodeId *nodeId,
-                            UA_StatusCode (*callback)(UA_Server *server,
-                                                      const UA_NodeId *nodeId,
-                                                      void *context),
-                            void *callbackContext, UA_Boolean continueOnError) {
+collectHierarchicalTree(UA_Server *server, const UA_NodeId *nodeId, RefTree *rt) {
     UA_ReferenceTypeSet hierarchRefsSet;
     UA_ReferenceTypeSet_init(&hierarchRefsSet);
     UA_NodeId hierarchRefTypeId = UA_NODEID_NUMERIC(0, UA_NS0ID_HIERARCHICALREFERENCES);
@@ -2727,30 +2600,63 @@ applyToHierarchicalChildren(UA_Server *server, const UA_NodeId *nodeId,
     const UA_Node *node = UA_NODESTORE_GET(server, nodeId);
     if(!node)
         return UA_STATUSCODE_BADNODEIDUNKNOWN;
-
-    struct ApplyToHierarchicalChildrenContext ctx;
-    ctx.server = server;
-    ctx.hierarchRefsSet = &hierarchRefsSet;
-    ctx.callbackContext = callbackContext;
-    ctx.applyCallback = callback;
-    ctx.continueOnError = continueOnError;
-    ctx.status = UA_STATUSCODE_GOOD;
-
-    for(size_t i = 0; i < node->head.referencesSize; i++) {
-        UA_NodeReferenceKind *rk = &node->head.references[i];
-
-        if(rk->isInverse)
-            continue;
-        if(!UA_ReferenceTypeSet_contains(&hierarchRefsSet, rk->referenceTypeIndex))
-            continue;
-
-        UA_NodeReferenceKind_iterate(rk, applyToHierarchicalChildrenIterator, &ctx);
-        if(applyAborted(&ctx))
-            break;
-    }
-
     UA_NODESTORE_RELEASE(server, node);
-    return ctx.status;
+
+    res = RefTree_addNodeId(rt, nodeId, NULL);
+    for(size_t pos = 0; pos < rt->size && res == UA_STATUSCODE_GOOD; pos++) {
+        node = UA_NODESTORE_GET(server, &rt->targets[pos].nodeId);
+        if(!node)
+            continue;
+        for(size_t i = 0; i < node->head.referencesSize; i++) {
+            UA_NodeReferenceKind *rk = &node->head.references[i];
+            if(rk->isInverse ||
+               !UA_ReferenceTypeSet_contains(&hierarchRefsSet, rk->referenceTypeIndex))
+                continue;
+            if(UA_NodeReferenceKind_iterate(rk, addLocalTarget, rt) != NULL) {
+                res = UA_STATUSCODE_BADOUTOFMEMORY;
+                break;
+            }
+        }
+        UA_NODESTORE_RELEASE(server, node);
+    }
+    return res;
+}
+
+/* Apply a callback to all hierarchical children of a node, each once (a cycle
+ * in the hierarchy terminates). Without continueOnError the traversal stops at
+ * the first error. With continueOnError all nodes are visited (a failing node
+ * does not cut off its subtree). Returns the first error.
+ * Must be called with the server lock held. */
+static UA_StatusCode
+applyToHierarchicalChildren(UA_Server *server, const UA_NodeId *nodeId,
+                            UA_StatusCode (*callback)(UA_Server *server,
+                                                      const UA_NodeId *nodeId,
+                                                      void *context),
+                            void *callbackContext, UA_Boolean continueOnError) {
+    UA_StatusCode firstError = UA_STATUSCODE_GOOD;
+    RefTree rt;
+    UA_StatusCode res = RefTree_init(&rt);
+    if(res != UA_STATUSCODE_GOOD)
+        return res;
+    res = collectHierarchicalTree(server, nodeId, &rt);
+    /* Skip the first entry, the Node itself */
+    for(size_t i = 1; i < rt.size && res == UA_STATUSCODE_GOOD; i++) {
+        UA_StatusCode childRes =
+            callback(server, &rt.targets[i].nodeId, callbackContext);
+        if(childRes == UA_STATUSCODE_GOOD)
+            continue;
+        if(!continueOnError) {
+            res = childRes;
+            break;
+        }
+        UA_LOG_WARNING(server->config.logging, UA_LOGCATEGORY_SERVER,
+                       "RBAC: Could not apply the change to Node %N (%s)",
+                       rt.targets[i].nodeId, UA_StatusCode_name(childRes));
+        if(firstError == UA_STATUSCODE_GOOD)
+            firstError = childRes;
+    }
+    RefTree_clear(&rt);
+    return (res != UA_STATUSCODE_GOOD) ? res : firstError;
 }
 
 /*******************************/

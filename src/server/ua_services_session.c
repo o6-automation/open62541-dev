@@ -1517,6 +1517,20 @@ Service_ActivateSession_inner(UA_Server *server, UA_SecureChannel *channel,
         UA_SECURITY_REJECT;
     }
 
+    /* Notifications sampled under the former Roles, or for a SecureChannel with
+     * a different security or listener (AccessRestrictions, Endpoint
+     * filters), must not be delivered after the activation. A reconnect with
+     * the same Roles over an equivalent SecureChannel keeps them. */
+    UA_Boolean authorizationChanged =
+        !UA_Session_rolesEqual(session, roleIds, rolesSize) ||
+        !session->hasIdentityContext ||
+        session->identityContext.endpointSecurityMode != ctx.endpointSecurityMode ||
+        !UA_String_equal(&session->identityContext.endpointUrl, &ctx.endpointUrl) ||
+        !UA_String_equal(&session->identityContext.securityPolicyUri,
+                         &ctx.securityPolicyUri) ||
+        !UA_String_equal(&session->identityContext.transportProfileUri,
+                         &ctx.transportProfileUri);
+
     /* Assign the Roles. Always set them, also for an empty set, so that no Role
      * from an earlier activation survives. UA_Session_setRoles is atomic: if it
      * fails, the Session keeps the Roles it had. */
@@ -1558,6 +1572,17 @@ Service_ActivateSession_inner(UA_Server *server, UA_SecureChannel *channel,
         UA_LOG_INFO_SESSION(server->config.logging, session,
                             "ActivateSession: Session attached to new channel");
     }
+
+#ifdef UA_ENABLE_RBAC
+    /* Re-sample in the new authorization context, i.e. with the new Roles and
+     * on the SecureChannel that was just attached */
+#ifdef UA_ENABLE_SUBSCRIPTIONS
+    if(authorizationChanged)
+        UA_Session_invalidateRoleNotifications(server, session);
+#else
+    (void)authorizationChanged;
+#endif
+#endif
 
     /* Generate a new session nonce for the next time ActivateSession is called */
     rh->serviceResult = UA_Session_generateNonce(session);

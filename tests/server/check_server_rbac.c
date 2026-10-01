@@ -4982,94 +4982,6 @@ START_TEST(accessRestrictions_presetUpdateReachesNodesWithAr) {
 }
 END_TEST
 
-#ifdef UA_ENABLE_AUDITING
-static UA_Boolean roleMappingAuditSeen = false;
-static void
-rbacAuditNotificationCallback(UA_Server *s, UA_ApplicationNotificationType type,
-                              const UA_KeyValueMap payload) {
-    (void)s; (void)payload;
-    if(type == UA_APPLICATIONNOTIFICATIONTYPE_AUDIT_UPDATE_METHOD_ROLEMAPPINGRULECHANGED)
-        roleMappingAuditSeen = true;
-}
-
-/* Changing a role's identity mapping rules emits a
- * RoleMappingRuleChangedAuditEventType (Part 18). */
-START_TEST(auditRoleMappingRuleChanged_emitted) {
-    UA_ServerConfig *cfg = UA_Server_getConfig(server);
-    cfg->auditingEnabled = true;
-    cfg->auditNotificationCallback = rbacAuditNotificationCallback;
-    roleMappingAuditSeen = false;
-
-    UA_Role role;
-    UA_Role_init(&role);
-    role.roleId = UA_NODEID_NUMERIC(1, 62000);
-    role.roleName = UA_QUALIFIEDNAME(1, "AuditRole");
-    ck_assert_uint_eq(UA_Server_addRole(server, &role, NULL), UA_STATUSCODE_GOOD);
-
-    /* Change the identity mapping rules through updateRole */
-    UA_Role upd;
-    ck_assert_uint_eq(UA_Server_getRoleById(server, role.roleId, &upd),
-                      UA_STATUSCODE_GOOD);
-    UA_IdentityMappingRuleType *rules = (UA_IdentityMappingRuleType*)
-        UA_realloc(upd.identityMappingRules,
-                   (upd.identityMappingRulesSize + 1) * sizeof(*rules));
-    ck_assert_ptr_nonnull(rules);
-    upd.identityMappingRules = rules;
-    UA_IdentityMappingRuleType_init(&rules[upd.identityMappingRulesSize]);
-    rules[upd.identityMappingRulesSize].criteriaType = UA_IDENTITYCRITERIATYPE_USERNAME;
-    rules[upd.identityMappingRulesSize].criteria = UA_STRING_ALLOC("bob");
-    upd.identityMappingRulesSize++;
-    ck_assert_uint_eq(UA_Server_updateRole(server, &upd), UA_STATUSCODE_GOOD);
-    UA_Role_clear(&upd);
-
-    ck_assert(roleMappingAuditSeen);
-
-    cfg->auditNotificationCallback = NULL;
-    UA_Server_removeRole(server, role.roleName);
-}
-END_TEST
-
-/* Adding a role emits a RoleMappingRuleChangedAuditEvent (Part 18 §4.5). */
-START_TEST(auditRoleMapping_addRoleEmits) {
-    UA_ServerConfig *cfg = UA_Server_getConfig(server);
-    cfg->auditingEnabled = true;
-    cfg->auditNotificationCallback = rbacAuditNotificationCallback;
-    roleMappingAuditSeen = false;
-
-    UA_Role role;
-    UA_Role_init(&role);
-    role.roleId = UA_NODEID_NUMERIC(1, 62101);
-    role.roleName = UA_QUALIFIEDNAME(1, "AuditAddRole");
-    ck_assert_uint_eq(UA_Server_addRole(server, &role, NULL), UA_STATUSCODE_GOOD);
-    ck_assert(roleMappingAuditSeen);
-
-    cfg->auditNotificationCallback = NULL;
-    UA_Server_removeRole(server, role.roleName);
-}
-END_TEST
-
-/* Removing a role emits a RoleMappingRuleChangedAuditEvent (Part 18 §4.5). */
-START_TEST(auditRoleMapping_removeRoleEmits) {
-    UA_ServerConfig *cfg = UA_Server_getConfig(server);
-    UA_Role role;
-    UA_Role_init(&role);
-    role.roleId = UA_NODEID_NUMERIC(1, 62102);
-    role.roleName = UA_QUALIFIEDNAME(1, "AuditRemoveRole");
-    ck_assert_uint_eq(UA_Server_addRole(server, &role, NULL), UA_STATUSCODE_GOOD);
-
-    cfg->auditingEnabled = true;
-    cfg->auditNotificationCallback = rbacAuditNotificationCallback;
-    roleMappingAuditSeen = false;
-
-    ck_assert_uint_eq(UA_Server_removeRole(server, role.roleName),
-                      UA_STATUSCODE_GOOD);
-    ck_assert(roleMappingAuditSeen);
-
-    cfg->auditNotificationCallback = NULL;
-}
-END_TEST
-#endif /* UA_ENABLE_AUDITING */
-
 #if defined(UA_GENERATED_NAMESPACE_ZERO_FULL) && defined(UA_ENABLE_METHODCALLS)
 /* The RoleType methods are reachable over the wire on concrete Role objects.
  * A client may pass the RoleType method NodeId; the Call service resolves the
@@ -5300,6 +5212,329 @@ START_TEST(addEndpointMethod_validatesEndpointUrl) {
 }
 END_TEST
 #endif /* UA_GENERATED_NAMESPACE_ZERO_FULL && UA_ENABLE_METHODCALLS */
+
+#ifdef UA_ENABLE_AUDITING
+/* The update audit notifications of a test (deep copies) */
+typedef struct {
+    UA_ApplicationNotificationType type;
+    UA_Boolean status;
+    UA_NodeId sourceNode;
+    UA_NodeId methodId;
+    UA_String clientAuditEntryId;
+    UA_Variant inputs;
+    UA_Variant outputs;
+} RecordedAudit;
+
+#define MAX_RECORDED_AUDITS 16
+static RecordedAudit recordedAudits[MAX_RECORDED_AUDITS];
+static size_t recordedAuditsSize;
+
+static void
+recordAuditCallback(UA_Server *s, UA_ApplicationNotificationType type,
+                    const UA_KeyValueMap payload) {
+    (void)s;
+    if(type != UA_APPLICATIONNOTIFICATIONTYPE_AUDIT_UPDATE_METHOD &&
+       type != UA_APPLICATIONNOTIFICATIONTYPE_AUDIT_UPDATE_METHOD_ROLEMAPPINGRULECHANGED &&
+       type != UA_APPLICATIONNOTIFICATIONTYPE_AUDIT_UPDATE_WRITE)
+        return;
+    ck_assert_uint_lt(recordedAuditsSize, MAX_RECORDED_AUDITS);
+    RecordedAudit *a = &recordedAudits[recordedAuditsSize++];
+    memset(a, 0, sizeof(RecordedAudit));
+    a->type = type;
+    const UA_Boolean *status = (const UA_Boolean*)
+        UA_KeyValueMap_getScalar(&payload, UA_QUALIFIEDNAME(0, "/Status"),
+                                 &UA_TYPES[UA_TYPES_BOOLEAN]);
+    ck_assert_ptr_nonnull(status);
+    a->status = *status;
+    const UA_NodeId *id = (const UA_NodeId*)
+        UA_KeyValueMap_getScalar(&payload, UA_QUALIFIEDNAME(0, "/SourceNode"),
+                                 &UA_TYPES[UA_TYPES_NODEID]);
+    if(id)
+        UA_NodeId_copy(id, &a->sourceNode);
+    id = (const UA_NodeId*)
+        UA_KeyValueMap_getScalar(&payload, UA_QUALIFIEDNAME(0, "/MethodId"),
+                                 &UA_TYPES[UA_TYPES_NODEID]);
+    if(id)
+        UA_NodeId_copy(id, &a->methodId);
+    const UA_String *entryId = (const UA_String*)
+        UA_KeyValueMap_getScalar(&payload, UA_QUALIFIEDNAME(0, "/ClientAuditEntryId"),
+                                 &UA_TYPES[UA_TYPES_STRING]);
+    if(entryId)
+        UA_String_copy(entryId, &a->clientAuditEntryId);
+    const UA_Variant *v =
+        UA_KeyValueMap_get(&payload, UA_QUALIFIEDNAME(0, "/InputArguments"));
+    if(v)
+        UA_Variant_copy(v, &a->inputs);
+    v = UA_KeyValueMap_get(&payload, UA_QUALIFIEDNAME(0, "/OutputArguments"));
+    if(v)
+        UA_Variant_copy(v, &a->outputs);
+}
+
+static void
+clearRecordedAudits(void) {
+    for(size_t i = 0; i < recordedAuditsSize; i++) {
+        UA_NodeId_clear(&recordedAudits[i].sourceNode);
+        UA_NodeId_clear(&recordedAudits[i].methodId);
+        UA_String_clear(&recordedAudits[i].clientAuditEntryId);
+        UA_Variant_clear(&recordedAudits[i].inputs);
+        UA_Variant_clear(&recordedAudits[i].outputs);
+    }
+    recordedAuditsSize = 0;
+}
+
+static size_t
+countRecordedAudits(UA_ApplicationNotificationType type) {
+    size_t count = 0;
+    for(size_t i = 0; i < recordedAuditsSize; i++) {
+        if(recordedAudits[i].type == type)
+            count++;
+    }
+    return count;
+}
+
+/* Write audits also report the internal Value writes of a new Variable (e.g.
+ * the Identities Property of a new Role Object). Most tests leave them off. */
+static void
+startRecordingAudits(UA_Boolean methodUpdates, UA_Boolean writeUpdates) {
+    UA_ServerConfig *cfg = UA_Server_getConfig(server);
+    cfg->auditingEnabled = true;
+    cfg->auditMethodUpdateEnabled = methodUpdates;
+    cfg->auditWriteUpdateEnabled = writeUpdates;
+    cfg->auditNotificationCallback = recordAuditCallback;
+    clearRecordedAudits();
+}
+
+static void
+stopRecordingAudits(void) {
+    UA_Server_getConfig(server)->auditNotificationCallback = NULL;
+    clearRecordedAudits();
+}
+
+/* The audit carries the Session of the call: the local admin Session of
+ * UA_Server_call */
+static void
+assertAdminSessionAudit(const RecordedAudit *a) {
+    const UA_NodeId adminSessionId =
+        {0, UA_NODEIDTYPE_GUID, {.guid = {1, 0, 0, {0,0,0,0,0,0,0,0}}}};
+    UA_String expected = UA_STRING_NULL;
+    ck_assert_uint_eq(UA_String_format(&expected, "0:%N:Call", adminSessionId),
+                      UA_STATUSCODE_GOOD);
+    ck_assert_msg(UA_String_equal(&a->clientAuditEntryId, &expected),
+                  "ClientAuditEntryId %.*s", (int)a->clientAuditEntryId.length,
+                  (const char*)a->clientAuditEntryId.data);
+    UA_String_clear(&expected);
+}
+
+#if defined(UA_GENERATED_NAMESPACE_ZERO_FULL) && defined(UA_ENABLE_METHODCALLS)
+/* A mapping Method of the RoleType raises exactly one
+ * RoleMappingRuleChangedAuditEvent with the Role Object as SourceNode (Part 18
+ * §4.5), and no generic AuditUpdateMethodEvent */
+START_TEST(auditRoleMapping_methodRaisesOneEvent) {
+    UA_NodeId roleId = UA_NODEID_NULL;
+    ck_assert_uint_eq(addTestRole("AuditedMappingRole", 1, 62000, &roleId),
+                      UA_STATUSCODE_GOOD);
+    UA_NodeId addIdentityId = UA_NODEID_NULL;
+    ck_assert_uint_eq(findRoleMethod(roleId, "AddIdentity", &addIdentityId),
+                      UA_STATUSCODE_GOOD);
+
+    startRecordingAudits(true, false);
+    UA_IdentityMappingRuleType rule;
+    UA_IdentityMappingRuleType_init(&rule);
+    rule.criteriaType = UA_IDENTITYCRITERIATYPE_USERNAME;
+    rule.criteria = UA_STRING("bob");
+    ck_assert_uint_eq(callRoleMethod(roleId, UA_NS0ID_ROLETYPE_ADDIDENTITY, &rule,
+                                     &UA_TYPES[UA_TYPES_IDENTITYMAPPINGRULETYPE]),
+                      UA_STATUSCODE_GOOD);
+
+    ck_assert_uint_eq(recordedAuditsSize, 1);
+    RecordedAudit *a = &recordedAudits[0];
+    ck_assert(a->type ==
+              UA_APPLICATIONNOTIFICATIONTYPE_AUDIT_UPDATE_METHOD_ROLEMAPPINGRULECHANGED);
+    ck_assert(a->status);
+    ck_assert(UA_NodeId_equal(&a->sourceNode, &roleId));
+    ck_assert(UA_NodeId_equal(&a->methodId, &addIdentityId));
+    assertAdminSessionAudit(a);
+    ck_assert(a->inputs.type == &UA_TYPES[UA_TYPES_VARIANT]);
+    ck_assert_uint_eq(a->inputs.arrayLength, 1);
+    const UA_Variant *in = (const UA_Variant*)a->inputs.data;
+    ck_assert(UA_Variant_hasScalarType(in, &UA_TYPES[UA_TYPES_EXTENSIONOBJECT]));
+    const UA_ExtensionObject *eo = (const UA_ExtensionObject*)in->data;
+    ck_assert(eo->content.decoded.type == &UA_TYPES[UA_TYPES_IDENTITYMAPPINGRULETYPE]);
+    ck_assert(UA_IdentityMappingRuleType_equal(
+                  (const UA_IdentityMappingRuleType*)eo->content.decoded.data, &rule));
+    ck_assert(a->outputs.type == &UA_TYPES[UA_TYPES_VARIANT]);
+    ck_assert_uint_eq(a->outputs.arrayLength, 0);
+
+    /* Every mapping Method raises exactly one event */
+    clearRecordedAudits();
+    UA_String app = UA_STRING("urn:audited:app");
+    ck_assert_uint_eq(callRoleMethod(roleId, UA_NS0ID_ROLETYPE_ADDAPPLICATION, &app,
+                                     &UA_TYPES[UA_TYPES_STRING]),
+                      UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(callRoleMethod(roleId, UA_NS0ID_ROLETYPE_REMOVEAPPLICATION, &app,
+                                     &UA_TYPES[UA_TYPES_STRING]),
+                      UA_STATUSCODE_GOOD);
+    UA_EndpointType ep;
+    UA_EndpointType_init(&ep);
+    ep.endpointUrl = UA_STRING("opc.tcp://localhost:4852");
+    ck_assert_uint_eq(callRoleMethod(roleId, UA_NS0ID_ROLETYPE_ADDENDPOINT, &ep,
+                                     &UA_TYPES[UA_TYPES_ENDPOINTTYPE]),
+                      UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(callRoleMethod(roleId, UA_NS0ID_ROLETYPE_REMOVEENDPOINT, &ep,
+                                     &UA_TYPES[UA_TYPES_ENDPOINTTYPE]),
+                      UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(callRoleMethod(roleId, UA_NS0ID_ROLETYPE_REMOVEIDENTITY, &rule,
+                                     &UA_TYPES[UA_TYPES_IDENTITYMAPPINGRULETYPE]),
+                      UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(recordedAuditsSize, 5);
+    for(size_t i = 0; i < recordedAuditsSize; i++) {
+        ck_assert(recordedAudits[i].type ==
+                  UA_APPLICATIONNOTIFICATIONTYPE_AUDIT_UPDATE_METHOD_ROLEMAPPINGRULECHANGED);
+        ck_assert(UA_NodeId_equal(&recordedAudits[i].sourceNode, &roleId));
+    }
+
+    /* A call that does not update the Role is audited as a failed Method call */
+    clearRecordedAudits();
+    ck_assert_uint_eq(callRoleMethod(roleId, UA_NS0ID_ROLETYPE_REMOVEAPPLICATION, &app,
+                                     &UA_TYPES[UA_TYPES_STRING]),
+                      UA_STATUSCODE_BADNOTFOUND);
+    ck_assert_uint_eq(recordedAuditsSize, 1);
+    ck_assert(recordedAudits[0].type == UA_APPLICATIONNOTIFICATIONTYPE_AUDIT_UPDATE_METHOD);
+    ck_assert(!recordedAudits[0].status);
+    ck_assert(UA_NodeId_equal(&recordedAudits[0].sourceNode, &roleId));
+
+    stopRecordingAudits();
+    UA_Server_removeRole(server, UA_QUALIFIEDNAME(1, "AuditedMappingRole"));
+    UA_NodeId_clear(&addIdentityId);
+    UA_NodeId_clear(&roleId);
+}
+END_TEST
+
+/* AddRole and RemoveRole raise the generic AuditUpdateMethodEvent with the
+ * RoleSet as SourceNode, and no RoleMappingRuleChangedAuditEvent */
+START_TEST(auditRoleMapping_addRemoveRoleAuditedAsMethodCall) {
+    const UA_NodeId roleSet =
+        UA_NODEID_NUMERIC(0, UA_NS0ID_SERVER_SERVERCAPABILITIES_ROLESET);
+    startRecordingAudits(true, false);
+    UA_NodeId roleId = UA_NODEID_NULL;
+    ck_assert_uint_eq(callAddRole("AuditedRole", "", &roleId), UA_STATUSCODE_GOOD);
+
+    ck_assert_uint_eq(recordedAuditsSize, 1);
+    RecordedAudit *a = &recordedAudits[0];
+    ck_assert(a->type == UA_APPLICATIONNOTIFICATIONTYPE_AUDIT_UPDATE_METHOD);
+    ck_assert(a->status);
+    ck_assert(UA_NodeId_equal(&a->sourceNode, &roleSet));
+    const UA_NodeId addRoleId =
+        UA_NODEID_NUMERIC(0, UA_NS0ID_SERVER_SERVERCAPABILITIES_ROLESET_ADDROLE);
+    ck_assert(UA_NodeId_equal(&a->methodId, &addRoleId));
+    assertAdminSessionAudit(a);
+    ck_assert_uint_eq(a->inputs.arrayLength, 2);
+    /* The OutputArguments carry the NodeId of the new Role */
+    ck_assert(a->outputs.type == &UA_TYPES[UA_TYPES_VARIANT]);
+    ck_assert_uint_eq(a->outputs.arrayLength, 1);
+    const UA_Variant *out = (const UA_Variant*)a->outputs.data;
+    ck_assert(UA_Variant_hasScalarType(out, &UA_TYPES[UA_TYPES_NODEID]));
+    ck_assert(UA_NodeId_equal((const UA_NodeId*)out->data, &roleId));
+
+    clearRecordedAudits();
+    UA_Variant input;
+    UA_Variant_setScalar(&input, &roleId, &UA_TYPES[UA_TYPES_NODEID]);
+    UA_CallMethodRequest req;
+    UA_CallMethodRequest_init(&req);
+    req.objectId = roleSet;
+    req.methodId =
+        UA_NODEID_NUMERIC(0, UA_NS0ID_SERVER_SERVERCAPABILITIES_ROLESET_REMOVEROLE);
+    req.inputArguments = &input;
+    req.inputArgumentsSize = 1;
+    UA_CallMethodResult res = UA_Server_call(server, &req);
+    ck_assert_uint_eq(res.statusCode, UA_STATUSCODE_GOOD);
+    UA_CallMethodResult_clear(&res);
+    ck_assert_uint_eq(recordedAuditsSize, 1);
+    a = &recordedAudits[0];
+    ck_assert(a->type == UA_APPLICATIONNOTIFICATIONTYPE_AUDIT_UPDATE_METHOD);
+    ck_assert(UA_NodeId_equal(&a->sourceNode, &roleSet));
+    ck_assert(UA_NodeId_equal(&a->methodId, &req.methodId));
+    ck_assert_uint_eq(a->inputs.arrayLength, 1);
+
+    /* Without method update auditing, AddRole raises no event */
+    startRecordingAudits(false, false);
+    UA_NodeId otherId = UA_NODEID_NULL;
+    ck_assert_uint_eq(callAddRole("UnauditedRole", "", &otherId), UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(recordedAuditsSize, 0);
+
+    stopRecordingAudits();
+    UA_Server_removeRole(server, UA_QUALIFIEDNAME(1, "UnauditedRole"));
+    UA_NodeId_clear(&otherId);
+    UA_NodeId_clear(&roleId);
+}
+END_TEST
+
+/* A Write of an Exclude Property is audited as a Write only */
+START_TEST(auditRoleMapping_excludeWriteAuditedAsWrite) {
+    UA_NodeId roleId = UA_NODEID_NULL;
+    ck_assert_uint_eq(addTestRole("AuditedExcludeRole", 1, 62001, &roleId),
+                      UA_STATUSCODE_GOOD);
+    UA_NodeId excludeId = UA_NODEID_NULL;
+    ck_assert_uint_eq(findRoleProperty(roleId, "EndpointsExclude", &excludeId),
+                      UA_STATUSCODE_GOOD);
+
+    startRecordingAudits(true, true);
+    UA_Boolean exclude = false;
+    UA_Variant v;
+    UA_Variant_setScalar(&v, &exclude, &UA_TYPES[UA_TYPES_BOOLEAN]);
+    ck_assert_uint_eq(UA_Server_writeValue(server, excludeId, v), UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(recordedAuditsSize, 1);
+    ck_assert(recordedAudits[0].type == UA_APPLICATIONNOTIFICATIONTYPE_AUDIT_UPDATE_WRITE);
+    ck_assert(UA_NodeId_equal(&recordedAudits[0].sourceNode, &excludeId));
+
+    UA_Role role;
+    ck_assert_uint_eq(UA_Server_getRoleById(server, roleId, &role), UA_STATUSCODE_GOOD);
+    ck_assert(!role.endpointsExclude);
+    UA_Role_clear(&role);
+
+    stopRecordingAudits();
+    UA_Server_removeRole(server, UA_QUALIFIEDNAME(1, "AuditedExcludeRole"));
+    UA_NodeId_clear(&excludeId);
+    UA_NodeId_clear(&roleId);
+}
+END_TEST
+#endif /* UA_GENERATED_NAMESPACE_ZERO_FULL && UA_ENABLE_METHODCALLS */
+
+/* Role changes through the C API raise no audit event */
+START_TEST(auditRoleMapping_cApiRaisesNone) {
+    startRecordingAudits(true, true);
+
+    UA_Role role;
+    UA_Role_init(&role);
+    role.roleName = UA_QUALIFIEDNAME(1, "CApiAuditRole");
+    UA_NodeId roleId = UA_NODEID_NULL;
+    ck_assert_uint_eq(UA_Server_addRole(server, &role, &roleId), UA_STATUSCODE_GOOD);
+
+    UA_Role upd;
+    ck_assert_uint_eq(UA_Server_getRoleById(server, roleId, &upd), UA_STATUSCODE_GOOD);
+    UA_IdentityMappingRuleType rule;
+    UA_IdentityMappingRuleType_init(&rule);
+    rule.criteriaType = UA_IDENTITYCRITERIATYPE_USERNAME;
+    rule.criteria = UA_STRING("carol");
+    ck_assert_uint_eq(UA_Array_appendCopy((void**)&upd.identityMappingRules,
+                                          &upd.identityMappingRulesSize, &rule,
+                                          &UA_TYPES[UA_TYPES_IDENTITYMAPPINGRULETYPE]),
+                      UA_STATUSCODE_GOOD);
+    upd.applicationsExclude = false;
+    ck_assert_uint_eq(UA_Server_updateRole(server, &upd), UA_STATUSCODE_GOOD);
+    UA_Role_clear(&upd);
+
+    ck_assert_uint_eq(UA_Server_removeRole(server, role.roleName), UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(countRecordedAudits(
+        UA_APPLICATIONNOTIFICATIONTYPE_AUDIT_UPDATE_METHOD_ROLEMAPPINGRULECHANGED), 0);
+    ck_assert_uint_eq(countRecordedAudits(
+        UA_APPLICATIONNOTIFICATIONTYPE_AUDIT_UPDATE_METHOD), 0);
+
+    stopRecordingAudits();
+    UA_NodeId_clear(&roleId);
+}
+END_TEST
+#endif /* UA_ENABLE_AUDITING */
 
 /* CustomConfiguration is stored, copied and compared (Part 18 §4.4.1). */
 START_TEST(customConfiguration_storedAndCopied) {
@@ -5686,9 +5921,12 @@ static Suite *testSuite_PermissionMapping(void) {
     tcase_add_test(tc, readRolePermissions_adminSessionExempt);
     tcase_add_test(tc, accessRestrictions_remove);
 #ifdef UA_ENABLE_AUDITING
-    tcase_add_test(tc, auditRoleMappingRuleChanged_emitted);
-    tcase_add_test(tc, auditRoleMapping_addRoleEmits);
-    tcase_add_test(tc, auditRoleMapping_removeRoleEmits);
+# if defined(UA_GENERATED_NAMESPACE_ZERO_FULL) && defined(UA_ENABLE_METHODCALLS)
+    tcase_add_test(tc, auditRoleMapping_methodRaisesOneEvent);
+    tcase_add_test(tc, auditRoleMapping_addRemoveRoleAuditedAsMethodCall);
+    tcase_add_test(tc, auditRoleMapping_excludeWriteAuditedAsWrite);
+# endif
+    tcase_add_test(tc, auditRoleMapping_cApiRaisesNone);
 #endif
     suite_add_tcase(s, tc);
     return s;
@@ -6341,6 +6579,101 @@ START_TEST(auditMethodUpdate_redactsPasswords) {
     UA_Variant_clear(&umAuditInputs);
 }
 END_TEST
+
+/* A copy of the AddUser Method on an instance in namespace 1 (an ObjectType
+ * whose Method is bound to the AddUser callback, copyMethodsOnInstances) has
+ * its own NodeId. Its password is redacted as well. */
+START_TEST(auditMethodUpdate_redactsCopiedMethod) {
+    UA_ServerConfig *cfg = UA_Server_getConfig(server);
+    cfg->auditingEnabled = true;
+    cfg->auditMethodUpdateEnabled = true;
+    cfg->auditNotificationCallback = umAuditCallback;
+    cfg->copyMethodsOnInstances = true;
+    UA_Variant_init(&umAuditInputs);
+
+    UA_MethodCallback addUser = NULL;
+    ck_assert_uint_eq(UA_Server_getMethodNodeCallback(server,
+                          UA_NODEID_NUMERIC(0, UA_NS0ID_USERMANAGEMENT_ADDUSER),
+                          &addUser), UA_STATUSCODE_GOOD);
+    ck_assert(addUser != NULL);
+
+    /* An ObjectType in namespace 1 with a mandatory AddUser Method */
+    UA_ObjectTypeAttributes tAttr = UA_ObjectTypeAttributes_default;
+    tAttr.displayName = UA_LOCALIZEDTEXT("en-US", "UserStoreType");
+    UA_NodeId typeId = UA_NODEID_STRING(1, "UserStoreType");
+    ck_assert_uint_eq(UA_Server_addObjectTypeNode(server, typeId,
+                          UA_NODEID_NUMERIC(0, UA_NS0ID_BASEOBJECTTYPE),
+                          UA_NODEID_NUMERIC(0, UA_NS0ID_HASSUBTYPE),
+                          UA_QUALIFIEDNAME(1, "UserStoreType"), tAttr,
+                          NULL, NULL), UA_STATUSCODE_GOOD);
+    UA_Argument args[4];
+    const char *argNames[4] = {"UserName", "Password", "UserConfiguration",
+                               "Description"};
+    for(size_t i = 0; i < 4; i++) {
+        UA_Argument_init(&args[i]);
+        args[i].name = UA_STRING((char*)(uintptr_t)argNames[i]);
+        args[i].dataType = UA_TYPES[UA_TYPES_STRING].typeId;
+        args[i].valueRank = UA_VALUERANK_SCALAR;
+    }
+    args[2].dataType = UA_TYPES[UA_TYPES_USERCONFIGURATIONMASK].typeId;
+    UA_MethodAttributes mAttr = UA_MethodAttributes_default;
+    mAttr.displayName = UA_LOCALIZEDTEXT("en-US", "AddUser");
+    mAttr.executable = true;
+    mAttr.userExecutable = true;
+    UA_NodeId declarationId = UA_NODEID_STRING(1, "UserStoreType.AddUser");
+    ck_assert_uint_eq(UA_Server_addMethodNode(server, declarationId, typeId,
+                          UA_NODEID_NUMERIC(0, UA_NS0ID_HASCOMPONENT),
+                          UA_QUALIFIEDNAME(1, "AddUser"), mAttr, addUser,
+                          4, args, 0, NULL, NULL, NULL), UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(UA_Server_addReference(server, declarationId,
+                          UA_NODEID_NUMERIC(0, UA_NS0ID_HASMODELLINGRULE),
+                          UA_EXPANDEDNODEID_NUMERIC(0, UA_NS0ID_MODELLINGRULE_MANDATORY),
+                          true), UA_STATUSCODE_GOOD);
+
+    /* The instance gets its own copy of the Method */
+    UA_ObjectAttributes oAttr = UA_ObjectAttributes_default;
+    oAttr.displayName = UA_LOCALIZEDTEXT("en-US", "UserStore");
+    UA_NodeId instanceId = UA_NODEID_STRING(1, "UserStore");
+    ck_assert_uint_eq(UA_Server_addObjectNode(server, instanceId,
+                          UA_NODEID_NUMERIC(0, UA_NS0ID_OBJECTSFOLDER),
+                          UA_NODEID_NUMERIC(0, UA_NS0ID_ORGANIZES),
+                          UA_QUALIFIEDNAME(1, "UserStore"), typeId, oAttr,
+                          NULL, NULL), UA_STATUSCODE_GOOD);
+    UA_QualifiedName methodName = UA_QUALIFIEDNAME(1, "AddUser");
+    UA_BrowsePathResult bpr =
+        UA_Server_browseSimplifiedBrowsePath(server, instanceId, 1, &methodName);
+    ck_assert_uint_eq(bpr.statusCode, UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(bpr.targetsSize, 1);
+    UA_NodeId copyId = bpr.targets[0].targetId.nodeId;
+    ck_assert(copyId.namespaceIndex == 1);
+    ck_assert(!UA_NodeId_equal(&copyId, &declarationId));
+
+    UA_String name = UA_STRING("carol");
+    UA_String password = UA_STRING("c0py-s3cret");
+    UA_String description = UA_STRING("copied Method");
+    UA_UserConfigurationMask mask = UA_USERCONFIGURATIONMASK_NONE;
+    UA_Variant in[4];
+    setUserArgs(in, &name, &password, &mask, &description);
+    UA_CallMethodRequest req;
+    UA_CallMethodRequest_init(&req);
+    req.objectId = instanceId;
+    req.methodId = copyId;
+    req.inputArguments = in;
+    req.inputArgumentsSize = 4;
+    UA_CallMethodResult res = UA_Server_call(server, &req);
+    ck_assert_uint_eq(res.statusCode, UA_STATUSCODE_GOOD);
+    UA_CallMethodResult_clear(&res);
+    ck_assert(UA_String_equal(&umLastPassword, &password));
+    ck_assert_uint_eq(umAuditInputs.arrayLength, 4);
+    umAssertAuditString(0, &name);
+    ck_assert(UA_Variant_isEmpty(umAuditInput(1)));
+    umAssertAuditString(3, &description);
+
+    UA_BrowsePathResult_clear(&bpr);
+    cfg->auditNotificationCallback = NULL;
+    UA_Variant_clear(&umAuditInputs);
+}
+END_TEST
 #endif /* UA_ENABLE_AUDITING */
 
 /* Without a complete provider the Object stays inert: no DataSource behind the
@@ -6375,6 +6708,7 @@ static Suite *testSuite_UserManagement(void) {
     tcase_add_test(tc, userManagement_changePasswordNeedsOwnEncryptedSession);
 #ifdef UA_ENABLE_AUDITING
     tcase_add_test(tc, auditMethodUpdate_redactsPasswords);
+    tcase_add_test(tc, auditMethodUpdate_redactsCopiedMethod);
 #endif
     suite_add_tcase(s, tc);
 

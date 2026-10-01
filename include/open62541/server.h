@@ -2395,7 +2395,8 @@ typedef struct {
  * UA_Server_deleteSessionAttribute for the same key returns the Session to the
  * automatic assignment and re-evaluates its identity mapping rules right away.
  * A successful ActivateSession does the same. A Session that carries no
- * identity snapshot ends up without Roles. */
+ * identity snapshot ends up without Roles. A Session whose user must change
+ * the password holds only the Anonymous Role until it is changed. */
 
 /* UA_Role Type Management */
 void UA_EXPORT
@@ -3060,7 +3061,9 @@ UA_Server_removeNodeRolePermissions(UA_Server *server,
  * ^^^^^^^^^^^^^^^
  * Functions for managing the server's role registry. Roles define which
  * sessions get which access rights. Config-provided roles are protected
- * and cannot be removed at runtime. */
+ * and cannot be removed at runtime. Changes made through these functions
+ * raise no audit event. Calls of the RoleSet and RoleType Methods are audited
+ * by the Call service (OPC UA Part 18 §4.5). */
 
 /* Add a role to the server's role registry.
  *

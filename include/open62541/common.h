@@ -460,9 +460,21 @@ typedef uint64_t UA_ApplicationNotificationType;
  *     - AuditHistoryUpdateEventType
  *
  *   - AuditUpdateMethodEventType
+ *
+ *     - RoleMappingRuleChangedAuditEventType (raised instead of the
+ *       AuditUpdateMethodEventType when a mapping Method of the RoleType
+ *       updated a Role, see Part 18 §4.5)
+ *
  *   - AuditClientEventType
  *
- *     - AuditClientUpdateMethodResultEventType */
+ *     - AuditClientUpdateMethodResultEventType
+ *
+ * The bits 8 to 23 are bitfields for the groups of EventTypes (security,
+ * channel, session, ...). The lowest byte enumerates the EventTypes within a
+ * group and can be compared for equality only. The AuditUpdateMethodEventType
+ * and the RoleMappingRuleChangedAuditEventType are both enumerated in the
+ * group of the AuditUpdateEventType. A filter for the Method audit events
+ * tests for both values. */
 #define UA_APPLICATIONNOTIFICATIONTYPE_AUDIT                                   \
     (0x40ULL << 32)
 #define UA_APPLICATIONNOTIFICATIONTYPE_AUDIT_SECURITY                          \

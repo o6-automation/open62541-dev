@@ -344,20 +344,14 @@ writeRoleApplicationsExclude(UA_Server *server, const UA_NodeId *sessionId,
        !UA_Variant_isScalar(&value->value))
         return UA_STATUSCODE_BADTYPEMISMATCH;
 
+    /* The Write service audits the change (AuditWriteUpdateEventType) */
     UA_NodeId roleId;
     UA_StatusCode res = getParentOfProperty(server, nodeId, &roleId);
     if(res != UA_STATUSCODE_GOOD)
         return res;
-
-    UA_Role role;
-    res = UA_Server_getRoleById(server, roleId, &role);
+    res = updateRoleExcludeFlag(server, &roleId, false,
+                                *(UA_Boolean*)value->value.data);
     UA_NodeId_clear(&roleId);
-    if(res != UA_STATUSCODE_GOOD)
-        return res;
-
-    role.applicationsExclude = *(UA_Boolean*)value->value.data;
-    res = UA_Server_updateRole(server, &role);
-    UA_Role_clear(&role);
     return res;
 }
 
@@ -399,20 +393,14 @@ writeRoleEndpointsExclude(UA_Server *server, const UA_NodeId *sessionId,
        !UA_Variant_isScalar(&value->value))
         return UA_STATUSCODE_BADTYPEMISMATCH;
 
+    /* The Write service audits the change (AuditWriteUpdateEventType) */
     UA_NodeId roleId;
     UA_StatusCode res = getParentOfProperty(server, nodeId, &roleId);
     if(res != UA_STATUSCODE_GOOD)
         return res;
-
-    UA_Role role;
-    res = UA_Server_getRoleById(server, roleId, &role);
+    res = updateRoleExcludeFlag(server, &roleId, true,
+                                *(UA_Boolean*)value->value.data);
     UA_NodeId_clear(&roleId);
-    if(res != UA_STATUSCODE_GOOD)
-        return res;
-
-    role.endpointsExclude = *(UA_Boolean*)value->value.data;
-    res = UA_Server_updateRole(server, &role);
-    UA_Role_clear(&role);
     return res;
 }
 
@@ -862,8 +850,7 @@ addIdentityMethodCallback(UA_Server *server,
     }
     role.identityMappingRulesSize++;
 
-    res = UA_Server_updateRoleFromMethod(server, &role, sessionId, methodId,
-                                         inputSize, input);
+    res = UA_Server_updateRole(server, &role);
     UA_Role_clear(&role);
     return addMethodResult(res);
 }
@@ -916,8 +903,7 @@ removeIdentityMethodCallback(UA_Server *server,
                 sizeof(UA_IdentityMappingRuleType));
     role.identityMappingRulesSize--;
 
-    res = UA_Server_updateRoleFromMethod(server, &role, sessionId, methodId,
-                                         inputSize, input);
+    res = UA_Server_updateRole(server, &role);
     UA_Role_clear(&role);
     return res;
 }
@@ -956,8 +942,7 @@ addApplicationMethodCallback(UA_Server *server,
     }
     role.applicationsSize++;
 
-    res = UA_Server_updateRoleFromMethod(server, &role, sessionId, methodId,
-                                         inputSize, input);
+    res = UA_Server_updateRole(server, &role);
     UA_Role_clear(&role);
     return addMethodResult(res);
 }
@@ -1000,8 +985,7 @@ removeApplicationMethodCallback(UA_Server *server,
                 (role.applicationsSize - idx - 1) * sizeof(UA_String));
     role.applicationsSize--;
 
-    res = UA_Server_updateRoleFromMethod(server, &role, sessionId, methodId,
-                                         inputSize, input);
+    res = UA_Server_updateRole(server, &role);
     UA_Role_clear(&role);
     return res;
 }
@@ -1046,8 +1030,7 @@ addEndpointMethodCallback(UA_Server *server,
     }
     role.endpointsSize++;
 
-    res = UA_Server_updateRoleFromMethod(server, &role, sessionId, methodId,
-                                         inputSize, input);
+    res = UA_Server_updateRole(server, &role);
     UA_Role_clear(&role);
     return addMethodResult(res);
 }
@@ -1095,10 +1078,19 @@ removeEndpointMethodCallback(UA_Server *server,
                 (role.endpointsSize - idx - 1) * sizeof(UA_EndpointType));
     role.endpointsSize--;
 
-    res = UA_Server_updateRoleFromMethod(server, &role, sessionId, methodId,
-                                         inputSize, input);
+    res = UA_Server_updateRole(server, &role);
     UA_Role_clear(&role);
     return res;
+}
+
+UA_Boolean
+isRoleMappingMethod(UA_MethodCallback callback) {
+    return callback == addIdentityMethodCallback ||
+           callback == removeIdentityMethodCallback ||
+           callback == addApplicationMethodCallback ||
+           callback == removeApplicationMethodCallback ||
+           callback == addEndpointMethodCallback ||
+           callback == removeEndpointMethodCallback;
 }
 
 UA_Boolean
@@ -1380,6 +1372,19 @@ initUserManagement(UA_Server *server) {
     return res;
 }
 
+UA_UInt32
+getUserManagementMethodId(UA_MethodCallback callback) {
+    if(callback == addUserMethodCallback)
+        return UA_NS0ID_USERMANAGEMENT_ADDUSER;
+    if(callback == modifyUserMethodCallback)
+        return UA_NS0ID_USERMANAGEMENT_MODIFYUSER;
+    if(callback == removeUserMethodCallback)
+        return UA_NS0ID_USERMANAGEMENT_REMOVEUSER;
+    if(callback == changePasswordMethodCallback)
+        return UA_NS0ID_USERMANAGEMENT_CHANGEPASSWORD;
+    return 0;
+}
+
 /* The RoleSet and the Role Objects are browsable like in the standard NodeSet:
  * Part 18 §4.4.1 restricts only the Properties and Methods of the RoleType to
  * administrators over an encrypted channel. Every activated Session holds the
@@ -1609,12 +1614,14 @@ initRoleSetRolePermissions(UA_Server *server) {
         return retval;
 
 #ifdef UA_NS0ID_ROLEMAPPINGRULECHANGEDAUDITEVENTTYPE
-    /* Role changes use the affected Role Object as SourceNode. ReceiveEvents
-     * is checked independently on that source and on the EventType. The Role
-     * Objects are covered by addRoleObjectPermissions above; grant the
-     * matching EventType permission here as well. Like the other audit
-     * EventTypes (initNS0SensitiveRolePermissions), the type itself stays
-     * browsable for everybody. */
+    /* The mapping Methods of a Role raise the RoleMappingRuleChanged event
+     * with the Role Object as SourceNode; AddRole and RemoveRole are audited
+     * with the RoleSet as SourceNode (Part 18 §4.5). ReceiveEvents is checked
+     * independently on that source and on the EventType. The RoleSet and the
+     * Role Objects are covered by addRoleObjectPermissions; grant the matching
+     * EventType permission here as well. Like the other audit EventTypes
+     * (initNS0SensitiveRolePermissions), the type itself stays browsable for
+     * everybody. */
     UA_NodeId roleAuditEventType = UA_NODEID_NUMERIC(
         0, UA_NS0ID_ROLEMAPPINGRULECHANGEDAUDITEVENTTYPE);
     retval = UA_Server_addRolePermissions(server, roleAuditEventType, secAdmin,

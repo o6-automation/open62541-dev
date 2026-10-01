@@ -285,11 +285,33 @@ callWithResolvedMethodAndObject(UA_Server *server, UA_Session *session,
     /* TODO: Verify Output matches the argument definition */
 
 #ifdef UA_ENABLE_AUDITING
-    if(server->config.auditingEnabled && server->config.auditMethodUpdateEnabled) {
-        auditMethodUpdateEvent(server, session->channel, session, (res == UA_STATUSCODE_GOOD),
-                               &callContext->head.nodeId, &resolvedMethod->head.nodeId,
-                               res, request->inputArgumentsSize, mutableInputArgs,
-                               result->outputArgumentsSize, result->outputArguments);
+    if(server->config.auditingEnabled) {
+        UA_Boolean roleMappingChanged = false;
+# ifdef UA_ENABLE_RBAC
+        /* A mapping Method of the RoleType that updated a Role raises the
+         * RoleMappingRuleChangedAuditEventType instead, a subtype of the
+         * AuditUpdateMethodEventType. The SourceNode is the Role Object
+         * (Part 18 §4.5). */
+        roleMappingChanged = (res == UA_STATUSCODE_GOOD &&
+                              isRoleMappingMethod(resolvedMethod->method));
+        if(roleMappingChanged)
+            auditRoleMappingRuleChangedEvent(server, session->channel, session, true,
+                                             &callContext->head.nodeId,
+                                             &resolvedMethod->head.nodeId, res,
+                                             request->inputArgumentsSize,
+                                             mutableInputArgs,
+                                             result->outputArgumentsSize,
+                                             result->outputArguments);
+# endif
+        if(!roleMappingChanged && server->config.auditMethodUpdateEnabled)
+            auditMethodUpdateEvent(server, session->channel, session,
+                                   (res == UA_STATUSCODE_GOOD),
+                                   &callContext->head.nodeId,
+                                   &resolvedMethod->head.nodeId,
+                                   resolvedMethod->method, res,
+                                   request->inputArgumentsSize, mutableInputArgs,
+                                   result->outputArgumentsSize,
+                                   result->outputArguments);
     }
 #endif
 

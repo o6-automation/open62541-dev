@@ -27,6 +27,11 @@ UA_StatusCode
 UA_Session_setRoles(UA_Server *server, UA_Session *session,
                     const UA_NodeId *roleIds, size_t rolesSize);
 
+/* Whether the Session holds exactly the given set of Roles */
+UA_Boolean
+UA_Session_rolesEqual(const UA_Session *session,
+                      const UA_NodeId *roleIds, size_t rolesSize);
+
 /* Access guard for the RoleSet/RoleType Methods (Part 18): requires an
  * encrypted SecureChannel and the SecurityAdmin Role.
  * Must be called with the server lock held. */
@@ -48,13 +53,29 @@ UA_Server_evaluateSessionRoles(UA_Server *server,
 void
 UA_Server_reevaluateSessionRoles(UA_Server *server);
 
-/* Update a Role from one of the six RoleType Methods and attach the concrete
- * MethodId and request arguments to the audit event. */
+/* Set the ApplicationsExclude (endpoints == false) or EndpointsExclude flag of
+ * a Role. Used for a Write of the Role Property, which the Write service audits
+ * with the AuditWriteUpdateEventType; no RoleMappingRuleChanged event is raised
+ * (Part 18 §4.5). */
 UA_StatusCode
-UA_Server_updateRoleFromMethod(UA_Server *server, const UA_Role *role,
-                               const UA_NodeId *sessionId,
-                               const UA_NodeId *methodId,
-                               size_t inputSize, const UA_Variant *input);
+updateRoleExcludeFlag(UA_Server *server, const UA_NodeId *roleId,
+                      UA_Boolean endpoints, UA_Boolean exclude);
+
+/* Whether the Method callback is one of the mapping Methods of the RoleType
+ * (AddIdentity, RemoveIdentity, AddApplication, RemoveApplication, AddEndpoint
+ * and RemoveEndpoint; defined in ua_server_ns0_rbac.c). A call that updated a
+ * Role raises the RoleMappingRuleChangedAuditEventType instead of the generic
+ * AuditUpdateMethodEventType (Part 18 §4.5). */
+UA_Boolean
+isRoleMappingMethod(UA_MethodCallback callback);
+
+/* The NodeId (numeric in Namespace Zero) of the UserManagement Method that the
+ * server binds the callback to (AddUser, ModifyUser, RemoveUser and
+ * ChangePassword; defined in ua_server_ns0_rbac.c), or 0 for another callback.
+ * Copies of the Methods share the callback. Used to redact their secret
+ * arguments in audit events. */
+UA_UInt32
+getUserManagementMethodId(UA_MethodCallback callback);
 
 /* Effective AccessRestrictions of a node (its own value or the namespace
  * default). Must be called with the server lock held. */

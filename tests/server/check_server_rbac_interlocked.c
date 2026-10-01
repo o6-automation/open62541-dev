@@ -646,6 +646,30 @@ START_TEST(RoleAuditEvents_visibleToSecurityAdmin) {
     ck_assert_msg((eventPerms & UA_PERMISSIONTYPE_RECEIVEEVENTS) != 0,
         "SecurityAdmin cannot receive RoleMappingRuleChangedAuditEventType");
 
+    /* AddRole and RemoveRole are audited with the AuditUpdateMethodEventType
+     * and the RoleSet as SourceNode (Part 18 §4.5) */
+    UA_NodeId roleSet =
+        UA_NODEID_NUMERIC(0, UA_NS0ID_SERVER_SERVERCAPABILITIES_ROLESET);
+    UA_NodeId methodEventType =
+        UA_NODEID_NUMERIC(0, UA_NS0ID_AUDITUPDATEMETHODEVENTTYPE);
+    ck_assert_uint_eq(UA_Server_getEffectivePermissions(
+        server, &adminSessionId, &roleSet, &sourcePerms), UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(UA_Server_getEffectivePermissions(
+        server, &adminSessionId, &methodEventType, &eventPerms), UA_STATUSCODE_GOOD);
+    ck_assert_msg((sourcePerms & UA_PERMISSIONTYPE_RECEIVEEVENTS) != 0,
+        "SecurityAdmin cannot receive a role audit event from the RoleSet");
+    ck_assert_msg((eventPerms & UA_PERMISSIONTYPE_RECEIVEEVENTS) != 0,
+        "SecurityAdmin cannot receive AuditUpdateMethodEventType");
+
+    /* Other Roles receive neither */
+    assignRoleToAdminSession(UA_NODEID_NUMERIC(0, UA_NS0ID_WELLKNOWNROLE_OPERATOR));
+    ck_assert_uint_eq(UA_Server_getEffectivePermissions(
+        server, &adminSessionId, &roleSet, &sourcePerms), UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(sourcePerms & UA_PERMISSIONTYPE_RECEIVEEVENTS, 0);
+    ck_assert_uint_eq(UA_Server_getEffectivePermissions(
+        server, &adminSessionId, &roleId, &sourcePerms), UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(sourcePerms & UA_PERMISSIONTYPE_RECEIVEEVENTS, 0);
+
     clearAdminSessionRoles();
     UA_Server_removeRole(server, role.roleName);
     UA_NodeId_clear(&roleId);

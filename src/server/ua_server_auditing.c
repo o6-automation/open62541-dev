@@ -6,6 +6,9 @@
  */
 
 #include "ua_server_internal.h"
+#ifdef UA_ENABLE_RBAC
+#include "ua_server_rbac.h"
+#endif
 
 #ifdef UA_ENABLE_AUDITING
 
@@ -335,7 +338,13 @@ auditActivateSessionEvent(UA_Server *server,
                           UA_SecureChannel *channel, UA_Session *session,
                           const UA_ActivateSessionRequest *req,
                           const UA_ActivateSessionResponse *resp) {
-    UA_STATIC_THREAD_LOCAL UA_KeyValuePair sessionActivateAuditPayload[11] = {
+#ifdef UA_ENABLE_RBAC
+#define ACTIVATESESSION_AUDIT_PAYLOAD_SIZE 12
+#else
+#define ACTIVATESESSION_AUDIT_PAYLOAD_SIZE 11
+#endif
+    UA_STATIC_THREAD_LOCAL UA_KeyValuePair
+        sessionActivateAuditPayload[ACTIVATESESSION_AUDIT_PAYLOAD_SIZE] = {
         {{0, UA_STRING_STATIC("/ActionTimeStamp")}, {0}},             /* 0 */
         {{0, UA_STRING_STATIC("/Status")}, {0}},                      /* 1 */
         {{0, UA_STRING_STATIC("/ServerId")}, {0}},                    /* 2 */
@@ -347,6 +356,9 @@ auditActivateSessionEvent(UA_Server *server,
         {{0, UA_STRING_STATIC("/ClientSoftwareCertificates")}, {0}},  /* 8 */
         {{0, UA_STRING_STATIC("/UserIdentityToken")}, {0}},           /* 9 */
         {{0, UA_STRING_STATIC("/SecureChannelId")}, {0}}              /* 10 */
+#ifdef UA_ENABLE_RBAC
+        ,{{0, UA_STRING_STATIC("/CurrentRoleIds")}, {0}}              /* 11 */
+#endif
     };
 
     /* /ClientSoftwareCertificates */
@@ -393,7 +405,22 @@ auditActivateSessionEvent(UA_Server *server,
     UA_Variant_setScalar(&sessionActivateAuditPayload[10].value, &secureChannelName,
                          &UA_TYPES[UA_TYPES_STRING]);
 
-    UA_KeyValueMap payload = {11, sessionActivateAuditPayload};
+#ifdef UA_ENABLE_RBAC
+    /* /CurrentRoleIds: the Roles granted to the activated Session, else an
+     * empty array (Part 5 §6.4.10) */
+    if(session && UA_StatusCode_isGood(resp->responseHeader.serviceResult) &&
+       session->rolesSize > 0)
+        UA_Variant_setArray(&sessionActivateAuditPayload[11].value,
+                            session->roles, session->rolesSize,
+                            &UA_TYPES[UA_TYPES_NODEID]);
+    else
+        UA_Variant_setArray(&sessionActivateAuditPayload[11].value,
+                            UA_EMPTY_ARRAY_SENTINEL, 0, &UA_TYPES[UA_TYPES_NODEID]);
+#endif
+
+    UA_KeyValueMap payload = {ACTIVATESESSION_AUDIT_PAYLOAD_SIZE,
+                              sessionActivateAuditPayload};
+#undef ACTIVATESESSION_AUDIT_PAYLOAD_SIZE
     auditSessionEvent(server, UA_APPLICATIONNOTIFICATIONTYPE_AUDIT_SECURITY_SESSION_ACTIVATE,
                       channel, session, "ActivateSession",
                       (resp->responseHeader.serviceResult == UA_STATUSCODE_GOOD),
@@ -617,6 +644,19 @@ auditDeleteReferencesEvent(UA_Server *server, UA_SecureChannel *channel, UA_Sess
                              channel, session, "DeleteReferences", status, payload);
 }
 
+/* The SourceNode is also exposed in the notification payload of the update
+ * audits, so that applications can attribute the update without an
+ * EventFilter. The maps are static, so reset the entry if there is no
+ * SourceNode. */
+static void
+setSourceNodePayload(UA_Variant *value, const UA_NodeId *sourceNode) {
+    if(sourceNode)
+        UA_Variant_setScalar(value, (void*)(uintptr_t)sourceNode,
+                             &UA_TYPES[UA_TYPES_NODEID]);
+    else
+        UA_Variant_init(value);
+}
+
 static void
 auditUpdateEvent(UA_Server *server, UA_ApplicationNotificationType type,
                  UA_SecureChannel *channel, UA_Session *session,
@@ -656,15 +696,8 @@ auditWriteUpdateEvent(UA_Server *server, UA_SecureChannel *channel, UA_Session *
     UA_Variant_setScalar(&writeUpdatePayload[6].value, &attributeId,
                          &UA_TYPES[UA_TYPES_UINT32]);
 
-    /* /SourceNode (the written node). Also exposed in the notification payload
-     * so that applications can attribute the write without an EventFilter.
-     * The map is static, so reset the entry if there is no SourceNode. */
-    if(sourceNode)
-        UA_Variant_setScalar(&writeUpdatePayload[10].value,
-                             (void*)(uintptr_t)sourceNode,
-                             &UA_TYPES[UA_TYPES_NODEID]);
-    else
-        UA_Variant_init(&writeUpdatePayload[10].value);
+    /* /SourceNode (the written node) */
+    setSourceNodePayload(&writeUpdatePayload[10].value, sourceNode);
 
     /* /IndexRange */
     UA_Variant_setScalar(&writeUpdatePayload[7].value,
@@ -730,16 +763,38 @@ static const SecretMethodArguments secretMethodArguments[] = {
 #define UA_AUDIT_MAXREDACTEDARGUMENTS 8
 
 static const SecretMethodArguments *
-getSecretMethodArguments(const UA_NodeId *methodNode) {
-    if(methodNode->namespaceIndex != 0 ||
-       methodNode->identifierType != UA_NODEIDTYPE_NUMERIC)
-        return NULL;
+getSecretMethodArgumentsById(UA_UInt32 methodId) {
     size_t count = sizeof(secretMethodArguments) / sizeof(SecretMethodArguments);
     for(size_t i = 0; i < count; i++) {
-        if(secretMethodArguments[i].methodId == methodNode->identifier.numeric)
+        if(secretMethodArguments[i].methodId == methodId)
             return &secretMethodArguments[i];
     }
     return NULL;
+}
+
+/* A Method is identified by its NodeId in Namespace Zero. A copy of a Method
+ * that the server binds itself has another NodeId (e.g. on an instance in
+ * another namespace with copyMethodsOnInstances), but the same callback. */
+static const SecretMethodArguments *
+getSecretMethodArguments(const UA_NodeId *methodNode, UA_MethodCallback callback) {
+    if(methodNode->namespaceIndex == 0 &&
+       methodNode->identifierType == UA_NODEIDTYPE_NUMERIC) {
+        const SecretMethodArguments *secrets =
+            getSecretMethodArgumentsById(methodNode->identifier.numeric);
+        if(secrets)
+            return secrets;
+    }
+    if(!callback)
+        return NULL;
+    UA_UInt32 methodId = 0;
+#ifdef UA_ENABLE_RBAC
+    methodId = getUserManagementMethodId(callback);
+#endif
+#if defined(UA_ENABLE_PUBSUB_SKS) && defined(UA_ENABLE_PUBSUB_INFORMATIONMODEL)
+    if(methodId == 0)
+        methodId = getSecurityKeyServiceMethodId(callback);
+#endif
+    return (methodId != 0) ? getSecretMethodArgumentsById(methodId) : NULL;
 }
 
 /* Replace the secret arguments by empty Variants in a shallow copy that stays
@@ -768,10 +823,11 @@ redactMethodArguments(UA_UInt32 secretArguments,
 void
 auditMethodUpdateEvent(UA_Server *server, UA_SecureChannel *channel, UA_Session *session,
                        UA_Boolean status, const UA_NodeId *sourceNode,
-                       const UA_NodeId *methodNode, UA_StatusCode statusCodeId,
+                       const UA_NodeId *methodNode, UA_MethodCallback callback,
+                       UA_StatusCode statusCodeId,
                        size_t inputsSize, UA_Variant *inputs,
                        size_t outputsSize, UA_Variant *outputs) {
-    UA_STATIC_THREAD_LOCAL UA_KeyValuePair methodUpdatePayload[10] = {
+    UA_STATIC_THREAD_LOCAL UA_KeyValuePair methodUpdatePayload[11] = {
         {{0, UA_STRING_STATIC("/ActionTimeStamp")}, {0}},             /* 0 */
         {{0, UA_STRING_STATIC("/Status")}, {0}},                      /* 1 */
         {{0, UA_STRING_STATIC("/ServerId")}, {0}},                    /* 2 */
@@ -781,8 +837,12 @@ auditMethodUpdateEvent(UA_Server *server, UA_SecureChannel *channel, UA_Session 
         {{0, UA_STRING_STATIC("/MethodId")}, {0}},                    /* 6 */
         {{0, UA_STRING_STATIC("/StatusCodeId")}, {0}},                /* 7 */
         {{0, UA_STRING_STATIC("/InputArguments")}, {0}},              /* 8 */
-        {{0, UA_STRING_STATIC("/OutputArguments")}, {0}}              /* 9 */
+        {{0, UA_STRING_STATIC("/OutputArguments")}, {0}},             /* 9 */
+        {{0, UA_STRING_STATIC("/SourceNode")}, {0}}                   /* 10 */
     };
+
+    /* /SourceNode (the Object of the call), as for the Write audit */
+    setSourceNodePayload(&methodUpdatePayload[10].value, sourceNode);
 
     /* /MethodId */
     UA_Variant_setScalar(&methodUpdatePayload[6].value, (void*)(uintptr_t)methodNode,
@@ -795,7 +855,8 @@ auditMethodUpdateEvent(UA_Server *server, UA_SecureChannel *channel, UA_Session 
     /* Passwords, private keys and security keys are not published */
     UA_Variant redactedInputs[UA_AUDIT_MAXREDACTEDARGUMENTS];
     UA_Variant redactedOutputs[UA_AUDIT_MAXREDACTEDARGUMENTS];
-    const SecretMethodArguments *secrets = getSecretMethodArguments(methodNode);
+    const SecretMethodArguments *secrets =
+        getSecretMethodArguments(methodNode, callback);
     if(secrets) {
         redactMethodArguments(secrets->secretInputs, redactedInputs,
                               &inputsSize, &inputs);
@@ -811,7 +872,7 @@ auditMethodUpdateEvent(UA_Server *server, UA_SecureChannel *channel, UA_Session 
     UA_Variant_setArray(&methodUpdatePayload[9].value, outputs, outputsSize,
                          &UA_TYPES[UA_TYPES_VARIANT]);
 
-    UA_KeyValueMap payload = {10, methodUpdatePayload};
+    UA_KeyValueMap payload = {11, methodUpdatePayload};
     auditUpdateEvent(server, UA_APPLICATIONNOTIFICATIONTYPE_AUDIT_UPDATE_METHOD,
                      channel, session, sourceNode, "Call", status, payload);
 }
@@ -821,8 +882,9 @@ auditRoleMappingRuleChangedEvent(UA_Server *server, UA_SecureChannel *channel,
                                  UA_Session *session, UA_Boolean status,
                                  const UA_NodeId *sourceNode, const UA_NodeId *methodNode,
                                  UA_StatusCode statusCodeId,
-                                 size_t inputsSize, UA_Variant *inputs) {
-    UA_STATIC_THREAD_LOCAL UA_KeyValuePair rmrcPayload[10] = {
+                                 size_t inputsSize, UA_Variant *inputs,
+                                 size_t outputsSize, UA_Variant *outputs) {
+    UA_STATIC_THREAD_LOCAL UA_KeyValuePair rmrcPayload[11] = {
         {{0, UA_STRING_STATIC("/ActionTimeStamp")}, {0}},             /* 0 */
         {{0, UA_STRING_STATIC("/Status")}, {0}},                      /* 1 */
         {{0, UA_STRING_STATIC("/ServerId")}, {0}},                    /* 2 */
@@ -832,8 +894,12 @@ auditRoleMappingRuleChangedEvent(UA_Server *server, UA_SecureChannel *channel,
         {{0, UA_STRING_STATIC("/MethodId")}, {0}},                    /* 6 */
         {{0, UA_STRING_STATIC("/StatusCodeId")}, {0}},                /* 7 */
         {{0, UA_STRING_STATIC("/InputArguments")}, {0}},              /* 8 */
-        {{0, UA_STRING_STATIC("/OutputArguments")}, {0}}              /* 9 */
+        {{0, UA_STRING_STATIC("/OutputArguments")}, {0}},             /* 9 */
+        {{0, UA_STRING_STATIC("/SourceNode")}, {0}}                   /* 10 */
     };
+
+    /* /SourceNode (the Role Object) */
+    setSourceNodePayload(&rmrcPayload[10].value, sourceNode);
 
     UA_Variant_setScalar(&rmrcPayload[6].value, (void*)(uintptr_t)methodNode,
                          &UA_TYPES[UA_TYPES_NODEID]);
@@ -841,9 +907,10 @@ auditRoleMappingRuleChangedEvent(UA_Server *server, UA_SecureChannel *channel,
                          &UA_TYPES[UA_TYPES_STATUSCODE]);
     UA_Variant_setArray(&rmrcPayload[8].value, inputs, inputsSize,
                         &UA_TYPES[UA_TYPES_VARIANT]);
-    UA_Variant_setArray(&rmrcPayload[9].value, NULL, 0, &UA_TYPES[UA_TYPES_VARIANT]);
+    UA_Variant_setArray(&rmrcPayload[9].value, outputs, outputsSize,
+                        &UA_TYPES[UA_TYPES_VARIANT]);
 
-    UA_KeyValueMap payload = {10, rmrcPayload};
+    UA_KeyValueMap payload = {11, rmrcPayload};
     auditUpdateEvent(server,
                      UA_APPLICATIONNOTIFICATIONTYPE_AUDIT_UPDATE_METHOD_ROLEMAPPINGRULECHANGED,
                      channel, session, sourceNode, "Call", status, payload);

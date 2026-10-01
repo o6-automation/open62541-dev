@@ -1179,6 +1179,183 @@ START_TEST(sessionSecurityDiagnostics_ownSessionOnly) {
 }
 END_TEST
 
+/* Create the diagnostics object of an in-process Session, as CreateSession
+ * does */
+static void
+createDiagnosticsObject(UA_Session *session, const char *name) {
+    lockServer(server);
+    UA_String_clear(&session->sessionName);
+    session->sessionName = UA_STRING_ALLOC(name);
+    createSessionObject(server, session);
+    unlockServer(server);
+}
+
+/* The NodeId of a Variable below the diagnostics object of a Session */
+static UA_NodeId
+sessionDiagnosticsNode(const UA_Session *session, size_t pathSize,
+                       const char **path) {
+    UA_QualifiedName bn[2];
+    ck_assert_uint_le(pathSize, 2);
+    for(size_t i = 0; i < pathSize; i++)
+        bn[i] = UA_QUALIFIEDNAME(0, (char*)(uintptr_t)path[i]);
+    UA_BrowsePathResult bpr =
+        UA_Server_browseSimplifiedBrowsePath(server, session->sessionId,
+                                             pathSize, bn);
+    ck_assert_uint_eq(bpr.statusCode, UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(bpr.targetsSize, 1);
+    UA_NodeId id;
+    ck_assert_uint_eq(UA_NodeId_copy(&bpr.targets[0].targetId.nodeId, &id),
+                      UA_STATUSCODE_GOOD);
+    UA_BrowsePathResult_clear(&bpr);
+    return id;
+}
+
+static UA_StatusCode
+readStatus(UA_Session *reader, const UA_NodeId nodeId) {
+    UA_DataValue dv = readAs(reader, nodeId, UA_ATTRIBUTEID_VALUE);
+    UA_StatusCode res = (dv.hasStatus) ? dv.status : UA_STATUSCODE_GOOD;
+    if(res == UA_STATUSCODE_GOOD)
+        ck_assert(dv.hasValue);
+    UA_DataValue_clear(&dv);
+    return res;
+}
+
+static void
+assertRoleIds(UA_Session *reader, const UA_NodeId nodeId,
+              size_t expectedSize, const UA_NodeId *expected) {
+    UA_DataValue dv = readAs(reader, nodeId, UA_ATTRIBUTEID_VALUE);
+    ck_assert(!dv.hasStatus || dv.status == UA_STATUSCODE_GOOD);
+    ck_assert(UA_Variant_hasArrayType(&dv.value, &UA_TYPES[UA_TYPES_NODEID]));
+    ck_assert_uint_eq(dv.value.arrayLength, expectedSize);
+    const UA_NodeId *ids = (const UA_NodeId*)dv.value.data;
+    for(size_t i = 0; i < expectedSize; i++)
+        ck_assert(UA_NodeId_equal(&ids[i], &expected[i]));
+    UA_DataValue_clear(&dv);
+}
+
+/* CurrentRoleIds lists the Roles granted to the Session. Other Sessions read
+ * it only with the SecurityAdmin Role (Part 5 §6.3.5). */
+START_TEST(sessionDiagnostics_currentRoleIds) {
+    const UA_NodeId pubRoles[2] = {ROLE(ANONYMOUS), ROLE(AUTHENTICATEDUSER)};
+    UA_Session *pub = createSessionWithRoles(2, pubRoles);
+    UA_Session *op = createSessionWithRole(ROLE(OPERATOR));
+    UA_Session *sec = createSessionWithRole(ROLE(SECURITYADMIN));
+    createDiagnosticsObject(pub, "PublicSession");
+    createDiagnosticsObject(op, "OperatorSession");
+
+    const char *path[1] = {"CurrentRoleIds"};
+    UA_NodeId pubRoleIds = sessionDiagnosticsNode(pub, 1, path);
+    UA_NodeId opRoleIds = sessionDiagnosticsNode(op, 1, path);
+    ck_assert_uint_eq(pubRoleIds.namespaceIndex, 1);
+
+    /* An optional Property of the SessionDiagnosticsObjectType */
+    UA_NodeId dataType;
+    ck_assert_uint_eq(UA_Server_readDataType(server, pubRoleIds, &dataType),
+                      UA_STATUSCODE_GOOD);
+    ck_assert(UA_NodeId_equal(&dataType, &UA_TYPES[UA_TYPES_NODEID].typeId));
+    UA_Int32 valueRank = 0;
+    ck_assert_uint_eq(UA_Server_readValueRank(server, pubRoleIds, &valueRank),
+                      UA_STATUSCODE_GOOD);
+    ck_assert_int_eq(valueRank, UA_VALUERANK_ONE_DIMENSION);
+    UA_NodeId typeDef;
+    ck_assert_uint_eq(UA_Server_getNodeType(server, pubRoleIds, &typeDef),
+                      UA_STATUSCODE_GOOD);
+    const UA_NodeId propertyType = UA_NODEID_NUMERIC(0, UA_NS0ID_PROPERTYTYPE);
+    ck_assert(UA_NodeId_equal(&typeDef, &propertyType));
+
+    /* The owning Session reads its Roles */
+    assertRoleIds(pub, pubRoleIds, 2, pubRoles);
+    const UA_NodeId opRoles[2] = {ROLE(ANONYMOUS), ROLE(OPERATOR)};
+    assertRoleIds(op, opRoleIds, 2, opRoles);
+
+    /* Another Session without SecurityAdmin is denied */
+    ck_assert_uint_eq(readStatus(op, pubRoleIds), UA_STATUSCODE_BADUSERACCESSDENIED);
+    ck_assert_uint_eq(readStatus(pub, opRoleIds), UA_STATUSCODE_BADUSERACCESSDENIED);
+
+    /* SecurityAdmin and the local admin read the Roles of every Session */
+    assertRoleIds(sec, pubRoleIds, 2, pubRoles);
+    assertRoleIds(sec, opRoleIds, 2, opRoles);
+    UA_Variant v;
+    ck_assert_uint_eq(UA_Server_readValue(server, opRoleIds, &v), UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(v.arrayLength, 2);
+    UA_Variant_clear(&v);
+
+    UA_NodeId_clear(&pubRoleIds);
+    UA_NodeId_clear(&opRoleIds);
+}
+END_TEST
+
+/* The diagnostics object of a Session reports the data of that Session, not
+ * of the reading Session. Every Session can read it under the strict ns1
+ * template. Its security diagnostics are visible to the owning Session and to
+ * SecurityAdmin only (Part 5 §6.3.4, §6.3.5). */
+START_TEST(sessionDiagnostics_reportOwningSession) {
+    /* Under the ns1 template the Anonymous Role may only browse */
+    const UA_NodeId anonymousOnly[1] = {ROLE(ANONYMOUS)};
+    UA_Session *a = createSessionWithRoles(1, anonymousOnly);
+    UA_Session *op = createSessionWithRole(ROLE(OPERATOR));
+    UA_Session *sec = createSessionWithRole(ROLE(SECURITYADMIN));
+    createDiagnosticsObject(a, "SessionA");
+    createDiagnosticsObject(sec, "SessionB");
+    const UA_String nameA = UA_STRING("SessionA");
+
+    const char *sdPath[1] = {"SessionDiagnostics"};
+    const char *namePath[2] = {"SessionDiagnostics", "SessionName"};
+    const char *ssdPath[1] = {"SessionSecurityDiagnostics"};
+    const char *userPath[2] = {"SessionSecurityDiagnostics", "ClientUserIdOfSession"};
+    UA_NodeId sd = sessionDiagnosticsNode(a, 1, sdPath);
+    UA_NodeId name = sessionDiagnosticsNode(a, 2, namePath);
+    UA_NodeId ssd = sessionDiagnosticsNode(a, 1, ssdPath);
+    UA_NodeId user = sessionDiagnosticsNode(a, 2, userPath);
+
+    /* The owning Session reads its diagnostics */
+    ck_assert_uint_eq(effective(a, sd) & R, R);
+    UA_DataValue dv = readAs(a, sd, UA_ATTRIBUTEID_VALUE);
+    ck_assert(!dv.hasStatus || dv.status == UA_STATUSCODE_GOOD);
+    ck_assert(UA_Variant_hasScalarType(&dv.value,
+                  &UA_TYPES[UA_TYPES_SESSIONDIAGNOSTICSDATATYPE]));
+    UA_SessionDiagnosticsDataType *sdv = (UA_SessionDiagnosticsDataType*)dv.value.data;
+    ck_assert(UA_NodeId_equal(&sdv->sessionId, &a->sessionId));
+    UA_DataValue_clear(&dv);
+    ck_assert_uint_eq(readStatus(a, ssd), UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(readStatus(a, user), UA_STATUSCODE_GOOD);
+
+    /* Session B (SecurityAdmin) gets the data of Session A */
+    dv = readAs(sec, sd, UA_ATTRIBUTEID_VALUE);
+    ck_assert(UA_Variant_hasScalarType(&dv.value,
+                  &UA_TYPES[UA_TYPES_SESSIONDIAGNOSTICSDATATYPE]));
+    sdv = (UA_SessionDiagnosticsDataType*)dv.value.data;
+    ck_assert(UA_NodeId_equal(&sdv->sessionId, &a->sessionId));
+    ck_assert(UA_String_equal(&sdv->sessionName, &nameA));
+    UA_DataValue_clear(&dv);
+    dv = readAs(sec, name, UA_ATTRIBUTEID_VALUE);
+    ck_assert(UA_Variant_hasScalarType(&dv.value, &UA_TYPES[UA_TYPES_STRING]));
+    ck_assert(UA_String_equal((UA_String*)dv.value.data, &nameA));
+    UA_DataValue_clear(&dv);
+    dv = readAs(sec, ssd, UA_ATTRIBUTEID_VALUE);
+    ck_assert(UA_Variant_hasScalarType(&dv.value,
+                  &UA_TYPES[UA_TYPES_SESSIONSECURITYDIAGNOSTICSDATATYPE]));
+    ck_assert(UA_NodeId_equal(
+        &((UA_SessionSecurityDiagnosticsDataType*)dv.value.data)->sessionId,
+        &a->sessionId));
+    UA_DataValue_clear(&dv);
+
+    /* Another Session reads the general diagnostics of Session A, but not its
+     * security diagnostics */
+    dv = readAs(op, name, UA_ATTRIBUTEID_VALUE);
+    ck_assert(UA_Variant_hasScalarType(&dv.value, &UA_TYPES[UA_TYPES_STRING]));
+    ck_assert(UA_String_equal((UA_String*)dv.value.data, &nameA));
+    UA_DataValue_clear(&dv);
+    ck_assert_uint_eq(readStatus(op, ssd), UA_STATUSCODE_BADUSERACCESSDENIED);
+    ck_assert_uint_eq(readStatus(op, user), UA_STATUSCODE_BADUSERACCESSDENIED);
+
+    UA_NodeId_clear(&sd);
+    UA_NodeId_clear(&name);
+    UA_NodeId_clear(&ssd);
+    UA_NodeId_clear(&user);
+}
+END_TEST
+
 #ifdef UA_ENABLE_SUBSCRIPTIONS
 /* The Server builds the diagnostics Variable of a Subscription. The Session
  * that creates the Subscription needs no permission in Namespace Zero. */
@@ -1221,6 +1398,10 @@ START_TEST(subscriptionDiagnostics_builtForPublicSession) {
     ck_assert_uint_eq(((UA_SubscriptionDiagnosticsDataType*)v.data)->subscriptionId,
                       subId);
     UA_Variant_clear(&v);
+
+    /* The Session reads it under the strict ns1 template */
+    ck_assert_uint_eq(readStatus(pub, bpr.targets[0].targetId.nodeId),
+                      UA_STATUSCODE_GOOD);
     UA_BrowsePathResult_clear(&bpr);
 }
 END_TEST
@@ -1334,6 +1515,8 @@ static Suite *testSuite(void) {
     tcase_add_test(tc_strict, ns0WritableNodes_nonSecurityOnly);
 #ifdef UA_ENABLE_DIAGNOSTICS
     tcase_add_test(tc_strict, sessionSecurityDiagnostics_ownSessionOnly);
+    tcase_add_test(tc_strict, sessionDiagnostics_currentRoleIds);
+    tcase_add_test(tc_strict, sessionDiagnostics_reportOwningSession);
 # ifdef UA_ENABLE_SUBSCRIPTIONS
     tcase_add_test(tc_strict, subscriptionDiagnostics_builtForPublicSession);
 # endif
