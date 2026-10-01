@@ -3,10 +3,12 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/.
  *
  *    Copyright 2024 (c) Fraunhofer IOSB (Author: Noel Graf)
+ *    Copyright 2026 (c) o6 Automation GmbH (Author: Andreas Ebner)
  */
 
 #include <open62541/server_config_default.h>
 #include <open62541/plugin/create_certificate.h>
+#include <open62541/plugin/log_stdout.h>
 #include <open62541/client_config_default.h>
 #include <open62541/client_highlevel.h>
 #include <open62541/plugin/certificategroup_default.h>
@@ -549,18 +551,38 @@ callUpdateCertificate(UA_Client *client) {
     return res;
 }
 
+static UA_ByteString
+createPeerCertificate(void) {
+    UA_String subject[2] = {UA_STRING_STATIC("O=open62541"),
+                            UA_STRING_STATIC("CN=Peer")};
+    UA_String san = UA_STRING_STATIC("URI:urn:open62541:test:peer");
+    UA_UInt16 keySize = 2048;
+    UA_KeyValuePair param;
+    param.key = UA_QUALIFIEDNAME(0, "key-size-bits");
+    UA_Variant_setScalar(&param.value, &keySize, &UA_TYPES[UA_TYPES_UINT16]);
+    UA_KeyValueMap params = {1, &param};
+    UA_ByteString certificate = UA_BYTESTRING_NULL, privateKey = UA_BYTESTRING_NULL;
+    UA_StatusCode res = UA_CreateCertificate(UA_Log_Stdout, subject, 2, &san, 1,
+                                             UA_CERTIFICATEFORMAT_DER, &params,
+                                             &privateKey, &certificate);
+    ck_assert_uint_eq(res, UA_STATUSCODE_GOOD);
+    UA_ByteString_clear(&privateKey);
+    return certificate;
+}
+
 /* Test: AddCertificate succeeds for a non-CA end-entity certificate */
 START_TEST(add_certificate_success) {
     UA_Client *client = createSecureClient();
 
-    UA_ByteString cert;
-    cert.length = APPLICATION_CERT_DER_LENGTH;
-    cert.data = APPLICATION_CERT_DER_DATA;
+    /* AddCertificate validates the certificate (Part 12, 7.8.2.6). A
+     * self-signed certificate is valid once it is trusted. */
+    UA_ByteString cert = createPeerCertificate();
 
     UA_Boolean isTrusted = true;
     UA_StatusCode retval = callAddCertificate(client, &cert, isTrusted);
     ck_assert_uint_eq(retval, UA_STATUSCODE_GOOD);
 
+    UA_ByteString_clear(&cert);
     UA_Client_disconnect(client);
     UA_Client_delete(client);
 }
@@ -611,14 +633,15 @@ START_TEST(add_certificate_reject_while_open) {
     UA_StatusCode retval = openTrustList(client, mode, &fileHandler);
     ck_assert_uint_eq(retval, UA_STATUSCODE_GOOD);
 
-    /* Try to add — should fail because the list is open */
+    /* Try to add — should fail because the list is open for reading
+     * (Part 12, 7.8.2.6) */
     UA_ByteString cert;
     cert.length = APPLICATION_CERT_DER_LENGTH;
     cert.data = APPLICATION_CERT_DER_DATA;
 
     UA_Boolean isTrusted = true;
     retval = callAddCertificate(client, &cert, isTrusted);
-    ck_assert_uint_eq(retval, UA_STATUSCODE_BADINVALIDSTATE);
+    ck_assert_uint_eq(retval, UA_STATUSCODE_BADNOTWRITABLE);
 
     /* Close the TrustList */
     UA_UInt32 fd = *(UA_UInt32*)fileHandler.data;
@@ -636,9 +659,9 @@ START_TEST(remove_certificate_success) {
     UA_Client *client = createSecureClient();
 
     /* First add the certificate */
-    UA_ByteString cert;
-    cert.length = APPLICATION_CERT_DER_LENGTH;
-    cert.data = APPLICATION_CERT_DER_DATA;
+    /* AddCertificate validates the certificate (Part 12, 7.8.2.6). A
+     * self-signed certificate is valid once it is trusted. */
+    UA_ByteString cert = createPeerCertificate();
 
     UA_Boolean isTrusted = true;
     UA_StatusCode retval = callAddCertificate(client, &cert, isTrusted);
@@ -657,6 +680,7 @@ START_TEST(remove_certificate_success) {
     ck_assert_uint_eq(retval, UA_STATUSCODE_GOOD);
 
     UA_String_clear(&thumbprint);
+    UA_ByteString_clear(&cert);
     UA_Client_disconnect(client);
     UA_Client_delete(client);
 }
@@ -681,9 +705,9 @@ START_TEST(remove_certificate_reject_while_open) {
     UA_Client *client = createSecureClient();
 
     /* First add a certificate so there's something to try removing */
-    UA_ByteString cert;
-    cert.length = APPLICATION_CERT_DER_LENGTH;
-    cert.data = APPLICATION_CERT_DER_DATA;
+    /* AddCertificate validates the certificate (Part 12, 7.8.2.6). A
+     * self-signed certificate is valid once it is trusted. */
+    UA_ByteString cert = createPeerCertificate();
 
     UA_Boolean isTrusted = true;
     UA_StatusCode retval = callAddCertificate(client, &cert, isTrusted);
@@ -704,9 +728,10 @@ START_TEST(remove_certificate_reject_while_open) {
     retval = openTrustList(client, mode, &fileHandler);
     ck_assert_uint_eq(retval, UA_STATUSCODE_GOOD);
 
-    /* Try to remove — should fail because the list is open */
+    /* Try to remove — should fail because the list is open for reading
+     * (Part 12, 7.8.2.7) */
     retval = callRemoveCertificate(client, &thumbprint, isTrusted);
-    ck_assert_uint_eq(retval, UA_STATUSCODE_BADINVALIDSTATE);
+    ck_assert_uint_eq(retval, UA_STATUSCODE_BADNOTWRITABLE);
 
     /* Close the TrustList */
     UA_UInt32 fd = *(UA_UInt32*)fileHandler.data;
@@ -715,6 +740,7 @@ START_TEST(remove_certificate_reject_while_open) {
 
     UA_Variant_clear(&fileHandler);
     UA_String_clear(&thumbprint);
+    UA_ByteString_clear(&cert);
     UA_Client_disconnect(client);
     UA_Client_delete(client);
 }
@@ -746,12 +772,12 @@ START_TEST(remove_certificate_failure_clears_transaction) {
     certGroup->getTrustList = getTrustList;
     unlockServer(server);
 
-    /* No transaction is pending, so the TrustList can be changed again */
-    UA_ByteString cert;
-    cert.length = APPLICATION_CERT_DER_LENGTH;
-    cert.data = APPLICATION_CERT_DER_DATA;
+    /* No transaction is pending, so the TrustList can be changed again.
+     * AddCertificate validates the certificate (Part 12, 7.8.2.6). */
+    UA_ByteString cert = createPeerCertificate();
     retval = callAddCertificate(client, &cert, true);
     ck_assert_uint_eq(retval, UA_STATUSCODE_GOOD);
+    UA_ByteString_clear(&cert);
 
     UA_Client_disconnect(client);
     UA_Client_delete(client);
@@ -890,13 +916,20 @@ START_TEST(open_continues_transaction) {
     UA_Client *client = createSecureClient();
     UA_Client *other = createSecureClient();
 
+    /* UpdateCertificate validates the certificate with the TrustList (Part
+     * 12, 7.10.5). The self-signed server certificate is valid once it is
+     * trusted. */
+    UA_ByteString serverCertificate = {CERT_DER_LENGTH, CERT_DER_DATA};
+    UA_StatusCode retval = callAddCertificate(client, &serverCertificate, true);
+    ck_assert_uint_eq(retval, UA_STATUSCODE_GOOD);
+
     /* The TrustList that is written back */
     UA_CertificateGroup *certGroup = &UA_Server_getConfig(server)->secureChannelPKI;
     UA_TrustListDataType trustList;
     UA_TrustListDataType_init(&trustList);
     trustList.specifiedLists = UA_TRUSTLISTMASKS_ALL;
     lockServer(server);
-    UA_StatusCode retval = certGroup->getTrustList(certGroup, &trustList);
+    retval = certGroup->getTrustList(certGroup, &trustList);
     unlockServer(server);
     ck_assert_uint_eq(retval, UA_STATUSCODE_GOOD);
     UA_ByteString encTrustList = UA_BYTESTRING_NULL;

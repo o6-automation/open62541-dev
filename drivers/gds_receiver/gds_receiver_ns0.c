@@ -4,6 +4,7 @@
  *
  *    Copyright 2024 (c) Fraunhofer IOSB (Author: Noel Graf)
  *    Copyright 2026 (c) o6 Automation GmbH (Author: Julius Pfrommer)
+ *    Copyright 2026 (c) o6 Automation GmbH (Author: Andreas Ebner)
  */
 
 #include "gds_receiver_internal.h"
@@ -30,6 +31,37 @@ checkGDSMethodArguments(size_t inputSize, size_t expectedInputSize,
         return UA_STATUSCODE_BADTYPEMISMATCH;
     return checkGDSMethodOutputArguments(outputSize, expectedOutputSize);
 }
+
+UA_StatusCode
+UA_GDSReceiver_checkSecurityMode(UA_Server *server, const UA_NodeId *sessionId,
+                                 UA_MessageSecurityMode minimum) {
+    UA_MessageSecurityMode mode = UA_MESSAGESECURITYMODE_INVALID;
+    UA_StatusCode res =
+        UA_Server_getSessionAttribute_scalar(server, sessionId,
+                                             UA_QUALIFIEDNAME(0, "securityMode"),
+                                             &UA_TYPES[UA_TYPES_MESSAGESECURITYMODE],
+                                             &mode);
+    if(res != UA_STATUSCODE_GOOD) {
+        /* Only the admin Session has no SecureChannel */
+        UA_Guid adminGuid = {1, 0, 0, {0}};
+        UA_NodeId adminSessionId = UA_NODEID_GUID(0, adminGuid);
+        if(sessionId && UA_NodeId_equal(sessionId, &adminSessionId))
+            return UA_STATUSCODE_GOOD;
+        return UA_STATUSCODE_BADSECURITYMODEINSUFFICIENT;
+    }
+    if(mode < minimum)
+        return UA_STATUSCODE_BADSECURITYMODEINSUFFICIENT;
+    return UA_STATUSCODE_GOOD;
+}
+
+/* Part 12: UpdateCertificate and CreateSigningRequest require an encrypted
+ * SecureChannel, all other Methods an authenticated one */
+#define CHECK_SECURITY_MODE(MINIMUM) do {                               \
+        UA_StatusCode securityRes =                                     \
+            UA_GDSReceiver_checkSecurityMode(server, sessionId, MINIMUM); \
+        if(securityRes != UA_STATUSCODE_GOOD)                           \
+            return securityRes;                                         \
+    } while(0)
 
 UA_CertificateGroup*
 getCertGroup(UA_Server *server, const UA_NodeId *objectId) {
@@ -142,8 +174,9 @@ writeLastUpdateVariable(UA_GDSReceiverContext *ctx, UA_CertificateGroup *group) 
 static UA_StatusCode
 createFileInfos(UA_GDSReceiverContext *ctx) {
     /* The server currently only supports the DefaultApplicationGroup and
-     * UserTokenGroup */
-    UA_UtcTime lastUpdateTime = UA_DateTime_now();
+     * UserTokenGroup. The time of the last update is unknown after a start
+     * (DateTime.MinValue, Part 12, 7.8.2.1). */
+    UA_UtcTime lastUpdateTime = 0;
 
     return UA_GDSReceiver_initFileInfos(ctx, lastUpdateTime);
 }
@@ -166,9 +199,9 @@ writeGroupVariables(UA_GDSReceiverContext *ctx) {
             certificateTypes[certificateTypesSize++] = knownCertificateTypes[i];
     }
 
-    UA_String supportedPrivateKeyFormats[2] =
-        {UA_STRING("PEM"), UA_STRING("DER")};
-    size_t supportedPrivateKeyFormatsSize = 2;
+    /* Part 12, 7.10.3. DER keys are accepted as well. */
+    UA_String supportedPrivateKeyFormats[1] = {UA_STRING("PEM")};
+    size_t supportedPrivateKeyFormatsSize = 1;
     UA_UInt32 maxTrustListSize = config->maxTrustListSize;
 
     /* Set variables */
@@ -228,14 +261,18 @@ updateCertificateAction(UA_Server *server,
     UA_StatusCode res = checkGDSMethodArguments(inputSize, 6, outputSize, 1);
     if(res != UA_STATUSCODE_GOOD)
         return res;
+    CHECK_SECURITY_MODE(UA_MESSAGESECURITYMODE_SIGNANDENCRYPT);
 
     /* Check for input types */
     if(!UA_Variant_hasScalarType(&input[0], &UA_TYPES[UA_TYPES_NODEID]) || /*CertificateGroupId*/
        !UA_Variant_hasScalarType(&input[1], &UA_TYPES[UA_TYPES_NODEID]) || /*CertificateTypeId*/
        !UA_Variant_hasScalarType(&input[2], &UA_TYPES[UA_TYPES_BYTESTRING]) || /*Certificate*/
-       !UA_Variant_hasArrayType(&input[3], &UA_TYPES[UA_TYPES_BYTESTRING]) || /*IssuerCertificates*/
-       !UA_Variant_hasScalarType(&input[4], &UA_TYPES[UA_TYPES_STRING]) || /*PrivateKeyFormat*/
-       !UA_Variant_hasScalarType(&input[5], &UA_TYPES[UA_TYPES_BYTESTRING])) /*PrivateKey*/
+       (!UA_Variant_isEmpty(&input[3]) &&
+        !UA_Variant_hasArrayType(&input[3], &UA_TYPES[UA_TYPES_BYTESTRING])) || /*IssuerCertificates*/
+       (!UA_Variant_isEmpty(&input[4]) &&
+        !UA_Variant_hasScalarType(&input[4], &UA_TYPES[UA_TYPES_STRING])) || /*PrivateKeyFormat*/
+       (!UA_Variant_isEmpty(&input[5]) &&
+        !UA_Variant_hasScalarType(&input[5], &UA_TYPES[UA_TYPES_BYTESTRING]))) /*PrivateKey*/
         return UA_STATUSCODE_BADTYPEMISMATCH;
 
     UA_NodeId *certificateGroupId = (UA_NodeId *)input[0].data;
@@ -273,6 +310,7 @@ createSigningRequestAction(UA_Server *server,
     UA_StatusCode res = checkGDSMethodArguments(inputSize, 5, outputSize, 1);
     if(res != UA_STATUSCODE_GOOD)
         return res;
+    CHECK_SECURITY_MODE(UA_MESSAGESECURITYMODE_SIGNANDENCRYPT);
 
     if(!UA_Variant_hasScalarType(&input[0], &UA_TYPES[UA_TYPES_NODEID]) || /*CertificateGroupId*/
        !UA_Variant_hasScalarType(&input[1], &UA_TYPES[UA_TYPES_NODEID]) || /*CertificateTypeId*/
@@ -286,6 +324,15 @@ createSigningRequestAction(UA_Server *server,
     UA_String *subjectName = (UA_String *)input[2].data;
     UA_Boolean *regenerateKey = ((UA_Boolean *)input[3].data);
     UA_ByteString *nonce = (UA_ByteString *)input[4].data;
+
+    /* A new key requires at least 32 bytes of entropy (Part 12, 7.10.10) */
+    if(*regenerateKey && nonce->length < 32)
+        return UA_STATUSCODE_BADINVALIDARGUMENT;
+    res = UA_GDSReceiver_checkTransaction((UA_GDSReceiverContext*)methodContext,
+                                          sessionId);
+    if(res != UA_STATUSCODE_GOOD)
+        return res;
+
     UA_ByteString *csr = UA_ByteString_new();
     if(!csr)
         return UA_STATUSCODE_BADOUTOFMEMORY;
@@ -316,6 +363,7 @@ getRejectedListAction(UA_Server *server,
     UA_StatusCode res = checkGDSMethodArguments(inputSize, 0, outputSize, 1);
     if(res != UA_STATUSCODE_GOOD)
         return res;
+    CHECK_SECURITY_MODE(UA_MESSAGESECURITYMODE_SIGN);
 
     UA_GDSReceiverContext *ctx = (UA_GDSReceiverContext*)methodContext;
     return UA_GDSReceiver_getRejectedList(ctx, outputSize, output);
@@ -331,8 +379,24 @@ applyChangesAction(UA_Server *server,
     UA_StatusCode res = checkGDSMethodArguments(inputSize, 0, outputSize, 0);
     if(res != UA_STATUSCODE_GOOD)
         return res;
+    CHECK_SECURITY_MODE(UA_MESSAGESECURITYMODE_SIGN);
     UA_GDSReceiverContext *ctx = (UA_GDSReceiverContext*)methodContext;
     return UA_GDSReceiver_applyChangesForSession(ctx, sessionId);
+}
+
+static UA_StatusCode
+cancelChangesAction(UA_Server *server,
+                    const UA_NodeId *sessionId, void *sessionHandle,
+                    const UA_NodeId *methodId, void *methodContext,
+                    const UA_NodeId *objectId, void *objectContext,
+                    size_t inputSize, const UA_Variant *input,
+                    size_t outputSize, UA_Variant *output) {
+    UA_StatusCode res = checkGDSMethodArguments(inputSize, 0, outputSize, 0);
+    if(res != UA_STATUSCODE_GOOD)
+        return res;
+    CHECK_SECURITY_MODE(UA_MESSAGESECURITYMODE_SIGN);
+    UA_GDSReceiverContext *ctx = (UA_GDSReceiverContext*)methodContext;
+    return UA_GDSReceiver_cancelChangesForSession(ctx, sessionId);
 }
 
 static UA_StatusCode
@@ -345,6 +409,7 @@ addCertificateAction(UA_Server *server,
     UA_StatusCode res = checkGDSMethodArguments(inputSize, 2, outputSize, 0);
     if(res != UA_STATUSCODE_GOOD)
         return res;
+    CHECK_SECURITY_MODE(UA_MESSAGESECURITYMODE_SIGN);
     /* Check input types */
     if(!UA_Variant_hasScalarType(&input[0], &UA_TYPES[UA_TYPES_BYTESTRING]) || /* Certificate */
        !UA_Variant_hasScalarType(&input[1], &UA_TYPES[UA_TYPES_BOOLEAN]))      /* IsTrustedCertificate */
@@ -378,6 +443,7 @@ removeCertificateAction(UA_Server *server,
     UA_StatusCode res = checkGDSMethodArguments(inputSize, 2, outputSize, 0);
     if(res != UA_STATUSCODE_GOOD)
         return res;
+    CHECK_SECURITY_MODE(UA_MESSAGESECURITYMODE_SIGN);
     /* Check input types */
     if(!UA_Variant_hasScalarType(&input[0], &UA_TYPES[UA_TYPES_STRING]) || /* Thumbprint */
        !UA_Variant_hasScalarType(&input[1], &UA_TYPES[UA_TYPES_BOOLEAN]))  /* IsTrustedCertificate */
@@ -408,6 +474,7 @@ openTrustListWithMaskAction(UA_Server *server,
     UA_StatusCode res = checkGDSMethodArguments(inputSize, 1, outputSize, 1);
     if(res != UA_STATUSCODE_GOOD)
         return res;
+    CHECK_SECURITY_MODE(UA_MESSAGESECURITYMODE_SIGN);
 
     /* Check input */
     if(!UA_Variant_hasScalarType(&input[0], &UA_TYPES[UA_TYPES_UINT32])) /* Mask */
@@ -433,6 +500,7 @@ closeAndUpdateTrustListAction(UA_Server *server,
     UA_StatusCode res = checkGDSMethodArguments(inputSize, 1, outputSize, 1);
     if(res != UA_STATUSCODE_GOOD)
         return res;
+    CHECK_SECURITY_MODE(UA_MESSAGESECURITYMODE_SIGN);
 
     /* Check input */
     if(!UA_Variant_hasScalarType(&input[0], &UA_TYPES[UA_TYPES_UINT32])) /* FileHandle */
@@ -458,6 +526,7 @@ openFileAction(UA_Server *server,
     UA_StatusCode res = checkGDSMethodArguments(inputSize, 1, outputSize, 1);
     if(res != UA_STATUSCODE_GOOD)
         return res;
+    CHECK_SECURITY_MODE(UA_MESSAGESECURITYMODE_SIGN);
 
     /* Check input */
     if(!UA_Variant_hasScalarType(&input[0], &UA_TYPES[UA_TYPES_BYTE])) /* FileMode */
@@ -501,6 +570,7 @@ readFileAction(UA_Server *server,
     UA_StatusCode outputRes = checkGDSMethodArguments(inputSize, 2, outputSize, 1);
     if(outputRes != UA_STATUSCODE_GOOD)
         return outputRes;
+    CHECK_SECURITY_MODE(UA_MESSAGESECURITYMODE_SIGN);
 
     /* Check inputs */
     if(!UA_Variant_hasScalarType(&input[0], &UA_TYPES[UA_TYPES_UINT32]) || /* FileHandle */
@@ -550,6 +620,7 @@ writeFileAction(UA_Server *server,
     UA_StatusCode res = checkGDSMethodArguments(inputSize, 2, outputSize, 0);
     if(res != UA_STATUSCODE_GOOD)
         return res;
+    CHECK_SECURITY_MODE(UA_MESSAGESECURITYMODE_SIGN);
     UA_ServerConfig *sc = UA_Server_getConfig(server);
 
     /* Check input */
@@ -596,6 +667,7 @@ closeFileAction(UA_Server *server,
     UA_StatusCode res = checkGDSMethodArguments(inputSize, 1, outputSize, 0);
     if(res != UA_STATUSCODE_GOOD)
         return res;
+    CHECK_SECURITY_MODE(UA_MESSAGESECURITYMODE_SIGN);
     /* Check input */
     if(!UA_Variant_hasScalarType(&input[0], &UA_TYPES[UA_TYPES_UINT32])) /* FileHandle */
         return UA_STATUSCODE_BADTYPEMISMATCH;
@@ -637,6 +709,7 @@ getPositionFileAction(UA_Server *server,
     UA_StatusCode res = checkGDSMethodArguments(inputSize, 1, outputSize, 1);
     if(res != UA_STATUSCODE_GOOD)
         return res;
+    CHECK_SECURITY_MODE(UA_MESSAGESECURITYMODE_SIGN);
 
     /* Check input */
     if(!UA_Variant_hasScalarType(&input[0], &UA_TYPES[UA_TYPES_UINT32])) /* FileHandle */
@@ -680,6 +753,7 @@ setPositionFileAction(UA_Server *server,
     UA_StatusCode res = checkGDSMethodArguments(inputSize, 2, outputSize, 0);
     if(res != UA_STATUSCODE_GOOD)
         return res;
+    CHECK_SECURITY_MODE(UA_MESSAGESECURITYMODE_SIGN);
     /* Check input */
     if(!UA_Variant_hasScalarType(&input[0], &UA_TYPES[UA_TYPES_UINT32]) || /* FileHandle */
        !UA_Variant_hasScalarType(&input[1], &UA_TYPES[UA_TYPES_UINT64]))   /* Position */
@@ -749,6 +823,7 @@ initNS0PushManagement(UA_GDSReceiverContext *ctx) {
     retval |= setMethodCallback(ctx, UA_NS0ID(SERVERCONFIGURATION_CREATESIGNINGREQUEST), createSigningRequestAction);
     retval |= setMethodCallback(ctx, UA_NS0ID(SERVERCONFIGURATION_GETREJECTEDLIST), getRejectedListAction);
     retval |= setMethodCallback(ctx, UA_NS0ID(SERVERCONFIGURATION_APPLYCHANGES), applyChangesAction);
+    retval |= setMethodCallback(ctx, UA_NS0ID(SERVERCONFIGURATION_CANCELCHANGES), cancelChangesAction);
     retval |= setMethodCallback(ctx, UA_NS0ID(SERVERCONFIGURATION_CERTIFICATEGROUPS_DEFAULTAPPLICATIONGROUP_TRUSTLIST_ADDCERTIFICATE), addCertificateAction);
     retval |= setMethodCallback(ctx, UA_NS0ID(SERVERCONFIGURATION_CERTIFICATEGROUPS_DEFAULTUSERTOKENGROUP_TRUSTLIST_ADDCERTIFICATE), addCertificateAction);
     retval |= setMethodCallback(ctx, UA_NS0ID(SERVERCONFIGURATION_CERTIFICATEGROUPS_DEFAULTAPPLICATIONGROUP_TRUSTLIST_REMOVECERTIFICATE), removeCertificateAction);
@@ -782,6 +857,7 @@ clearNS0PushManagement(UA_GDSReceiverContext *ctx) {
         UA_NS0ID_SERVERCONFIGURATION_CREATESIGNINGREQUEST,
         UA_NS0ID_SERVERCONFIGURATION_GETREJECTEDLIST,
         UA_NS0ID_SERVERCONFIGURATION_APPLYCHANGES,
+        UA_NS0ID_SERVERCONFIGURATION_CANCELCHANGES,
         UA_NS0ID_SERVERCONFIGURATION_CERTIFICATEGROUPS_DEFAULTAPPLICATIONGROUP_TRUSTLIST_ADDCERTIFICATE,
         UA_NS0ID_SERVERCONFIGURATION_CERTIFICATEGROUPS_DEFAULTUSERTOKENGROUP_TRUSTLIST_ADDCERTIFICATE,
         UA_NS0ID_SERVERCONFIGURATION_CERTIFICATEGROUPS_DEFAULTAPPLICATIONGROUP_TRUSTLIST_REMOVECERTIFICATE,
@@ -830,6 +906,7 @@ initGDSRolePermissions(UA_Server *server) {
         UA_NS0ID_SERVERCONFIGURATION_CREATESIGNINGREQUEST,
         UA_NS0ID_SERVERCONFIGURATION_GETREJECTEDLIST,
         UA_NS0ID_SERVERCONFIGURATION_APPLYCHANGES,
+        UA_NS0ID_SERVERCONFIGURATION_CANCELCHANGES,
         UA_NS0ID_SERVERCONFIGURATION_CERTIFICATEGROUPS
     };
 
@@ -849,6 +926,7 @@ initGDSRolePermissions(UA_Server *server) {
         UA_NS0ID_SERVERCONFIGURATION_CREATESIGNINGREQUEST,
         UA_NS0ID_SERVERCONFIGURATION_GETREJECTEDLIST,
         UA_NS0ID_SERVERCONFIGURATION_APPLYCHANGES,
+        UA_NS0ID_SERVERCONFIGURATION_CANCELCHANGES,
         UA_NS0ID_SERVERCONFIGURATION_CERTIFICATEGROUPS_DEFAULTAPPLICATIONGROUP_TRUSTLIST_ADDCERTIFICATE,
         UA_NS0ID_SERVERCONFIGURATION_CERTIFICATEGROUPS_DEFAULTUSERTOKENGROUP_TRUSTLIST_ADDCERTIFICATE,
         UA_NS0ID_SERVERCONFIGURATION_CERTIFICATEGROUPS_DEFAULTAPPLICATIONGROUP_TRUSTLIST_REMOVECERTIFICATE,

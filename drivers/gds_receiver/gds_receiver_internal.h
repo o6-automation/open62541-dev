@@ -4,6 +4,7 @@
  *
  *    Copyright 2024 (c) Fraunhofer IOSB (Author: Noel Graf)
  *    Copyright 2026 (c) o6 Automation GmbH (Author: Julius Pfrommer)
+ *    Copyright 2026 (c) o6 Automation GmbH (Author: Andreas Ebner)
  */
 
 #ifndef UA_DRIVER_GDS_RECEIVER_INTERNAL_H_
@@ -59,6 +60,32 @@ UA_GDSReceiver_transactionPending(UA_GDSReceiverContext *ctx);
 UA_StatusCode
 UA_GDSReceiver_applyChangesForSession(UA_GDSReceiverContext *ctx,
                                      const UA_NodeId *sessionId);
+
+UA_StatusCode
+UA_GDSReceiver_cancelChangesForSession(UA_GDSReceiverContext *ctx,
+                                      const UA_NodeId *sessionId);
+
+/* Bad_TransactionPending if another Session has a transaction */
+UA_StatusCode
+UA_GDSReceiver_checkTransaction(UA_GDSReceiverContext *ctx,
+                                const UA_NodeId *sessionId);
+
+/* Validate the new Certificate of an application with the TrustList of the
+ * group (Part 4, 6.1.3 and Part 12, 7.10.5). The issuers must be in the
+ * trusted or the issuer list. The TrustList staged in the transaction of the
+ * Session is used if it exists. */
+UA_StatusCode
+UA_GDSReceiver_validateCertificate(UA_GDSReceiverContext *ctx,
+                                   const UA_NodeId *sessionId,
+                                   UA_CertificateGroup *certGroup,
+                                   const UA_ByteString *certificate);
+
+/* PushManagement requires an authenticated (Sign) or encrypted
+ * (SignAndEncrypt) SecureChannel. Local calls of the admin Session are
+ * allowed. Returns Bad_SecurityModeInsufficient otherwise. */
+UA_StatusCode
+UA_GDSReceiver_checkSecurityMode(UA_Server *server, const UA_NodeId *sessionId,
+                                 UA_MessageSecurityMode minimum);
 
 UA_StatusCode
 UA_GDSReceiver_openTrustList(UA_GDSReceiverContext *ctx, UA_CertificateGroup *certGroup,
