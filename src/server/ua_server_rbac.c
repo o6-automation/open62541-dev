@@ -1078,6 +1078,9 @@ identityCriteriaTypeName(UA_IdentityCriteriaType criteriaType) {
     }
 }
 
+static UA_StatusCode
+validateEndpointFilterUrl(const UA_String *url);
+
 /* Validate the content of a Role. The roleName is not checked here: addRole
  * requires one, but updateRole accepts a Role identified by roleId alone.
  * An invalid identity mapping rule is logged: the criteria formats are
@@ -1133,6 +1136,9 @@ validateRole(UA_Server *server, const UA_Role *role) {
         if(ep->securityMode < UA_MESSAGESECURITYMODE_INVALID ||
            ep->securityMode > UA_MESSAGESECURITYMODE_SIGNANDENCRYPT)
             return UA_STATUSCODE_BADINVALIDARGUMENT;
+        UA_StatusCode res = validateEndpointFilterUrl(&ep->endpointUrl);
+        if(res != UA_STATUSCODE_GOOD)
+            return res;
         for(size_t j = 0; j < i; j++) {
             const UA_EndpointType *other = &role->endpoints[j];
             if(UA_String_equal(&ep->endpointUrl, &other->endpointUrl) &&
@@ -1177,6 +1183,34 @@ warnUnsupportedRoleFeatures(UA_Server *server, const UA_Role *role) {
 /************************************/
 /* Public API: Role Management      */
 /************************************/
+
+/* Is the roleId used by a registered Role other than the one at index skip? */
+static UA_Boolean
+isRoleIdTaken(UA_Server *server, const UA_NodeId *roleId, size_t skip) {
+    for(size_t i = 0; i < server->rolesSize; i++) {
+        if(i != skip && UA_NodeId_equal(&server->roles[i].roleId, roleId))
+            return true;
+    }
+    return false;
+}
+
+/* Choose a random numeric roleId in namespace ns that is neither used in the
+ * registry nor in the AddressSpace, so that the Role Object never collides */
+static UA_StatusCode
+randomRoleId(UA_Server *server, UA_UInt16 ns, UA_NodeId *outRoleId) {
+    for(size_t attempt = 0; attempt < 32; attempt++) {
+        UA_NodeId candidate = UA_NODEID_NUMERIC(ns, UA_UInt32_random());
+        if(candidate.identifier.numeric == 0 ||
+           isRoleIdTaken(server, &candidate, SIZE_MAX))
+            continue;
+        if(checkRoleRepresentation(server, &candidate) ==
+           UA_STATUSCODE_BADNODEIDUNKNOWN) {
+            *outRoleId = candidate;
+            return UA_STATUSCODE_GOOD;
+        }
+    }
+    return UA_STATUSCODE_BADINTERNALERROR;
+}
 
 /* wellKnown marks the Roles registered by initializeStandardRoles during server
  * startup. Those are defined by the spec, so they neither warrant a
@@ -1240,17 +1274,41 @@ addRole(UA_Server *server, const UA_Role *role, UA_NodeId *outRoleNodeId,
         return res;
     }
 
-    /* Auto-assign a numeric roleId if the caller passed a null NodeId. Skip
-     * identifiers that are already taken, in the registry or in the
-     * AddressSpace, so that the generated Role Object never collides. */
-    if(UA_NodeId_isNull(&newRole->roleId)) {
-        for(size_t attempt = 0; attempt < 32; attempt++) {
-            newRole->roleId = UA_NODEID_NUMERIC(0, UA_UInt32_random());
-            if(findRoleById(server, &newRole->roleId))
-                continue;
-            if(checkRoleRepresentation(server, &newRole->roleId) ==
-               UA_STATUSCODE_BADNODEIDUNKNOWN)
-                break;
+    /* Is the Role mirrored under Server/ServerCapabilities/RoleSet? The
+     * RoleSet itself is created by initNS0RBAC before any role is
+     * registered. */
+    UA_NodeId roleSetId =
+        UA_NODEID_NUMERIC(0, UA_NS0ID_SERVER_SERVERCAPABILITIES_ROLESET);
+    UA_QualifiedName probe;
+    UA_QualifiedName_init(&probe);
+    UA_Boolean hasRoleSet =
+        (UA_Server_readBrowseName(server, roleSetId, &probe) == UA_STATUSCODE_GOOD);
+    UA_QualifiedName_clear(&probe);
+
+    /* Auto-assign a numeric roleId if the caller passed a null NodeId. The
+     * Role Object and its children live in the namespace of the BrowseName.
+     * The OPC UA namespace holds only the well-known Roles, so a BrowseName
+     * in namespace zero maps to namespace one. With the RoleSet, the
+     * nodestore assigns the identifier when the Role Object is added below.
+     * Otherwise a random identifier is chosen. */
+    UA_Boolean autoId = UA_NodeId_isNull(&newRole->roleId);
+    UA_UInt16 roleNs = newRole->roleName.namespaceIndex;
+    if(roleNs == 0)
+        roleNs = 1;
+    if(autoId) {
+        if(roleNs >= server->namespacesSize) {
+            UA_Role_clear(newRole);
+            unlockServer(server);
+            return UA_STATUSCODE_BADINVALIDARGUMENT;
+        }
+        if(hasRoleSet)
+            newRole->roleId = UA_NODEID_NUMERIC(roleNs, 0);
+        else
+            res = randomRoleId(server, roleNs, &newRole->roleId);
+        if(res != UA_STATUSCODE_GOOD) {
+            UA_Role_clear(newRole);
+            unlockServer(server);
+            return res;
         }
     }
 
@@ -1260,21 +1318,30 @@ addRole(UA_Server *server, const UA_Role *role, UA_NodeId *outRoleNodeId,
     if(!wellKnown)
         warnUnsupportedRoleFeatures(server, role);
 
-    /* Mirror the role under Server/ServerCapabilities/RoleSet so it is
-     * browseable. An existing Role Object is adopted instead - that is the case
-     * for the well-known roles of Namespace Zero and for a Role Object that a
-     * custom nodeset brought along. A Node that is not a Role Object is never
-     * adopted: removeRole would delete it with all its references. The RoleSet
-     * itself is created by initNS0RBAC before any role is registered. On
-     * failure the appended registry entry is rolled back. */
-    UA_NodeId roleSetId =
-        UA_NODEID_NUMERIC(0, UA_NS0ID_SERVER_SERVERCAPABILITIES_ROLESET);
-    UA_QualifiedName probe;
-    if(UA_Server_readBrowseName(server, roleSetId, &probe) == UA_STATUSCODE_GOOD) {
-        UA_QualifiedName_clear(&probe);
-        UA_StatusCode existing = checkRoleRepresentation(server, &newRole->roleId);
+    /* Mirror the role under the RoleSet so it is browseable. An existing Role
+     * Object is adopted instead - that is the case for the well-known roles of
+     * Namespace Zero and for a Role Object that a custom nodeset brought
+     * along. A Node that is not a Role Object is never adopted: removeRole
+     * would delete it with all its references. On failure the appended
+     * registry entry is rolled back. */
+    UA_Boolean createdRepresentation = false;
+    if(hasRoleSet) {
+        UA_StatusCode existing = (autoId) ? UA_STATUSCODE_BADNODEIDUNKNOWN :
+            checkRoleRepresentation(server, &newRole->roleId);
         if(existing == UA_STATUSCODE_BADNODEIDUNKNOWN) {
             res = addRoleRepresentation(server, newRole);
+            createdRepresentation = (res == UA_STATUSCODE_GOOD);
+            /* The nodestore only knows the AddressSpace. A registered Role
+             * without a Role Object may already use the assigned NodeId. Then
+             * move the new Role to a random identifier. */
+            if(res == UA_STATUSCODE_GOOD && autoId &&
+               isRoleIdTaken(server, &newRole->roleId, server->rolesSize - 1)) {
+                removeRoleRepresentation(server, &newRole->roleId);
+                res = randomRoleId(server, roleNs, &newRole->roleId);
+                if(res == UA_STATUSCODE_GOOD)
+                    res = addRoleRepresentation(server, newRole);
+                createdRepresentation = (res == UA_STATUSCODE_GOOD);
+            }
         } else if(existing == UA_STATUSCODE_GOOD) {
             /* initNS0RBAC has already bound the well-known Role Objects */
             res = (wellKnown) ? UA_STATUSCODE_GOOD :
@@ -1294,8 +1361,10 @@ addRole(UA_Server *server, const UA_Role *role, UA_NodeId *outRoleNodeId,
     if(outRoleNodeId) {
         res = UA_NodeId_copy(&newRole->roleId, outRoleNodeId);
         if(res != UA_STATUSCODE_GOOD) {
-            /* Rollback */
-            removeRoleRepresentation(server, &newRole->roleId);
+            /* Rollback. Remove only a Role Object created above. An adopted
+             * Role Object (a well-known Role or one from a nodeset) stays. */
+            if(createdRepresentation)
+                removeRoleRepresentation(server, &newRole->roleId);
             server->rolesSize--;
             UA_Role_clear(newRole);
             unlockServer(server);
@@ -1786,8 +1855,7 @@ protectNodeRolePermissions(UA_Server *server, const UA_NodeId *nodeId,
 /* Internal Helpers: Role Lookups        */
 /*****************************************/
 
-/* Mandatory well-known roles cannot be modified */
-static UA_Boolean
+UA_Boolean
 isMandatoryWellKnownRole(const UA_NodeId *roleId) {
     if(roleId->namespaceIndex != 0 ||
        roleId->identifierType != UA_NODEIDTYPE_NUMERIC)
@@ -2231,6 +2299,23 @@ parseEndpointUrlParts(const UA_String *url, EndpointUrlParts *parts) {
     while(parts->path.length > 0 &&
           parts->path.data[parts->path.length - 1] == '/')
         parts->path.length--;
+    return UA_STATUSCODE_GOOD;
+}
+
+/* An empty EndpointUrl of an Endpoint filter matches every Endpoint (Part 18
+ * §4.4.1: fields with default values are ignored). Any other URL must be one
+ * that the filter can compare (Part 18 §4.4.9: Bad_InvalidArgument). */
+static UA_StatusCode
+validateEndpointFilterUrl(const UA_String *url) {
+    if(url->length == 0)
+        return UA_STATUSCODE_GOOD;
+    EndpointUrlParts parts;
+    UA_StatusCode res = parseEndpointUrlParts(url, &parts);
+    if(res == UA_STATUSCODE_BADOUTOFMEMORY)
+        return res;
+    if(res != UA_STATUSCODE_GOOD)
+        return UA_STATUSCODE_BADINVALIDARGUMENT;
+    UA_String_clear(&parts.buffer);
     return UA_STATUSCODE_GOOD;
 }
 

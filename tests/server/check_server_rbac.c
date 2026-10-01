@@ -861,6 +861,7 @@ START_TEST(addRemoveRoleMethod_updatesAddressSpace) {
     ck_assert_uint_eq(UA_NodeId_copy((UA_NodeId*)addRes.outputArguments[0].data,
                                      &newRoleId), UA_STATUSCODE_GOOD);
     UA_CallMethodResult_clear(&addRes);
+    ck_assert_uint_eq(newRoleId.namespaceIndex, 1);
 
     /* The new Role Object is now browseable as a HasComponent of the RoleSet */
     UA_QualifiedName bn;
@@ -887,6 +888,196 @@ START_TEST(addRemoveRoleMethod_updatesAddressSpace) {
 
     /* The Role Object is gone from the AddressSpace again */
     ck_assert_uint_ne(UA_Server_readBrowseName(server, newRoleId, &bn),
+                      UA_STATUSCODE_GOOD);
+    ck_assert(!roleSetHasComponent(newRoleId));
+    UA_NodeId_clear(&newRoleId);
+}
+END_TEST
+
+#define ROLE_SUBTREE_MAX 32
+
+/* Collect the NodeIds of a Node and of its hierarchical children */
+static void
+collectSubtree(UA_NodeId nodeId, UA_NodeId *ids, size_t *idsSize) {
+    ck_assert_uint_lt(*idsSize, ROLE_SUBTREE_MAX);
+    ck_assert_uint_eq(UA_NodeId_copy(&nodeId, &ids[*idsSize]), UA_STATUSCODE_GOOD);
+    (*idsSize)++;
+
+    UA_BrowseDescription bd;
+    UA_BrowseDescription_init(&bd);
+    bd.nodeId = nodeId;
+    bd.referenceTypeId = UA_NODEID_NUMERIC(0, UA_NS0ID_HASCHILD);
+    bd.includeSubtypes = true;
+    bd.browseDirection = UA_BROWSEDIRECTION_FORWARD;
+    bd.resultMask = UA_BROWSERESULTMASK_NONE;
+    UA_BrowseResult br = UA_Server_browse(server, 0, &bd);
+    ck_assert_uint_eq(br.statusCode, UA_STATUSCODE_GOOD);
+    for(size_t i = 0; i < br.referencesSize; i++)
+        collectSubtree(br.references[i].nodeId.nodeId, ids, idsSize);
+    UA_BrowseResult_clear(&br);
+}
+
+/* Every Node of the Role subtree lives in namespace ns */
+static size_t
+checkRoleSubtreeNamespace(UA_NodeId roleId, UA_UInt16 ns,
+                          UA_NodeId *ids) {
+    size_t idsSize = 0;
+    collectSubtree(roleId, ids, &idsSize);
+    for(size_t i = 0; i < idsSize; i++)
+        ck_assert_uint_eq(ids[i].namespaceIndex, ns);
+
+    /* Spot-check a Property, a Method and its InputArguments */
+    UA_NodeId propId, methodId, argsId;
+    ck_assert_uint_eq(findRoleProperty(roleId, "Identities", &propId),
+                      UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(propId.namespaceIndex, ns);
+    ck_assert_uint_eq(findRoleMethod(roleId, "AddIdentity", &methodId),
+                      UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(methodId.namespaceIndex, ns);
+    ck_assert_uint_eq(findRoleProperty(methodId, "InputArguments", &argsId),
+                      UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(argsId.namespaceIndex, ns);
+    UA_NodeId_clear(&propId);
+    UA_NodeId_clear(&methodId);
+    UA_NodeId_clear(&argsId);
+    return idsSize;
+}
+
+static void
+clearNodeIds(UA_NodeId *ids, size_t idsSize) {
+    for(size_t i = 0; i < idsSize; i++)
+        UA_NodeId_clear(&ids[i]);
+}
+
+/* A runtime Role gets its NodeId in the namespace of its BrowseName, and so do
+ * its Properties, Methods and InputArguments. Removing the Role deletes the
+ * whole subtree. */
+START_TEST(addRole_nodeIdInBrowseNameNamespace) {
+    UA_UInt16 ns = UA_Server_addNamespace(server, "urn:open62541:test:role-ns");
+    ck_assert_uint_gt(ns, 1);
+
+    UA_Role role;
+    UA_Role_init(&role);
+    role.roleName = UA_QUALIFIEDNAME(ns, "NamespacedRole");
+    UA_NodeId roleId = UA_NODEID_NULL;
+    ck_assert_uint_eq(UA_Server_addRole(server, &role, &roleId), UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(roleId.namespaceIndex, ns);
+    ck_assert_uint_eq(roleId.identifierType, UA_NODEIDTYPE_NUMERIC);
+    ck_assert_uint_ne(roleId.identifier.numeric, 0);
+    ck_assert(roleSetHasComponent(roleId));
+
+    /* The registry knows the Role under the NodeId of the Role Object */
+    UA_Role stored;
+    ck_assert_uint_eq(UA_Server_getRoleById(server, roleId, &stored),
+                      UA_STATUSCODE_GOOD);
+    UA_Role_clear(&stored);
+
+    /* The Role Object with six Properties and six Methods, each with its
+     * InputArguments */
+    UA_NodeId ids[ROLE_SUBTREE_MAX];
+    size_t idsSize = checkRoleSubtreeNamespace(roleId, ns, ids);
+    ck_assert_uint_eq(idsSize, 1 + 6 + 6 + 6);
+
+    /* A custom Role with a BrowseName in the OPC UA namespace lives in ns1 */
+    UA_Role ns0Role;
+    UA_Role_init(&ns0Role);
+    ns0Role.roleName = UA_QUALIFIEDNAME(0, "Ns0NamedRole");
+    UA_NodeId ns0RoleId = UA_NODEID_NULL;
+    ck_assert_uint_eq(UA_Server_addRole(server, &ns0Role, &ns0RoleId),
+                      UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(ns0RoleId.namespaceIndex, 1);
+    UA_NodeId ns0Ids[ROLE_SUBTREE_MAX];
+    size_t ns0IdsSize = checkRoleSubtreeNamespace(ns0RoleId, 1, ns0Ids);
+
+    /* Removing the Roles deletes the whole subtrees */
+    ck_assert_uint_eq(UA_Server_removeRole(server, role.roleName),
+                      UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(UA_Server_removeRole(server, ns0Role.roleName),
+                      UA_STATUSCODE_GOOD);
+    UA_NodeClass nc;
+    for(size_t i = 0; i < idsSize; i++)
+        ck_assert_uint_eq(UA_Server_readNodeClass(server, ids[i], &nc),
+                          UA_STATUSCODE_BADNODEIDUNKNOWN);
+    for(size_t i = 0; i < ns0IdsSize; i++)
+        ck_assert_uint_eq(UA_Server_readNodeClass(server, ns0Ids[i], &nc),
+                          UA_STATUSCODE_BADNODEIDUNKNOWN);
+    clearNodeIds(ids, idsSize);
+    clearNodeIds(ns0Ids, ns0IdsSize);
+    UA_NodeId_clear(&roleId);
+    UA_NodeId_clear(&ns0RoleId);
+}
+END_TEST
+
+/* The nodestore assigns the NodeId of a Role Object. A registered Role whose
+ * Role Object was deleted may hold that NodeId already. The new Role then gets
+ * another NodeId, so that the registry stays unique. */
+START_TEST(addRole_assignedNodeIdUniqueInRegistry) {
+    UA_UInt16 ns = UA_Server_addNamespace(server, "urn:open62541:test:role-unique");
+
+    UA_Role first;
+    UA_Role_init(&first);
+    first.roleName = UA_QUALIFIEDNAME(ns, "FirstRole");
+    UA_NodeId firstId = UA_NODEID_NULL;
+    ck_assert_uint_eq(UA_Server_addRole(server, &first, &firstId), UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(UA_Server_deleteNode(server, firstId, true), UA_STATUSCODE_GOOD);
+
+    /* The nodestore is in the same state as before, so it picks the same
+     * NodeId again */
+    UA_Role second;
+    UA_Role_init(&second);
+    second.roleName = UA_QUALIFIEDNAME(ns, "SecondRole");
+    UA_NodeId secondId = UA_NODEID_NULL;
+    ck_assert_uint_eq(UA_Server_addRole(server, &second, &secondId), UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(secondId.namespaceIndex, ns);
+    ck_assert(!UA_NodeId_equal(&firstId, &secondId));
+    ck_assert(roleSetHasComponent(secondId));
+
+    UA_Role stored;
+    ck_assert_uint_eq(UA_Server_getRoleById(server, secondId, &stored),
+                      UA_STATUSCODE_GOOD);
+    UA_String expected = UA_STRING("SecondRole");
+    ck_assert(UA_String_equal(&stored.roleName.name, &expected));
+    UA_Role_clear(&stored);
+
+    ck_assert_uint_eq(UA_Server_removeRole(server, second.roleName),
+                      UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(UA_Server_removeRole(server, first.roleName),
+                      UA_STATUSCODE_GOOD);
+    UA_NodeId_clear(&firstId);
+    UA_NodeId_clear(&secondId);
+}
+END_TEST
+
+/* The AddRole Method creates the Role in the namespace given by NamespaceUri */
+START_TEST(addRoleMethod_namespaceUriAssignsNamespace) {
+    UA_String nsUri = UA_STRING("urn:open62541:test:role-method-ns");
+    UA_UInt16 ns = UA_Server_addNamespace(server, "urn:open62541:test:role-method-ns");
+
+    UA_String roleName = UA_STRING("UriRole");
+    UA_Variant addInput[2];
+    UA_Variant_setScalar(&addInput[0], &roleName, &UA_TYPES[UA_TYPES_STRING]);
+    UA_Variant_setScalar(&addInput[1], &nsUri, &UA_TYPES[UA_TYPES_STRING]);
+    UA_CallMethodRequest addReq;
+    UA_CallMethodRequest_init(&addReq);
+    addReq.objectId = UA_NODEID_NUMERIC(0, UA_NS0ID_SERVER_SERVERCAPABILITIES_ROLESET);
+    addReq.methodId = UA_NODEID_NUMERIC(0, UA_NS0ID_SERVER_SERVERCAPABILITIES_ROLESET_ADDROLE);
+    addReq.inputArguments = addInput;
+    addReq.inputArgumentsSize = 2;
+
+    UA_CallMethodResult addRes = UA_Server_call(server, &addReq);
+    ck_assert_uint_eq(addRes.statusCode, UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(addRes.outputArgumentsSize, 1);
+    UA_NodeId newRoleId;
+    ck_assert_uint_eq(UA_NodeId_copy((UA_NodeId*)addRes.outputArguments[0].data,
+                                     &newRoleId), UA_STATUSCODE_GOOD);
+    UA_CallMethodResult_clear(&addRes);
+    ck_assert_uint_eq(newRoleId.namespaceIndex, ns);
+
+    UA_NodeId ids[ROLE_SUBTREE_MAX];
+    size_t idsSize = checkRoleSubtreeNamespace(newRoleId, ns, ids);
+    clearNodeIds(ids, idsSize);
+
+    ck_assert_uint_eq(UA_Server_removeRole(server, UA_QUALIFIEDNAME(ns, "UriRole")),
                       UA_STATUSCODE_GOOD);
     ck_assert(!roleSetHasComponent(newRoleId));
     UA_NodeId_clear(&newRoleId);
@@ -4933,6 +5124,183 @@ START_TEST(roleTypeInstanceMethods_addIdentity) {
 END_TEST
 #endif /* UA_GENERATED_NAMESPACE_ZERO_FULL && UA_ENABLE_METHODCALLS */
 
+#if defined(UA_GENERATED_NAMESPACE_ZERO_FULL) && defined(UA_ENABLE_METHODCALLS)
+static UA_StatusCode
+callAddRole(const char *roleName, const char *namespaceUri, UA_NodeId *outRoleId) {
+    UA_String name = UA_STRING((char*)(uintptr_t)roleName);
+    UA_String uri = UA_STRING((char*)(uintptr_t)namespaceUri);
+    UA_Variant input[2];
+    UA_Variant_setScalar(&input[0], &name, &UA_TYPES[UA_TYPES_STRING]);
+    UA_Variant_setScalar(&input[1], &uri, &UA_TYPES[UA_TYPES_STRING]);
+    UA_CallMethodRequest req;
+    UA_CallMethodRequest_init(&req);
+    req.objectId = UA_NODEID_NUMERIC(0, UA_NS0ID_SERVER_SERVERCAPABILITIES_ROLESET);
+    req.methodId =
+        UA_NODEID_NUMERIC(0, UA_NS0ID_SERVER_SERVERCAPABILITIES_ROLESET_ADDROLE);
+    req.inputArguments = input;
+    req.inputArgumentsSize = 2;
+    UA_CallMethodResult res = UA_Server_call(server, &req);
+    UA_StatusCode status = res.statusCode;
+    if(status == UA_STATUSCODE_GOOD && outRoleId) {
+        ck_assert_uint_eq(res.outputArgumentsSize, 1);
+        ck_assert(UA_Variant_hasScalarType(&res.outputArguments[0],
+                                           &UA_TYPES[UA_TYPES_NODEID]));
+        UA_NodeId_copy((UA_NodeId*)res.outputArguments[0].data, outRoleId);
+    }
+    UA_CallMethodResult_clear(&res);
+    return status;
+}
+
+/* Call a RoleType Method with a single argument on a Role Object */
+static UA_StatusCode
+callRoleMethod(const UA_NodeId roleId, UA_UInt32 typeMethodId,
+               const void *arg, const UA_DataType *argType) {
+    UA_ExtensionObject ext;
+    UA_Variant input;
+    if(argType == &UA_TYPES[UA_TYPES_STRING]) {
+        UA_Variant_setScalar(&input, (void*)(uintptr_t)arg, argType);
+    } else {
+        UA_ExtensionObject_setValue(&ext, (void*)(uintptr_t)arg, argType);
+        UA_Variant_setScalar(&input, &ext, &UA_TYPES[UA_TYPES_EXTENSIONOBJECT]);
+    }
+    UA_CallMethodRequest req;
+    UA_CallMethodRequest_init(&req);
+    req.objectId = roleId;
+    req.methodId = UA_NODEID_NUMERIC(0, typeMethodId);
+    req.inputArguments = &input;
+    req.inputArgumentsSize = 1;
+    UA_CallMethodResult res = UA_Server_call(server, &req);
+    UA_StatusCode status = res.statusCode;
+    UA_CallMethodResult_clear(&res);
+    return status;
+}
+
+/* AddRole with the OPC UA namespace URI accepts only the well-known Role names
+ * (Part 18 §4.2.2) */
+START_TEST(addRoleMethod_opcUaNamespaceWellKnownOnly) {
+    ck_assert_uint_eq(callAddRole("PlantManager", "http://opcfoundation.org/UA/",
+                                  NULL),
+                      UA_STATUSCODE_BADINVALIDARGUMENT);
+    UA_Role role;
+    ck_assert_uint_eq(UA_Server_getRole(server,
+                                        UA_QUALIFIEDNAME(0, "PlantManager"), &role),
+                      UA_STATUSCODE_BADNOTFOUND);
+
+    /* A well-known Role keeps its NodeId and exists already */
+    ck_assert_uint_eq(callAddRole("Engineer", "http://opcfoundation.org/UA/",
+                                  NULL),
+                      UA_STATUSCODE_BADALREADYEXISTS);
+
+    /* An unknown NamespaceUri is invalid as well */
+    ck_assert_uint_eq(callAddRole("PlantManager", "urn:not:registered", NULL),
+                      UA_STATUSCODE_BADINVALIDARGUMENT);
+
+    /* Without a NamespaceUri, the Role is in the namespace of the Server */
+    UA_NodeId roleId = UA_NODEID_NULL;
+    ck_assert_uint_eq(callAddRole("PlantManager", "", &roleId),
+                      UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(UA_Server_getRoleById(server, roleId, &role),
+                      UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(role.roleName.namespaceIndex, 1);
+    UA_Role_clear(&role);
+    ck_assert_uint_eq(UA_Server_removeRole(server,
+                                           UA_QUALIFIEDNAME(1, "PlantManager")),
+                      UA_STATUSCODE_GOOD);
+    UA_NodeId_clear(&roleId);
+}
+END_TEST
+
+/* AddIdentity refuses an Anonymous mapping rule for the Roles with
+ * administrator privileges (Part 18 §4.4.1, §4.4.5) */
+START_TEST(addIdentityMethod_anonymousRefusedForAdmins) {
+    UA_IdentityMappingRuleType anonymous;
+    UA_IdentityMappingRuleType_init(&anonymous);
+    anonymous.criteriaType = UA_IDENTITYCRITERIATYPE_ANONYMOUS;
+    const UA_UInt32 adminRoles[] = {
+        UA_NS0ID_WELLKNOWNROLE_SECURITYADMIN,
+        UA_NS0ID_WELLKNOWNROLE_CONFIGUREADMIN,
+#ifdef UA_NS0ID_WELLKNOWNROLE_SECURITYKEYSERVERADMIN
+        UA_NS0ID_WELLKNOWNROLE_SECURITYKEYSERVERADMIN
+#endif
+    };
+    for(size_t i = 0; i < sizeof(adminRoles) / sizeof(adminRoles[0]); i++) {
+        UA_NodeId roleId = UA_NODEID_NUMERIC(0, adminRoles[i]);
+        ck_assert_uint_eq(callRoleMethod(roleId, UA_NS0ID_ROLETYPE_ADDIDENTITY,
+                                         &anonymous,
+                                         &UA_TYPES[UA_TYPES_IDENTITYMAPPINGRULETYPE]),
+                          UA_STATUSCODE_BADREQUESTNOTALLOWED);
+        UA_Role role;
+        ck_assert_uint_eq(UA_Server_getRoleById(server, roleId, &role),
+                          UA_STATUSCODE_GOOD);
+        for(size_t j = 0; j < role.identityMappingRulesSize; j++)
+            ck_assert_int_ne(role.identityMappingRules[j].criteriaType,
+                             UA_IDENTITYCRITERIATYPE_ANONYMOUS);
+        UA_Role_clear(&role);
+    }
+
+    /* Other Roles accept the rule */
+    ck_assert_uint_eq(callRoleMethod(UA_NODEID_NUMERIC(0, UA_NS0ID_WELLKNOWNROLE_OBSERVER),
+                                     UA_NS0ID_ROLETYPE_ADDIDENTITY, &anonymous,
+                                     &UA_TYPES[UA_TYPES_IDENTITYMAPPINGRULETYPE]),
+                      UA_STATUSCODE_GOOD);
+
+    /* Other rules for an administrator Role are accepted */
+    UA_IdentityMappingRuleType user;
+    UA_IdentityMappingRuleType_init(&user);
+    user.criteriaType = UA_IDENTITYCRITERIATYPE_USERNAME;
+    user.criteria = UA_STRING("admin");
+    ck_assert_uint_eq(callRoleMethod(UA_NODEID_NUMERIC(0, UA_NS0ID_WELLKNOWNROLE_SECURITYADMIN),
+                                     UA_NS0ID_ROLETYPE_ADDIDENTITY, &user,
+                                     &UA_TYPES[UA_TYPES_IDENTITYMAPPINGRULETYPE]),
+                      UA_STATUSCODE_GOOD);
+}
+END_TEST
+
+/* AddEndpoint refuses an EndpointUrl that the Endpoint filter cannot compare
+ * (Part 18 §4.4.9). An empty EndpointUrl matches every Endpoint. */
+START_TEST(addEndpointMethod_validatesEndpointUrl) {
+    const UA_NodeId operatorRole =
+        UA_NODEID_NUMERIC(0, UA_NS0ID_WELLKNOWNROLE_OPERATOR);
+    const char *invalid[] = {
+        "not-a-url", "http://host:4840", "opc.tcp://", "opc.tcp://host:99999",
+        "opc.tcp://host:port", "opc.udp://host:4840"
+    };
+    UA_EndpointType ep;
+    UA_EndpointType_init(&ep);
+    for(size_t i = 0; i < sizeof(invalid) / sizeof(invalid[0]); i++) {
+        ep.endpointUrl = UA_STRING((char*)(uintptr_t)invalid[i]);
+        ck_assert_msg(callRoleMethod(operatorRole, UA_NS0ID_ROLETYPE_ADDENDPOINT,
+                                     &ep, &UA_TYPES[UA_TYPES_ENDPOINTTYPE]) ==
+                      UA_STATUSCODE_BADINVALIDARGUMENT,
+                      "EndpointUrl %s was accepted", invalid[i]);
+    }
+
+    const char *valid[] = {
+        "", "opc.tcp://host:4840/path", "OPC.TCP://[::1]:4852", "opc.wss://host",
+        "opc.ws://:4853/ua", "opc.https://host:443"
+    };
+    for(size_t i = 0; i < sizeof(valid) / sizeof(valid[0]); i++) {
+        ep.endpointUrl = UA_STRING((char*)(uintptr_t)valid[i]);
+        ck_assert_msg(callRoleMethod(operatorRole, UA_NS0ID_ROLETYPE_ADDENDPOINT,
+                                     &ep, &UA_TYPES[UA_TYPES_ENDPOINTTYPE]) ==
+                      UA_STATUSCODE_GOOD,
+                      "EndpointUrl %s was refused", valid[i]);
+    }
+
+    UA_Role role;
+    ck_assert_uint_eq(UA_Server_getRoleById(server, operatorRole, &role),
+                      UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(role.endpointsSize, sizeof(valid) / sizeof(valid[0]));
+    UA_Role_clear(&role);
+
+    /* The same Endpoint again */
+    ck_assert_uint_eq(callRoleMethod(operatorRole, UA_NS0ID_ROLETYPE_ADDENDPOINT,
+                                     &ep, &UA_TYPES[UA_TYPES_ENDPOINTTYPE]),
+                      UA_STATUSCODE_BADALREADYEXISTS);
+}
+END_TEST
+#endif /* UA_GENERATED_NAMESPACE_ZERO_FULL && UA_ENABLE_METHODCALLS */
+
 /* CustomConfiguration is stored, copied and compared (Part 18 §4.4.1). */
 START_TEST(customConfiguration_storedAndCopied) {
     UA_Role role;
@@ -5297,6 +5665,9 @@ static Suite *testSuite_IdentityAppMgmt(void) {
     tcase_add_test(tc, roleFilters_evaluated);
 #if defined(UA_GENERATED_NAMESPACE_ZERO_FULL) && defined(UA_ENABLE_METHODCALLS)
     tcase_add_test(tc, roleTypeInstanceMethods_addIdentity);
+    tcase_add_test(tc, addRoleMethod_opcUaNamespaceWellKnownOnly);
+    tcase_add_test(tc, addIdentityMethod_anonymousRefusedForAdmins);
+    tcase_add_test(tc, addEndpointMethod_validatesEndpointUrl);
 #endif
     suite_add_tcase(s, tc);
     return s;
@@ -5632,6 +6003,15 @@ START_TEST(userManagement_addUserReachesProvider) {
     ck_assert_uint_eq(UA_Server_readValue(server,
                           UA_NODEID_NUMERIC(0, UA_NS0ID_USERMANAGEMENT_USERS),
                           &unused), UA_STATUSCODE_BADRESOURCEUNAVAILABLE);
+
+    /* AddUser reports a lack of memory as Bad_ResourceUnavailable (Part 18
+     * §5.2.5) */
+    umForcedStatus = UA_STATUSCODE_BADOUTOFMEMORY;
+    UA_String other = UA_STRING("bob");
+    setUserArgs(in, &other, &password, &cfg, &description);
+    res = callUserMethod(UA_NS0ID_USERMANAGEMENT_ADDUSER, 4, in);
+    ck_assert_uint_eq(res.statusCode, UA_STATUSCODE_BADRESOURCEUNAVAILABLE);
+    UA_CallMethodResult_clear(&res);
     umForcedStatus = UA_STATUSCODE_GOOD;
 }
 END_TEST
@@ -6032,6 +6412,9 @@ static Suite *testSuite_InformationModel(void) {
 #endif /* UA_GENERATED_NAMESPACE_ZERO_FULL */
 #if defined(UA_GENERATED_NAMESPACE_ZERO_FULL) && defined(UA_ENABLE_METHODCALLS)
     tcase_add_test(tc, addRemoveRoleMethod_updatesAddressSpace);
+    tcase_add_test(tc, addRole_nodeIdInBrowseNameNamespace);
+    tcase_add_test(tc, addRole_assignedNodeIdUniqueInRegistry);
+    tcase_add_test(tc, addRoleMethod_namespaceUriAssignsNamespace);
     tcase_add_test(tc, roleSetMethods_restrictedToAdmin);
 #endif /* UA_GENERATED_NAMESPACE_ZERO_FULL && UA_ENABLE_METHODCALLS */
     suite_add_tcase(s, tc);

@@ -669,6 +669,247 @@ START_TEST(auditEventTypes_securityAdminOnly) {
 }
 END_TEST
 
+/* Browse the hierarchical forward References of a Node through the Browse
+ * Service */
+static UA_BrowseResult
+browseAs(UA_Session *session, const UA_NodeId nodeId) {
+    UA_BrowseDescription bd;
+    UA_BrowseDescription_init(&bd);
+    bd.nodeId = nodeId;
+    bd.referenceTypeId = UA_NODEID_NUMERIC(0, UA_NS0ID_HIERARCHICALREFERENCES);
+    bd.includeSubtypes = true;
+    bd.browseDirection = UA_BROWSEDIRECTION_FORWARD;
+    bd.resultMask = UA_BROWSERESULTMASK_BROWSENAME;
+    UA_BrowseRequest request;
+    UA_BrowseRequest_init(&request);
+    request.nodesToBrowse = &bd;
+    request.nodesToBrowseSize = 1;
+    UA_BrowseResponse response;
+    UA_BrowseResponse_init(&response);
+    lockServer(server);
+    Service_Browse(server, session, &request, &response);
+    unlockServer(server);
+    ck_assert_uint_eq(response.responseHeader.serviceResult, UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(response.resultsSize, 1);
+    UA_BrowseResult result = response.results[0];
+    UA_BrowseResult_init(&response.results[0]);
+    UA_BrowseResponse_clear(&response);
+    return result;
+}
+
+static UA_Boolean
+browseResultContains(const UA_BrowseResult *br, const UA_NodeId nodeId) {
+    for(size_t i = 0; i < br->referencesSize; i++) {
+        if(UA_NodeId_equal(&br->references[i].nodeId.nodeId, &nodeId))
+            return true;
+    }
+    return false;
+}
+
+static UA_Boolean
+browseResultContainsName(const UA_BrowseResult *br, const char *name) {
+    UA_String n = UA_STRING((char*)(uintptr_t)name);
+    for(size_t i = 0; i < br->referencesSize; i++) {
+        if(UA_String_equal(&br->references[i].browseName.name, &n))
+            return true;
+    }
+    return false;
+}
+
+static UA_AccessRestrictionType
+accessRestrictions(const UA_NodeId nodeId) {
+    UA_AccessRestrictionType ar = 0xFFFF;
+    ck_assert_uint_eq(UA_Server_getNodeAccessRestrictions(server, nodeId, &ar),
+                      UA_STATUSCODE_GOOD);
+    return ar;
+}
+
+/* The RoleSet and the Role Objects are browsable by every Session over any
+ * channel, like in the standard NodeSet. Only the Properties and Methods of
+ * the RoleType are restricted to administrators over an encrypted channel
+ * (Part 18 §4.4.1). */
+START_TEST(roleSet_browsableWithoutEncryption) {
+    const UA_NodeId roleSet =
+        UA_NODEID_NUMERIC(0, UA_NS0ID_SERVER_SERVERCAPABILITIES_ROLESET);
+    const UA_NodeId observer = ROLE(OBSERVER);
+
+    UA_Role role;
+    UA_Role_init(&role);
+    role.roleName = UA_QUALIFIEDNAME(1, "BrowsableRole");
+    UA_NodeId runtimeRole = UA_NODEID_NULL;
+    ck_assert_uint_eq(UA_Server_addRole(server, &role, &runtimeRole),
+                      UA_STATUSCODE_GOOD);
+
+    ck_assert_uint_eq(accessRestrictions(roleSet), UA_ACCESSRESTRICTIONTYPE_NONE);
+    ck_assert_uint_eq(accessRestrictions(observer), UA_ACCESSRESTRICTIONTYPE_NONE);
+    ck_assert_uint_eq(accessRestrictions(runtimeRole), UA_ACCESSRESTRICTIONTYPE_NONE);
+    ck_assert_uint_ne(accessRestrictions(UA_NODEID_NUMERIC(
+                          0, UA_NS0ID_WELLKNOWNROLE_OBSERVER_IDENTITIES)) &
+                      UA_ACCESSRESTRICTIONTYPE_ENCRYPTIONREQUIRED, 0);
+    ck_assert_uint_ne(accessRestrictions(UA_NODEID_NUMERIC(
+                          0, UA_NS0ID_SERVER_SERVERCAPABILITIES_ROLESET_ADDROLE)) &
+                      UA_ACCESSRESTRICTIONTYPE_ENCRYPTIONREQUIRED, 0);
+
+    /* An Anonymous Session without a SecureChannel */
+    const UA_NodeId anonymousOnly[1] = {ROLE(ANONYMOUS)};
+    UA_Session *anon = createSessionWithRoles(1, anonymousOnly);
+    ck_assert_uint_eq(effective(anon, roleSet), B);
+    ck_assert_uint_eq(effective(anon, observer), B);
+    ck_assert_uint_eq(effective(anon, runtimeRole), B);
+
+    UA_BrowseResult br = browseAs(anon, UA_NODEID_NUMERIC(
+                                      0, UA_NS0ID_SERVER_SERVERCAPABILITIES));
+    ck_assert(browseResultContains(&br, roleSet));
+    UA_BrowseResult_clear(&br);
+
+    /* The Role Objects are visible, the RoleSet Methods are not */
+    br = browseAs(anon, roleSet);
+    ck_assert(browseResultContains(&br, observer));
+    ck_assert(browseResultContains(&br, runtimeRole));
+    ck_assert(!browseResultContainsName(&br, "AddRole"));
+    ck_assert(!browseResultContainsName(&br, "RemoveRole"));
+    UA_BrowseResult_clear(&br);
+
+    /* The Properties and Methods of a Role stay hidden */
+    br = browseAs(anon, observer);
+    ck_assert(!browseResultContainsName(&br, "Identities"));
+    ck_assert(!browseResultContainsName(&br, "AddIdentity"));
+    UA_BrowseResult_clear(&br);
+    br = browseAs(anon, runtimeRole);
+    ck_assert(!browseResultContainsName(&br, "Identities"));
+    ck_assert(!browseResultContainsName(&br, "AddIdentity"));
+    UA_BrowseResult_clear(&br);
+
+    /* The non-Value Attributes of the Objects are readable */
+    UA_DataValue dv = readAs(anon, observer, UA_ATTRIBUTEID_BROWSENAME);
+    ck_assert(!dv.hasStatus || dv.status == UA_STATUSCODE_GOOD);
+    ck_assert(dv.hasValue);
+    UA_DataValue_clear(&dv);
+    dv = readAs(anon, UA_NODEID_NUMERIC(0, UA_NS0ID_WELLKNOWNROLE_OBSERVER_IDENTITIES),
+                UA_ATTRIBUTEID_VALUE);
+    ck_assert(dv.hasStatus && UA_StatusCode_isBad(dv.status));
+    UA_DataValue_clear(&dv);
+
+    /* SecurityAdmin calls the Methods and receives the audit events of the
+     * Objects, but over an encrypted channel only */
+    UA_Session *sec = createSessionWithRole(ROLE(SECURITYADMIN));
+    ck_assert_uint_eq(effective(sec, roleSet), B | R | C | RE | RRP);
+    ck_assert_uint_eq(effective(sec, observer), B | R | C | RE | RRP);
+    br = browseAs(sec, observer);
+    ck_assert(!browseResultContainsName(&br, "Identities"));
+    UA_BrowseResult_clear(&br);
+
+    ck_assert_uint_eq(UA_Server_removeRole(server, role.roleName),
+                      UA_STATUSCODE_GOOD);
+    UA_NodeId_clear(&runtimeRole);
+}
+END_TEST
+
+/* The Methods of a Role Object */
+static size_t
+countRoleMethods(const UA_NodeId roleId) {
+    UA_BrowseDescription bd;
+    UA_BrowseDescription_init(&bd);
+    bd.nodeId = roleId;
+    bd.referenceTypeId = UA_NODEID_NUMERIC(0, UA_NS0ID_HASCOMPONENT);
+    bd.includeSubtypes = true;
+    bd.browseDirection = UA_BROWSEDIRECTION_FORWARD;
+    bd.nodeClassMask = UA_NODECLASS_METHOD;
+    UA_BrowseResult br = UA_Server_browse(server, 0, &bd);
+    ck_assert_uint_eq(br.statusCode, UA_STATUSCODE_GOOD);
+    size_t count = br.referencesSize;
+    UA_BrowseResult_clear(&br);
+    return count;
+}
+
+/* The mapping rules of Anonymous, AuthenticatedUser and TrustedApplication
+ * cannot be changed (Part 18 §4.3), so the mapping Methods are not present
+ * (§4.4.1), like in the standard NodeSet */
+START_TEST(mandatoryRoles_haveNoMappingMethods) {
+    ck_assert_uint_eq(countRoleMethods(ROLE(ANONYMOUS)), 0);
+    ck_assert_uint_eq(countRoleMethods(ROLE(AUTHENTICATEDUSER)), 0);
+    ck_assert_uint_eq(countRoleMethods(ROLE(TRUSTEDAPPLICATION)), 0);
+    ck_assert_uint_eq(countRoleMethods(ROLE(OBSERVER)), 6);
+    ck_assert_uint_eq(countRoleMethods(ROLE(SECURITYADMIN)), 6);
+
+    /* The RoleType Method cannot be called on these Role Objects */
+    UA_IdentityMappingRuleType rule;
+    UA_IdentityMappingRuleType_init(&rule);
+    rule.criteriaType = UA_IDENTITYCRITERIATYPE_USERNAME;
+    rule.criteria = UA_STRING("mallory");
+    UA_ExtensionObject ext;
+    UA_ExtensionObject_setValue(&ext, &rule,
+                                &UA_TYPES[UA_TYPES_IDENTITYMAPPINGRULETYPE]);
+    UA_Variant input;
+    UA_Variant_setScalar(&input, &ext, &UA_TYPES[UA_TYPES_EXTENSIONOBJECT]);
+    UA_CallMethodRequest req;
+    UA_CallMethodRequest_init(&req);
+    req.objectId = ROLE(ANONYMOUS);
+    req.methodId = UA_NODEID_NUMERIC(0, UA_NS0ID_ROLETYPE_ADDIDENTITY);
+    req.inputArguments = &input;
+    req.inputArgumentsSize = 1;
+    UA_CallMethodResult res = UA_Server_call(server, &req);
+    ck_assert_uint_eq(res.statusCode, UA_STATUSCODE_BADMETHODINVALID);
+    UA_CallMethodResult_clear(&res);
+
+    /* Observer keeps its Methods */
+    req.objectId = ROLE(OBSERVER);
+    res = UA_Server_call(server, &req);
+    ck_assert_uint_eq(res.statusCode, UA_STATUSCODE_GOOD);
+    UA_CallMethodResult_clear(&res);
+}
+END_TEST
+
+/* The Applications and Endpoints Properties of the NS0 Role Objects report the
+ * configuration of the role registry */
+START_TEST(ns0RoleProperties_backedByRegistry) {
+    const UA_NodeId applicationsId =
+        UA_NODEID_NUMERIC(0, UA_NS0ID_WELLKNOWNROLE_OPERATOR_APPLICATIONS);
+    const UA_NodeId endpointsId =
+        UA_NODEID_NUMERIC(0, UA_NS0ID_WELLKNOWNROLE_OPERATOR_ENDPOINTS);
+
+    UA_Variant v;
+    ck_assert_uint_eq(UA_Server_readValue(server, applicationsId, &v),
+                      UA_STATUSCODE_GOOD);
+    ck_assert(UA_Variant_hasArrayType(&v, &UA_TYPES[UA_TYPES_STRING]));
+    ck_assert_uint_eq(v.arrayLength, 0);
+    UA_Variant_clear(&v);
+
+    UA_Role role;
+    ck_assert_uint_eq(UA_Server_getRoleById(server, ROLE(OPERATOR), &role),
+                      UA_STATUSCODE_GOOD);
+    UA_String app = UA_STRING("urn:test:operator-app");
+    ck_assert_uint_eq(UA_Array_appendCopy((void**)&role.applications,
+                                          &role.applicationsSize, &app,
+                                          &UA_TYPES[UA_TYPES_STRING]),
+                      UA_STATUSCODE_GOOD);
+    UA_EndpointType ep;
+    UA_EndpointType_init(&ep);
+    ep.endpointUrl = UA_STRING("opc.tcp://localhost:4852");
+    ep.securityMode = UA_MESSAGESECURITYMODE_SIGNANDENCRYPT;
+    ck_assert_uint_eq(UA_Array_appendCopy((void**)&role.endpoints,
+                                          &role.endpointsSize, &ep,
+                                          &UA_TYPES[UA_TYPES_ENDPOINTTYPE]),
+                      UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(UA_Server_updateRole(server, &role), UA_STATUSCODE_GOOD);
+    UA_Role_clear(&role);
+
+    ck_assert_uint_eq(UA_Server_readValue(server, applicationsId, &v),
+                      UA_STATUSCODE_GOOD);
+    ck_assert(UA_Variant_hasArrayType(&v, &UA_TYPES[UA_TYPES_STRING]));
+    ck_assert_uint_eq(v.arrayLength, 1);
+    ck_assert(UA_String_equal((UA_String*)v.data, &app));
+    UA_Variant_clear(&v);
+
+    ck_assert_uint_eq(UA_Server_readValue(server, endpointsId, &v),
+                      UA_STATUSCODE_GOOD);
+    ck_assert(UA_Variant_hasArrayType(&v, &UA_TYPES[UA_TYPES_ENDPOINTTYPE]));
+    ck_assert_uint_eq(v.arrayLength, 1);
+    ck_assert(UA_EndpointType_equal((UA_EndpointType*)v.data, &ep));
+    UA_Variant_clear(&v);
+}
+END_TEST
+
 /* The RolePermissions Attribute reports the protection to SecurityAdmin */
 START_TEST(protection_reportedAsOverride) {
     UA_Session *sec = createSessionWithRole(ROLE(SECURITYADMIN));
@@ -1083,6 +1324,9 @@ static Suite *testSuite(void) {
     tcase_add_test(tc_strict, conditionMethods_copiedProtectionRefCount);
 #endif
     tcase_add_test(tc_strict, auditEventTypes_securityAdminOnly);
+    tcase_add_test(tc_strict, roleSet_browsableWithoutEncryption);
+    tcase_add_test(tc_strict, mandatoryRoles_haveNoMappingMethods);
+    tcase_add_test(tc_strict, ns0RoleProperties_backedByRegistry);
     tcase_add_test(tc_strict, protection_reportedAsOverride);
     tcase_add_test(tc_strict, protection_keepsAccessRestrictions);
     tcase_add_test(tc_strict, protection_removeRoleKeepsAccessRestrictions);

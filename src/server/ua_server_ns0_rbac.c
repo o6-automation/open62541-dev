@@ -441,9 +441,12 @@ readRoleCustomConfiguration(UA_Server *server, const UA_NodeId *sessionId,
     return UA_STATUSCODE_GOOD;
 }
 
-/* Add Role object to NS0. The role->roleId must already be set by the
- * caller. Identities is mandatory, Applications and Endpoints are added
- * as optional properties with DataSources. */
+/* Add the Role Object under the RoleSet. The caller sets role->roleId. A
+ * numeric identifier 0 (ns=N;i=0) lets the nodestore assign a free identifier
+ * in namespace N, which is then written back to role->roleId. The children
+ * get NodeIds in the namespace of the Role. Identities is mandatory,
+ * Applications and Endpoints are added as optional properties with
+ * DataSources. */
 UA_StatusCode
 addRoleRepresentation(UA_Server *server, UA_Role *role) {
     if(!server || !role)
@@ -454,20 +457,26 @@ addRoleRepresentation(UA_Server *server, UA_Role *role) {
 
     UA_StatusCode res = UA_STATUSCODE_GOOD;
 
-    /* Add Role object instance using the pre-assigned roleId */
+    /* Add the Role object instance */
     UA_ObjectAttributes oAttr = UA_ObjectAttributes_default;
     oAttr.displayName.locale = UA_STRING("en-US");
     oAttr.displayName.text = role->roleName.name;
     oAttr.description = UA_LOCALIZEDTEXT("en-US", "");
 
+    UA_NodeId assignedId;
     res = UA_Server_addObjectNode(server, role->roleId,
                                   UA_NODEID_NUMERIC(0, UA_NS0ID_SERVER_SERVERCAPABILITIES_ROLESET),
                                   UA_NODEID_NUMERIC(0, UA_NS0ID_HASCOMPONENT),
                                   role->roleName,
                                   UA_NODEID_NUMERIC(0, UA_NS0ID_ROLETYPE),
-                                  oAttr, NULL, NULL);
+                                  oAttr, NULL, &assignedId);
     if(res != UA_STATUSCODE_GOOD)
         return res;
+    UA_NodeId_clear(&role->roleId);
+    role->roleId = assignedId;
+
+    /* The optional Properties are added in the namespace of the Role */
+    const UA_NodeId childId = UA_NODEID_NUMERIC(role->roleId.namespaceIndex, 0);
 
     /* Back the mandatory Identities property with the role registry */
     UA_NodeId identitiesNodeId;
@@ -500,7 +509,7 @@ addRoleRepresentation(UA_Server *server, UA_Role *role) {
     applicationsDataSource.read = readRoleApplications;
     applicationsDataSource.write = NULL;
 
-    res = UA_Server_addDataSourceVariableNode(server, UA_NODEID_NULL,
+    res = UA_Server_addDataSourceVariableNode(server, childId,
                                               role->roleId,
                                               UA_NODEID_NUMERIC(0, UA_NS0ID_HASPROPERTY),
                                               UA_QUALIFIEDNAME(0, "Applications"),
@@ -523,7 +532,7 @@ addRoleRepresentation(UA_Server *server, UA_Role *role) {
     applicationsExcludeDataSource.read = readRoleApplicationsExclude;
     applicationsExcludeDataSource.write = writeRoleApplicationsExclude;
 
-    res = UA_Server_addDataSourceVariableNode(server, UA_NODEID_NULL,
+    res = UA_Server_addDataSourceVariableNode(server, childId,
                                               role->roleId,
                                               UA_NODEID_NUMERIC(0, UA_NS0ID_HASPROPERTY),
                                               UA_QUALIFIEDNAME(0, "ApplicationsExclude"),
@@ -545,7 +554,7 @@ addRoleRepresentation(UA_Server *server, UA_Role *role) {
     endpointsDataSource.read = readRoleEndpoints;
     endpointsDataSource.write = NULL;
 
-    res = UA_Server_addDataSourceVariableNode(server, UA_NODEID_NULL,
+    res = UA_Server_addDataSourceVariableNode(server, childId,
                                               role->roleId,
                                               UA_NODEID_NUMERIC(0, UA_NS0ID_HASPROPERTY),
                                               UA_QUALIFIEDNAME(0, "Endpoints"),
@@ -568,7 +577,7 @@ addRoleRepresentation(UA_Server *server, UA_Role *role) {
     endpointsExcludeDataSource.read = readRoleEndpointsExclude;
     endpointsExcludeDataSource.write = writeRoleEndpointsExclude;
 
-    res = UA_Server_addDataSourceVariableNode(server, UA_NODEID_NULL,
+    res = UA_Server_addDataSourceVariableNode(server, childId,
                                               role->roleId,
                                               UA_NODEID_NUMERIC(0, UA_NS0ID_HASPROPERTY),
                                               UA_QUALIFIEDNAME(0, "EndpointsExclude"),
@@ -592,7 +601,7 @@ addRoleRepresentation(UA_Server *server, UA_Role *role) {
     customConfigDataSource.read = readRoleCustomConfiguration;
     customConfigDataSource.write = NULL;
 
-    res = UA_Server_addDataSourceVariableNode(server, UA_NODEID_NULL,
+    res = UA_Server_addDataSourceVariableNode(server, childId,
                                               role->roleId,
                                               UA_NODEID_NUMERIC(0, UA_NS0ID_HASPROPERTY),
                                               UA_QUALIFIEDNAME(0, "CustomConfiguration"),
@@ -628,6 +637,69 @@ removeRoleRepresentation(UA_Server *server, const UA_NodeId *roleId) {
     return UA_Server_deleteNode(server, *roleId, true);
 }
 
+/* The well-known Roles of OPC 10000-3 §4.9.2 in the OPC UA namespace */
+static const struct WellKnownRole {
+    UA_UInt32 id;
+    const char *name;
+} wellKnownRoles[] = {
+    {UA_NS0ID_WELLKNOWNROLE_ANONYMOUS,          "Anonymous"},
+    {UA_NS0ID_WELLKNOWNROLE_AUTHENTICATEDUSER,  "AuthenticatedUser"},
+    {UA_NS0ID_WELLKNOWNROLE_TRUSTEDAPPLICATION, "TrustedApplication"},
+    {UA_NS0ID_WELLKNOWNROLE_OBSERVER,           "Observer"},
+    {UA_NS0ID_WELLKNOWNROLE_OPERATOR,           "Operator"},
+    {UA_NS0ID_WELLKNOWNROLE_ENGINEER,           "Engineer"},
+    {UA_NS0ID_WELLKNOWNROLE_SUPERVISOR,         "Supervisor"},
+    {UA_NS0ID_WELLKNOWNROLE_CONFIGUREADMIN,     "ConfigureAdmin"},
+    {UA_NS0ID_WELLKNOWNROLE_SECURITYADMIN,      "SecurityAdmin"}
+#ifdef UA_NS0ID_WELLKNOWNROLE_SECURITYKEYSERVERADMIN
+    ,{UA_NS0ID_WELLKNOWNROLE_SECURITYKEYSERVERADMIN,  "SecurityKeyServerAdmin"}
+    ,{UA_NS0ID_WELLKNOWNROLE_SECURITYKEYSERVERPUSH,   "SecurityKeyServerPush"}
+    ,{UA_NS0ID_WELLKNOWNROLE_SECURITYKEYSERVERACCESS, "SecurityKeyServerAccess"}
+#endif
+};
+
+#define WELLKNOWNROLES_SIZE (sizeof(wellKnownRoles) / sizeof(wellKnownRoles[0]))
+
+/* The NodeId of the well-known Role with the given name (OPC 10000-6) */
+static UA_Boolean
+findWellKnownRoleId(const UA_String *name, UA_NodeId *outRoleId) {
+    for(size_t i = 0; i < WELLKNOWNROLES_SIZE; i++) {
+        UA_String wkName = UA_STRING((char*)(uintptr_t)wellKnownRoles[i].name);
+        if(UA_String_equal(name, &wkName)) {
+            *outRoleId = UA_NODEID_NUMERIC(0, wellKnownRoles[i].id);
+            return true;
+        }
+    }
+    return false;
+}
+
+/* The Roles with administrator privileges, which must not be granted to
+ * Anonymous Sessions (Part 18 §4.4.1) */
+static UA_Boolean
+isAdministratorRole(const UA_NodeId *roleId) {
+    if(roleId->namespaceIndex != 0 ||
+       roleId->identifierType != UA_NODEIDTYPE_NUMERIC)
+        return false;
+    switch(roleId->identifier.numeric) {
+    case UA_NS0ID_WELLKNOWNROLE_SECURITYADMIN:
+    case UA_NS0ID_WELLKNOWNROLE_CONFIGUREADMIN:
+#ifdef UA_NS0ID_WELLKNOWNROLE_SECURITYKEYSERVERADMIN
+    case UA_NS0ID_WELLKNOWNROLE_SECURITYKEYSERVERADMIN:
+#endif
+        return true;
+    default:
+        return false;
+    }
+}
+
+/* The Add Methods of Part 18 report a lack of resources as
+ * Bad_ResourceUnavailable */
+static UA_StatusCode
+addMethodResult(UA_StatusCode res) {
+    return (res == UA_STATUSCODE_BADOUTOFMEMORY) ?
+        UA_STATUSCODE_BADRESOURCEUNAVAILABLE : res;
+}
+
 /* Method callbacks */
 
 static UA_StatusCode
@@ -656,7 +728,7 @@ addRoleMethodCallback(UA_Server *server,
     UA_Role_init(&role);
     res = UA_String_copy(roleName, &role.roleName.name);
     if(res != UA_STATUSCODE_GOOD)
-        return res;
+        return addMethodResult(res);
 
     /* Per specification, use NS1 if no namespaceUri is given */
     if(namespaceUri->length > 0) {
@@ -667,6 +739,13 @@ addRoleMethodCallback(UA_Server *server,
             return UA_STATUSCODE_BADINVALIDARGUMENT;
         }
         role.roleName.namespaceIndex = (UA_UInt16)nsIdx;
+
+        /* The OPC UA namespace holds only the well-known Roles. They use the
+         * NodeIds defined in OPC 10000-6 (Part 18 §4.2.2). */
+        if(nsIdx == 0 && !findWellKnownRoleId(roleName, &role.roleId)) {
+            UA_Role_clear(&role);
+            return UA_STATUSCODE_BADINVALIDARGUMENT;
+        }
     } else {
         role.roleName.namespaceIndex = 1;
     }
@@ -675,7 +754,7 @@ addRoleMethodCallback(UA_Server *server,
     UA_StatusCode retval = UA_Server_addRole(server, &role, &newRoleId);
     if(retval != UA_STATUSCODE_GOOD) {
         UA_Role_clear(&role);
-        return retval;
+        return addMethodResult(retval);
     }
 
     /* UA_Server_addRole already published the Role Object under the RoleSet
@@ -689,7 +768,7 @@ addRoleMethodCallback(UA_Server *server,
 
     UA_Role_clear(&role);
     UA_NodeId_clear(&newRoleId);
-    return retval;
+    return addMethodResult(retval);
 }
 
 static UA_StatusCode
@@ -745,6 +824,12 @@ addIdentityMethodCallback(UA_Server *server,
     UA_IdentityMappingRuleType *rule =
         (UA_IdentityMappingRuleType*)extObj->content.decoded.data;
 
+    /* A Server should refuse an Anonymous mapping rule for Roles with
+     * administrator privileges (Part 18 §4.4.1) */
+    if(rule->criteriaType == UA_IDENTITYCRITERIATYPE_ANONYMOUS &&
+       isAdministratorRole(objectId))
+        return UA_STATUSCODE_BADREQUESTNOTALLOWED;
+
     UA_Role role;
     UA_StatusCode res = UA_Server_getRoleById(server, *objectId, &role);
     if(res != UA_STATUSCODE_GOOD)
@@ -766,21 +851,21 @@ addIdentityMethodCallback(UA_Server *server,
                    sizeof(UA_IdentityMappingRuleType));
     if(!newRules) {
         UA_Role_clear(&role);
-        return UA_STATUSCODE_BADOUTOFMEMORY;
+        return UA_STATUSCODE_BADRESOURCEUNAVAILABLE;
     }
     role.identityMappingRules = newRules;
     res = UA_IdentityMappingRuleType_copy(
         rule, &role.identityMappingRules[role.identityMappingRulesSize]);
     if(res != UA_STATUSCODE_GOOD) {
         UA_Role_clear(&role);
-        return res;
+        return addMethodResult(res);
     }
     role.identityMappingRulesSize++;
 
     res = UA_Server_updateRoleFromMethod(server, &role, sessionId, methodId,
                                          inputSize, input);
     UA_Role_clear(&role);
-    return res;
+    return addMethodResult(res);
 }
 
 static UA_StatusCode
@@ -860,21 +945,21 @@ addApplicationMethodCallback(UA_Server *server,
                    (role.applicationsSize + 1) * sizeof(UA_String));
     if(!newApps) {
         UA_Role_clear(&role);
-        return UA_STATUSCODE_BADOUTOFMEMORY;
+        return UA_STATUSCODE_BADRESOURCEUNAVAILABLE;
     }
     role.applications = newApps;
     res = UA_String_copy((UA_String*)input[0].data,
                          &role.applications[role.applicationsSize]);
     if(res != UA_STATUSCODE_GOOD) {
         UA_Role_clear(&role);
-        return res;
+        return addMethodResult(res);
     }
     role.applicationsSize++;
 
     res = UA_Server_updateRoleFromMethod(server, &role, sessionId, methodId,
                                          inputSize, input);
     UA_Role_clear(&role);
-    return res;
+    return addMethodResult(res);
 }
 
 static UA_StatusCode
@@ -939,6 +1024,7 @@ addEndpointMethodCallback(UA_Server *server,
        extObj->content.decoded.type != &UA_TYPES[UA_TYPES_ENDPOINTTYPE])
         return UA_STATUSCODE_BADINVALIDARGUMENT;
 
+    /* The EndpointUrl is validated with the role (validateRole) */
     UA_Role role;
     UA_StatusCode res = UA_Server_getRoleById(server, *objectId, &role);
     if(res != UA_STATUSCODE_GOOD)
@@ -949,21 +1035,21 @@ addEndpointMethodCallback(UA_Server *server,
                    (role.endpointsSize + 1) * sizeof(UA_EndpointType));
     if(!newEps) {
         UA_Role_clear(&role);
-        return UA_STATUSCODE_BADOUTOFMEMORY;
+        return UA_STATUSCODE_BADRESOURCEUNAVAILABLE;
     }
     role.endpoints = newEps;
     res = UA_EndpointType_copy((UA_EndpointType*)extObj->content.decoded.data,
                                &role.endpoints[role.endpointsSize]);
     if(res != UA_STATUSCODE_GOOD) {
         UA_Role_clear(&role);
-        return res;
+        return addMethodResult(res);
     }
     role.endpointsSize++;
 
     res = UA_Server_updateRoleFromMethod(server, &role, sessionId, methodId,
                                          inputSize, input);
     UA_Role_clear(&role);
-    return res;
+    return addMethodResult(res);
 }
 
 static UA_StatusCode
@@ -1099,10 +1185,11 @@ addUserMethodCallback(UA_Server *server, const UA_NodeId *sessionId,
     res = validateUserConfiguration(server, configuration);
     if(res != UA_STATUSCODE_GOOD)
         return res;
-    return server->config.accessControl.addUser(
+    res = server->config.accessControl.addUser(
         server, &server->config.accessControl, (UA_String*)input[0].data,
         (UA_String*)input[1].data, configuration,
         (UA_String*)input[3].data);
+    return addMethodResult(res);
 }
 
 static UA_StatusCode
@@ -1293,8 +1380,31 @@ initUserManagement(UA_Server *server) {
     return res;
 }
 
+/* The RoleSet and the Role Objects are browsable like in the standard NodeSet:
+ * Part 18 §4.4.1 restricts only the Properties and Methods of the RoleType to
+ * administrators over an encrypted channel. Every activated Session holds the
+ * Anonymous Role. SecurityAdmin needs Call on the Object as well, since the
+ * Call service checks it on the Object and on the Method. */
 static UA_StatusCode
-addRoleManagementPermissions(UA_Server *server, const UA_NodeId *nodeId) {
+addRoleObjectPermissions(UA_Server *server, const UA_NodeId *nodeId) {
+    UA_StatusCode retval =
+        UA_Server_addRolePermissions(server, *nodeId,
+                                     UA_NODEID_NUMERIC(0, UA_NS0ID_WELLKNOWNROLE_ANONYMOUS),
+                                     UA_PERMISSIONTYPE_BROWSE, false, false);
+    if(retval == UA_STATUSCODE_GOOD)
+        retval = UA_Server_addRolePermissions(
+            server, *nodeId,
+            UA_NODEID_NUMERIC(0, UA_NS0ID_WELLKNOWNROLE_SECURITYADMIN),
+            UA_PERMISSIONTYPE_BROWSE | UA_PERMISSIONTYPE_READ |
+            UA_PERMISSIONTYPE_CALL | UA_PERMISSIONTYPE_RECEIVEEVENTS |
+            UA_PERMISSIONTYPE_READROLEPERMISSIONS, false, false);
+    if(retval == UA_STATUSCODE_BADNODEIDUNKNOWN)
+        return UA_STATUSCODE_GOOD;
+    return retval;
+}
+
+static UA_StatusCode
+addRoleMethodPermissions(UA_Server *server, const UA_NodeId *nodeId) {
     const UA_NodeId secAdmin =
         UA_NODEID_NUMERIC(0, UA_NS0ID_WELLKNOWNROLE_SECURITYADMIN);
     UA_StatusCode retval =
@@ -1308,8 +1418,8 @@ addRoleManagementPermissions(UA_Server *server, const UA_NodeId *nodeId) {
     if(retval != UA_STATUSCODE_GOOD && retval != UA_STATUSCODE_BADNODEIDUNKNOWN)
         return retval;
 
-    /* Role configuration is sensitive and may only be browsed/read/called via
-     * an encrypted channel (Part 18 §4.4.1). */
+    /* The Methods of the RoleType may only be browsed and called via an
+     * encrypted channel (Part 18 §4.4.1) */
     retval = UA_Server_setNodeAccessRestrictions(
         server, *nodeId,
         UA_ACCESSRESTRICTIONTYPE_ENCRYPTIONREQUIRED |
@@ -1389,15 +1499,19 @@ addOrBindRoleMethod(UA_Server *server, const UA_NodeId *roleId,
         inputArgument.dataType = UA_TYPES[inputTypeIndex].typeId;
         inputArgument.valueRank = UA_VALUERANK_SCALAR;
 
-        res = UA_Server_addMethodNode(server, UA_NODEID_NULL, *roleId,
-                                      UA_NODEID_NUMERIC(0, UA_NS0ID_HASCOMPONENT),
-                                      UA_QUALIFIEDNAME(0, (char*)(uintptr_t)name),
-                                      attr, callback, 1, &inputArgument,
-                                      0, NULL, NULL, &methodId);
+        /* The Method and its InputArguments get NodeIds in the namespace
+         * of the Role */
+        const UA_NodeId childId = UA_NODEID_NUMERIC(roleId->namespaceIndex, 0);
+        res = UA_Server_addMethodNodeEx(server, childId, *roleId,
+                                        UA_NODEID_NUMERIC(0, UA_NS0ID_HASCOMPONENT),
+                                        UA_QUALIFIEDNAME(0, (char*)(uintptr_t)name),
+                                        attr, callback, 1, &inputArgument,
+                                        childId, NULL, 0, NULL, UA_NODEID_NULL,
+                                        NULL, NULL, &methodId);
     }
 
     if(res == UA_STATUSCODE_GOOD && applyPermissions) {
-        res = addRoleManagementPermissions(server, &methodId);
+        res = addRoleMethodPermissions(server, &methodId);
         if(res == UA_STATUSCODE_GOOD)
             res = protectRolePropertyChildren(server, &methodId);
     }
@@ -1409,13 +1523,18 @@ static UA_StatusCode
 ensureRoleTypeMethods(UA_Server *server, const UA_NodeId *roleId,
                       UA_Boolean applyPermissions) {
     if(applyPermissions) {
-        UA_StatusCode res = addRoleManagementPermissions(server, roleId);
+        UA_StatusCode res = addRoleObjectPermissions(server, roleId);
         if(res != UA_STATUSCODE_GOOD)
             return res;
         res = protectRolePropertyChildren(server, roleId);
         if(res != UA_STATUSCODE_GOOD)
             return res;
     }
+
+    /* The mapping rules of the mandatory well-known Roles cannot be changed.
+     * Then the Methods shall not be present (Part 18 §4.4.1). */
+    if(isMandatoryWellKnownRole(roleId))
+        return UA_STATUSCODE_GOOD;
 
     struct RoleMethodDef {
         const char *name;
@@ -1451,10 +1570,11 @@ ensureRoleTypeMethods(UA_Server *server, const UA_NodeId *roleId,
     return UA_STATUSCODE_GOOD;
 }
 
-/* Restrict the RoleSet Object and the security-sensitive RoleSet/RoleType
- * Methods to the SecurityAdmin Role over an encrypted channel (OPC UA Part
- * 18). initNS0RBAC has ensured the RoleSet exists by the time this runs; the
- * probe below only keeps the function safe if it is ever called before that. */
+/* Restrict the security-sensitive RoleSet/RoleType Methods and the Role
+ * Properties to the SecurityAdmin Role over an encrypted channel (OPC UA Part
+ * 18 §4.4.1). The RoleSet and the Role Objects stay browsable. initNS0RBAC has
+ * ensured the RoleSet exists by the time this runs; the probe below only keeps
+ * the function safe if it is ever called before that. */
 UA_StatusCode
 initRoleSetRolePermissions(UA_Server *server) {
     UA_NodeId roleSetId =
@@ -1466,11 +1586,8 @@ initRoleSetRolePermissions(UA_Server *server) {
 
     const UA_NodeId secAdmin =
         UA_NODEID_NUMERIC(0, UA_NS0ID_WELLKNOWNROLE_SECURITYADMIN);
-    /* Nodes whose CALL is restricted to SecurityAdmin. The RoleSet Object is
-     * included because the Call service checks CALL on both the Object and the
-     * Method node. */
+    /* Methods whose CALL is restricted to SecurityAdmin */
     const UA_UInt32 callNodes[] = {
-        UA_NS0ID_SERVER_SERVERCAPABILITIES_ROLESET,
         UA_NS0ID_SERVER_SERVERCAPABILITIES_ROLESET_ADDROLE,
         UA_NS0ID_SERVER_SERVERCAPABILITIES_ROLESET_REMOVEROLE,
         UA_NS0ID_ROLETYPE_ADDIDENTITY,
@@ -1486,17 +1603,15 @@ initRoleSetRolePermissions(UA_Server *server) {
      * omit individual Methods. Any other failure aborts. */
     UA_StatusCode retval;
 
-    /* Admin may additionally read the RolePermissions attribute of the RoleSet */
-    retval = UA_Server_addRolePermissions(server, roleSetId, secAdmin,
-                                          UA_PERMISSIONTYPE_READROLEPERMISSIONS,
-                                          false, false);
-    if(retval != UA_STATUSCODE_GOOD && retval != UA_STATUSCODE_BADNODEIDUNKNOWN)
+    /* SecurityAdmin calls AddRole and RemoveRole on the RoleSet */
+    retval = addRoleObjectPermissions(server, &roleSetId);
+    if(retval != UA_STATUSCODE_GOOD)
         return retval;
 
 #ifdef UA_NS0ID_ROLEMAPPINGRULECHANGEDAUDITEVENTTYPE
     /* Role changes use the affected Role Object as SourceNode. ReceiveEvents
      * is checked independently on that source and on the EventType. The Role
-     * Objects are covered by addRoleManagementPermissions above; grant the
+     * Objects are covered by addRoleObjectPermissions above; grant the
      * matching EventType permission here as well. Like the other audit
      * EventTypes (initNS0SensitiveRolePermissions), the type itself stays
      * browsable for everybody. */
@@ -1889,6 +2004,18 @@ bindRoleRepresentation(UA_Server *server, const UA_NodeId *roleId,
     ds.write = NULL;
     UA_StatusCode res = bindRoleProperty(server, roleId, "Identities", ds);
 
+    /* The optional Applications and Endpoints Properties return the
+     * configured lists */
+    if(res == UA_STATUSCODE_GOOD) {
+        ds.read = readRoleApplications;
+        res = bindRoleProperty(server, roleId, "Applications", ds);
+    }
+
+    if(res == UA_STATUSCODE_GOOD) {
+        ds.read = readRoleEndpoints;
+        res = bindRoleProperty(server, roleId, "Endpoints", ds);
+    }
+
     if(res == UA_STATUSCODE_GOOD) {
         ds.read = readRoleApplicationsExclude;
         ds.write = writeRoleApplicationsExclude;
@@ -1973,31 +2100,16 @@ initNS0RBAC(UA_Server *server) {
     }
 
     /* Ensure the well-known role instance nodes exist under the RoleSet */
-    struct { UA_UInt32 id; const char *name; } roles[] = {
-        {UA_NS0ID_WELLKNOWNROLE_ANONYMOUS,          "Anonymous"},
-        {UA_NS0ID_WELLKNOWNROLE_AUTHENTICATEDUSER,  "AuthenticatedUser"},
-        {UA_NS0ID_WELLKNOWNROLE_TRUSTEDAPPLICATION, "TrustedApplication"},
-        {UA_NS0ID_WELLKNOWNROLE_OBSERVER,           "Observer"},
-        {UA_NS0ID_WELLKNOWNROLE_OPERATOR,           "Operator"},
-        {UA_NS0ID_WELLKNOWNROLE_ENGINEER,           "Engineer"},
-        {UA_NS0ID_WELLKNOWNROLE_SUPERVISOR,         "Supervisor"},
-        {UA_NS0ID_WELLKNOWNROLE_CONFIGUREADMIN,     "ConfigureAdmin"},
-        {UA_NS0ID_WELLKNOWNROLE_SECURITYADMIN,      "SecurityAdmin"}
-#ifdef UA_NS0ID_WELLKNOWNROLE_SECURITYKEYSERVERADMIN
-        ,{UA_NS0ID_WELLKNOWNROLE_SECURITYKEYSERVERADMIN,  "SecurityKeyServerAdmin"}
-        ,{UA_NS0ID_WELLKNOWNROLE_SECURITYKEYSERVERPUSH,   "SecurityKeyServerPush"}
-        ,{UA_NS0ID_WELLKNOWNROLE_SECURITYKEYSERVERACCESS, "SecurityKeyServerAccess"}
-#endif
-    };
-    for(size_t i = 0; i < sizeof(roles) / sizeof(roles[0]); i++) {
-        UA_NodeId rId = UA_NODEID_NUMERIC(0, roles[i].id);
+    for(size_t i = 0; i < WELLKNOWNROLES_SIZE; i++) {
+        const struct WellKnownRole *wk = &wellKnownRoles[i];
+        UA_NodeId rId = UA_NODEID_NUMERIC(0, wk->id);
         if(UA_Server_readBrowseName(server, rId, &bn) != UA_STATUSCODE_GOOD) {
             UA_ObjectAttributes oAttr = UA_ObjectAttributes_default;
-            oAttr.displayName = UA_LOCALIZEDTEXT("", (char*)(uintptr_t)roles[i].name);
+            oAttr.displayName = UA_LOCALIZEDTEXT("", (char*)(uintptr_t)wk->name);
             RBAC_INIT_TRY(UA_Server_addObjectNode(
                 server, rId, roleSetId,
                 UA_NODEID_NUMERIC(0, UA_NS0ID_HASCOMPONENT),
-                UA_QUALIFIEDNAME(0, (char*)(uintptr_t)roles[i].name),
+                UA_QUALIFIEDNAME(0, (char*)(uintptr_t)wk->name),
                 UA_NODEID_NUMERIC(0, UA_NS0ID_ROLETYPE),
                 oAttr, NULL, NULL));
         } else {

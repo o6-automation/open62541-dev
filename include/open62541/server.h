@@ -2369,7 +2369,9 @@ typedef struct {
      * compared. The TransportProfileUri is derived from the transport of the
      * SecureChannel. An entry that cannot be decided (e.g. for a dynamically
      * assigned port) is never in an include list but always in an exclude
-     * list. */
+     * list. A non-empty EndpointUrl must parse as an EndpointUrl with one of
+     * the schemes opc.tcp, opc.ws, opc.wss, opc.http or opc.https. Otherwise
+     * the Role is refused with UA_STATUSCODE_BADINVALIDARGUMENT. */
     UA_Boolean endpointsExclude;
     size_t endpointsSize;
     UA_EndpointType *endpoints;
@@ -3067,8 +3069,11 @@ UA_Server_removeNodeRolePermissions(UA_Server *server,
  * unique within the RoleSet Object"). A role with the same roleName or
  * roleId must not already exist.
  *
- * If role->roleId is null, the server auto-assigns a random numeric
- * NodeId in namespace 0. To control the namespace or identifier, set
+ * If role->roleId is null, the server auto-assigns a numeric NodeId in the
+ * namespace of the roleName. The OPC UA namespace holds only the well-known
+ * Roles, so a roleName in namespace 0 gets a NodeId in namespace 1. The
+ * children of the Role Object (Properties, Methods and their arguments) use
+ * the same namespace. To control the namespace or identifier, set
  * role->roleId before calling.
  *
  * @param server The server instance

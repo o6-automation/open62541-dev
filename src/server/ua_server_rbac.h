@@ -156,14 +156,21 @@ removeRoleRepresentation(UA_Server *server, const UA_NodeId *roleId);
 UA_StatusCode
 checkRoleRepresentation(UA_Server *server, const UA_NodeId *roleId);
 
+/* The mandatory well-known Roles Anonymous, AuthenticatedUser and
+ * TrustedApplication. Their mapping rules cannot be changed (Part 18 §4.3), so
+ * their Role Objects have no mapping Methods (§4.4.1). */
+UA_Boolean
+isMandatoryWellKnownRole(const UA_NodeId *roleId);
+
 /* Back the Properties of an existing Role Object with the role registry and
  * bind its Methods */
 UA_StatusCode
 bindRoleRepresentation(UA_Server *server, const UA_NodeId *roleId,
                        UA_Boolean applyPermissions);
 
-/* Restrict the RoleSet Object and its security-sensitive Methods to the
- * SecurityAdmin Role (defined in ua_server_ns0_rbac.c) */
+/* Restrict the RoleSet and RoleType Methods and the Role Properties to the
+ * SecurityAdmin Role; the RoleSet and the Role Objects stay browsable (defined
+ * in ua_server_ns0_rbac.c) */
 UA_StatusCode
 initRoleSetRolePermissions(UA_Server *server);
 
