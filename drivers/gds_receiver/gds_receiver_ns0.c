@@ -181,23 +181,30 @@ createFileInfos(UA_GDSReceiverContext *ctx) {
     return UA_GDSReceiver_initFileInfos(ctx, lastUpdateTime);
 }
 
+/* Advertise only the certificate types that can be updated. These are the
+ * permitted types for UpdateCertificate and CreateSigningRequest. */
+UA_StatusCode
+writeServerCertificateTypes(UA_GDSReceiverContext *ctx) {
+    UA_Server *server = ((UA_GDSReceiver*)ctx)->drv.server;
+    size_t slotsSize = 0;
+    UA_GDSCertificateSlot *slots = UA_GDSReceiver_serverSlots(ctx, &slotsSize);
+    UA_NodeId *certificateTypes = (UA_NodeId*)
+        UA_calloc(slotsSize + 1, sizeof(UA_NodeId));
+    if(!certificateTypes)
+        return UA_STATUSCODE_BADOUTOFMEMORY;
+    for(size_t i = 0; i < slotsSize; i++)
+        certificateTypes[i] = slots[i].certificateTypeId; /* Shallow copy */
+    UA_StatusCode res = writeGDSNs0VariableArray(
+        server, UA_NS0ID(SERVERCONFIGURATION_CERTIFICATEGROUPS_DEFAULTAPPLICATIONGROUP_CERTIFICATETYPES),
+        certificateTypes, slotsSize, &UA_TYPES[UA_TYPES_NODEID]);
+    UA_free(certificateTypes);
+    return res;
+}
+
 static UA_StatusCode
 writeGroupVariables(UA_GDSReceiverContext *ctx) {
     UA_Server *server = ((UA_GDSReceiver*)ctx)->drv.server;
     UA_ServerConfig *config = UA_Server_getConfig(server);
-
-    /* Advertise only the certificate types that can be updated. These are the
-     * permitted types for UpdateCertificate and CreateSigningRequest. */
-    const UA_NodeId knownCertificateTypes[2] = {
-        UA_NODEID_NUMERIC(0, UA_NS0ID_RSAMINAPPLICATIONCERTIFICATETYPE),
-        UA_NODEID_NUMERIC(0, UA_NS0ID_RSASHA256APPLICATIONCERTIFICATETYPE)
-    };
-    UA_NodeId certificateTypes[2];
-    size_t certificateTypesSize = 0;
-    for(size_t i = 0; i < 2; i++) {
-        if(UA_GDSReceiver_certificateTypeSupported(config, &knownCertificateTypes[i]))
-            certificateTypes[certificateTypesSize++] = knownCertificateTypes[i];
-    }
 
     /* Part 12, 7.10.3. DER keys are accepted as well. */
     UA_String supportedPrivateKeyFormats[1] = {UA_STRING("PEM")};
@@ -213,9 +220,7 @@ writeGroupVariables(UA_GDSReceiverContext *ctx) {
     retval |= writeGDSNs0Variable(server, UA_NS0ID(SERVERCONFIGURATION_MAXTRUSTLISTSIZE),
                                   &maxTrustListSize, &UA_TYPES[UA_TYPES_UINT32]);
 
-    retval |= writeGDSNs0VariableArray(server, UA_NS0ID(SERVERCONFIGURATION_CERTIFICATEGROUPS_DEFAULTAPPLICATIONGROUP_CERTIFICATETYPES),
-                                       certificateTypes, certificateTypesSize,
-                                       &UA_TYPES[UA_TYPES_NODEID]);
+    retval |= writeServerCertificateTypes(ctx);
 
     UA_UInt16 openCount;
     UA_UtcTime lastUpdateTime;

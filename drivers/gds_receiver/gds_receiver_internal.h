@@ -18,6 +18,25 @@ _UA_BEGIN_DECLS
 
 typedef struct UA_GDSReceiverContext UA_GDSReceiverContext;
 
+/* A CertificateType slot of a CertificateGroup (Part 12, 7.8.3) with the state
+ * of the last CreateSigningRequest for the type. The certificate and the key
+ * of the slot are kept by the SecurityPolicies. */
+typedef struct {
+    UA_NodeId certificateTypeId;
+    UA_ByteString pendingCsr;        /* The last CreateSigningRequest */
+} UA_GDSCertificateSlot;
+
+/* Discard the state of the last CreateSigningRequest */
+void
+UA_GDSCertificateSlot_clearPending(UA_GDSCertificateSlot *slot);
+
+UA_GDSCertificateSlot *
+UA_GDSCertificateSlots_find(UA_GDSCertificateSlot *slots, size_t slotsSize,
+                            const UA_NodeId *certificateTypeId);
+
+void
+UA_GDSCertificateSlots_delete(UA_GDSCertificateSlot *slots, size_t slotsSize);
+
 UA_StatusCode
 initNS0PushManagement(UA_GDSReceiverContext *ctx);
 
@@ -34,10 +53,15 @@ initGDSRolePermissions(UA_Server *server);
 UA_CertificateGroup *
 getCertGroup(UA_Server *server, const UA_NodeId *objectId);
 
-/* Can certificates of the type be updated in the DefaultApplicationGroup */
-UA_Boolean
-UA_GDSReceiver_certificateTypeSupported(UA_ServerConfig *sc,
-                                        const UA_NodeId *certificateTypeId);
+/* The CertificateType slots of the DefaultApplicationGroup of the
+ * ServerConfiguration. These are the certificate types that an endpoint uses,
+ * so that an update takes effect (Part 12, 7.10.5). */
+UA_GDSCertificateSlot *
+UA_GDSReceiver_serverSlots(UA_GDSReceiverContext *ctx, size_t *slotsSize);
+
+/* Write the CertificateTypes of the DefaultApplicationGroup from the slots */
+UA_StatusCode
+writeServerCertificateTypes(UA_GDSReceiverContext *ctx);
 
 UA_StatusCode
 writeOpenCountVariable(UA_GDSReceiverContext *ctx, UA_CertificateGroup *group);
