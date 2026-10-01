@@ -105,62 +105,32 @@ readNamespacePermissions(UA_Server *server, const UA_NodeId *sessionId,
                          UA_Boolean userOnly, UA_DataValue *value) {
     UA_RolePermissionType *out = NULL;
     size_t outSize = 0;
+    UA_StatusCode res = UA_STATUSCODE_GOOD;
 
     lockServer(server);
-    const UA_NamespaceMetadata *nm = NULL;
-    if(server->namespaceMetadata && server->namespaceMetadataSize > 0 &&
-       server->namespaceMetadata[0].hasDefaultRolePermissions)
-        nm = &server->namespaceMetadata[0];
-
-    UA_Session *session = userOnly && sessionId ?
-        getSessionById(server, sessionId) : NULL;
-    if(nm) {
-        for(size_t i = 0; i < nm->entriesSize; i++) {
-            UA_Boolean include = !userOnly;
-            if(userOnly && session) {
-                for(size_t j = 0; j < session->rolesSize; j++) {
-                    if(UA_NodeId_equal(&nm->entries[i].roleId,
-                                       &session->roles[j])) {
-                        include = true;
-                        break;
-                    }
-                }
-            }
-            if(include)
-                outSize++;
-        }
-    }
-
-    if(outSize > 0)
+    size_t entriesSize = 0;
+    const UA_RolePermission *entries = NULL;
+    getNamespaceRolePermissionModel(server, 0, &entriesSize, &entries);
+    if(userOnly) {
+        /* DefaultUserRolePermissions: filtered to the Session's Roles */
+        const UA_Session *session = sessionId ?
+            getSessionById(server, sessionId) : NULL;
+        res = filterRolePermissionsForSession(session, entriesSize, entries,
+                                              &outSize, &out);
+    } else if(entriesSize > 0) {
+        /* DefaultRolePermissions: the complete list */
         out = (UA_RolePermissionType*)
-            UA_Array_new(outSize, &UA_TYPES[UA_TYPES_ROLEPERMISSIONTYPE]);
-    if(outSize > 0 && !out) {
-        unlockServer(server);
-        return UA_STATUSCODE_BADOUTOFMEMORY;
-    }
-
-    UA_StatusCode res = UA_STATUSCODE_GOOD;
-    size_t outIndex = 0;
-    if(nm) {
-        for(size_t i = 0; i < nm->entriesSize; i++) {
-            UA_Boolean include = !userOnly;
-            if(userOnly && session) {
-                for(size_t j = 0; j < session->rolesSize; j++) {
-                    if(UA_NodeId_equal(&nm->entries[i].roleId,
-                                       &session->roles[j])) {
-                        include = true;
-                        break;
-                    }
-                }
+            UA_Array_new(entriesSize, &UA_TYPES[UA_TYPES_ROLEPERMISSIONTYPE]);
+        if(out) {
+            outSize = entriesSize;
+            for(size_t i = 0; i < entriesSize; i++) {
+                res = UA_NodeId_copy(&entries[i].roleId, &out[i].roleId);
+                if(res != UA_STATUSCODE_GOOD)
+                    break;
+                out[i].permissions = entries[i].permissions;
             }
-            if(!include)
-                continue;
-            res = UA_NodeId_copy(&nm->entries[i].roleId,
-                                 &out[outIndex].roleId);
-            if(res != UA_STATUSCODE_GOOD)
-                break;
-            out[outIndex].permissions = nm->entries[i].permissions;
-            outIndex++;
+        } else {
+            res = UA_STATUSCODE_BADOUTOFMEMORY;
         }
     }
     unlockServer(server);

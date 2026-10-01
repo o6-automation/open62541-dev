@@ -493,16 +493,28 @@ UA_EXPORT UA_THREADSAFE UA_StatusCode
 UA_Server_readExecutable(UA_Server *server, const UA_NodeId nodeId,
                          UA_Boolean *out);
 
-/* Returns a variant with a UA_RolePermissionType array */
+/* Returns a variant with a UA_RolePermissionType array. With RBAC this is the
+ * Node's own RolePermissions, or an empty array if the Node uses the default
+ * RolePermissions of its namespace (Part 3 §5.2.9). If the Node has no own
+ * RolePermissions and its namespace has no default while
+ * allPermissionsForAnonymous is set, the attribute does not exist
+ * (Bad_AttributeIdInvalid). Without RBAC always Bad_AttributeIdInvalid. */
 UA_EXPORT UA_THREADSAFE UA_StatusCode
 UA_Server_readRolePermissions(UA_Server *server, const UA_NodeId nodeId,
                               UA_Variant *out);
 
-/* Returns a variant with a UA_RolePermissionType array */
+/* Returns a variant with a UA_RolePermissionType array. With RBAC these are
+ * the Node's own RolePermissions, else the namespace default, filtered to the
+ * Roles of the local admin Session (usually none). It does not exist in the
+ * same case as the RolePermissions attribute. Without RBAC an empty array. */
 UA_EXPORT UA_THREADSAFE UA_StatusCode
 UA_Server_readUserRolePermissions(UA_Server *server, const UA_NodeId nodeId,
                                   UA_Variant *out);
 
+/* With RBAC, returns the Node's own AccessRestrictions, or 0 if the Node uses
+ * the default of its namespace (Part 3 §5.2.11). The effective value is
+ * returned by UA_Server_getNodeAccessRestrictions. Without RBAC
+ * Bad_AttributeIdInvalid. */
 UA_EXPORT UA_THREADSAFE UA_StatusCode
 UA_Server_readAccessRestrictions(UA_Server *server, const UA_NodeId nodeId,
                                  UA_AccessRestrictionType *out);
@@ -2194,7 +2206,10 @@ UA_Server_readObjectProperty(UA_Server *server, const UA_NodeId objectId,
  * through ``wellKnownRoleMappings`` or locally with ``UA_Server_updateRole``.
  *
  * A Role grants access only where matching RolePermissions are configured on
- * a Node or in its NamespaceMetadata defaults. For backwards compatibility,
+ * a Node or in its NamespaceMetadata defaults. The RolePermissions of a Node
+ * override the default of its namespace. An empty list on a Node is no
+ * override: the namespace default applies (Part 3 §5.2.9). For backwards
+ * compatibility,
  * ``UA_ServerConfig::allPermissionsForAnonymous`` defaults to ``true``: Nodes
  * with neither explicit nor namespace-default RolePermissions are fully
  * permissive, irrespective of the Session's Roles. Set it to ``false`` before
@@ -2784,6 +2799,9 @@ struct UA_ServerConfig {
      * - Custom nodestore implementations should be aware of these
      *   index-stability guarantees when managing node permission storage.
      *
+     * A preset with an empty list is no override: Nodes referencing it use
+     * the default RolePermissions of their namespace (Part 3 §5.2.9).
+     *
      * A node with AccessRestrictions of its own references a shared entry
      * that holds both the RolePermissions and the AccessRestrictions. The
      * RolePermission configuration is therefore shared by content: updating
@@ -2793,9 +2811,11 @@ struct UA_ServerConfig {
      * RolePermissions are indistinguishable for such nodes.
      *
      * Additional role-permission sets can be added at runtime through
-     * the server API (UA_Server_setNodeRolePermissions). Entries are never
-     * removed or recycled at runtime: changes are copy-on-write and leave
-     * entries that are no longer referenced by any node in the table. */
+     * the server API (UA_Server_setNodeRolePermissions). Nodes with the same
+     * RolePermissions and AccessRestrictions share one runtime entry. Entries
+     * are never removed or recycled at runtime: changes are copy-on-write and
+     * leave entries that are no longer referenced by any node in the table,
+     * so their number grows with the number of distinct contents. */
     size_t rolePermissionPresetsSize;
     UA_RolePermissionSet *rolePermissionPresets;
 
@@ -2897,6 +2917,11 @@ UA_Server_removeCertificates(UA_Server *server,
  * node will reference the existing configuration (deduplication). Otherwise,
  * a new internal entry is created.
  *
+ * An empty array (rolePermissionsSize 0) removes the override like
+ * UA_Server_removeNodeRolePermissions: the default RolePermissions of the
+ * namespace apply again (Part 3 §5.2.9). To deny all access to a Node, set
+ * an entry that grants nothing, for example {Anonymous, 0}.
+ *
  * @param server The server instance
  * @param nodeId The NodeId of the node
  * @param rolePermissionsSize Number of role-permission entries
@@ -2920,8 +2945,9 @@ UA_Server_setNodeRolePermissions(UA_Server *server,
  * the node. The output array and its entries are allocated and must be
  * freed by the caller.
  *
- * If the node has no specific role permissions assigned, the output size
- * is set to 0 and the output pointer to NULL.
+ * If the node has no specific role permissions assigned (it uses the
+ * namespace default), the output size is set to 0 and the output pointer to
+ * NULL.
  *
  * @param server The server instance
  * @param nodeId The NodeId of the node
@@ -2936,9 +2962,10 @@ UA_Server_getNodeRolePermissions(UA_Server *server,
 
 /* Remove role permissions from a node.
  *
- * Resets the node to have no specific role permissions. Default access
- * control behavior then applies. The internal reference count for the
- * previously assigned permission configuration is decremented.
+ * Resets the node to have no specific role permissions. The default
+ * RolePermissions of the namespace then apply, or, without one, the
+ * behavior selected by allPermissionsForAnonymous. The internal reference
+ * count for the previously assigned permission configuration is decremented.
  *
  * @param server The server instance
  * @param nodeId The NodeId of the node
@@ -2982,9 +3009,12 @@ UA_Server_addRole(UA_Server *server, const UA_Role *role,
  *
  * Config-provided and well-known (protected) roles cannot be removed.
  * References to the removed Role are also removed from Node and namespace
- * RolePermissions. A permission set that becomes empty remains explicitly
- * configured and denies all access; it never falls back to the permissive
- * behavior for unconfigured Nodes.
+ * RolePermissions (Part 18 §4.2.3). Removing a Role never widens access:
+ *
+ * - A Node override that becomes empty is replaced by {Anonymous, 0}. It
+ *   stays an override that grants nothing, since an empty override would
+ *   fall back to the namespace default.
+ * - A namespace default that becomes empty remains an explicit deny-all.
  *
  * @param server The server instance
  * @param roleName The BrowseName (QualifiedName) of the role to remove
@@ -3134,6 +3164,11 @@ UA_Server_addRolePermissions(UA_Server *server, const UA_NodeId nodeId,
 
 /* Remove role permissions from a node for a specific role.
  *
+ * A role whose permissions become zero is removed from the node's list. When
+ * that removes the last entry, the node keeps the override {Anonymous, 0},
+ * which grants nothing, so that access is never widened. Use
+ * UA_Server_removeNodeRolePermissions to remove the override entirely.
+ *
  * @param server The server instance
  * @param nodeId The node to modify
  * @param roleId The role to remove permissions for
@@ -3153,13 +3188,16 @@ UA_Server_removeRolePermissions(UA_Server *server, const UA_NodeId nodeId,
  * the DefaultRolePermissions from the NamespaceMetadata apply.
  *
  * Permission resolution order:
- *  1. Explicit node RolePermissions (set via addRolePermissions)
- *  2. Namespace default RolePermissions (set via this API) */
+ *  1. Explicit node RolePermissions (set via setNodeRolePermissions or
+ *     addRolePermissions). An empty node list is no override.
+ *  2. Namespace default RolePermissions (set via this API). An empty
+ *     namespace default denies all access. */
 
 /* Set default role permissions for a namespace.
  * Overwrites any previously set defaults for the given namespace. Calling this
  * with entriesSize zero configures an explicit deny-all namespace default; it
- * does not restore the unconfigured fallback.
+ * does not restore the unconfigured fallback. Use
+ * UA_Server_removeNamespaceDefaultRolePermissions for that.
  *
  * @param server The server instance
  * @param namespaceIndex The namespace index
@@ -3187,6 +3225,19 @@ UA_Server_getNamespaceDefaultRolePermissions(UA_Server *server,
                                              size_t *entriesSize,
                                              UA_RolePermission **entries);
 
+/* Remove the default role permissions of a namespace.
+ * The namespace then has no explicit default again. Nodes without their own
+ * RolePermissions use the behavior selected by allPermissionsForAnonymous.
+ * Removing a namespace without a default succeeds.
+ *
+ * @param server The server instance
+ * @param namespaceIndex The namespace index
+ * @return UA_STATUSCODE_GOOD on success,
+ *         UA_STATUSCODE_BADINDEXRANGEINVALID for an unknown namespace */
+UA_StatusCode UA_EXPORT UA_THREADSAFE
+UA_Server_removeNamespaceDefaultRolePermissions(UA_Server *server,
+                                                UA_UInt16 namespaceIndex);
+
 /**
  * AccessRestrictions
  * ~~~~~~~~~~~~~~~~~~
@@ -3196,15 +3247,26 @@ UA_Server_getNamespaceDefaultRolePermissions(UA_Server *server,
  * TranslateBrowsePathsToNodeIds are restricted as well). They are enforced on
  * Read, Write, HistoryRead, HistoryUpdate, Call, Browse and
  * TranslateBrowsePathsToNodeIds; the local admin session is exempt. A Node
- * without explicit restrictions falls back to the namespace default. */
+ * without explicit restrictions falls back to the namespace default.
+ *
+ * The AccessRestrictions attribute (UA_Server_readAccessRestrictions and the
+ * Read service) reports only the Node's own value and 0 for a Node that uses
+ * the namespace default. UA_Server_getNodeAccessRestrictions returns the
+ * effective value that is enforced. */
 
 /* Set the AccessRestrictions of a node. */
 UA_StatusCode UA_EXPORT UA_THREADSAFE
 UA_Server_setNodeAccessRestrictions(UA_Server *server, const UA_NodeId nodeId,
                                     UA_AccessRestrictionType restrictions);
 
+/* Remove the AccessRestrictions of a node. The namespace default applies to it
+ * again. */
+UA_StatusCode UA_EXPORT UA_THREADSAFE
+UA_Server_removeNodeAccessRestrictions(UA_Server *server, const UA_NodeId nodeId);
+
 /* Get the effective AccessRestrictions of a node (its own value, else the
- * namespace default). */
+ * namespace default). This is the value that is enforced. The attribute only
+ * reports the node's own value. */
 UA_StatusCode UA_EXPORT UA_THREADSAFE
 UA_Server_getNodeAccessRestrictions(UA_Server *server, const UA_NodeId nodeId,
                                     UA_AccessRestrictionType *outRestrictions);
@@ -3215,6 +3277,22 @@ UA_StatusCode UA_EXPORT UA_THREADSAFE
 UA_Server_setNamespaceDefaultAccessRestrictions(UA_Server *server,
                                                 UA_UInt16 namespaceIndex,
                                                 UA_AccessRestrictionType restrictions);
+
+/* Get the default AccessRestrictions of a namespace. Without a default the
+ * output is UA_ACCESSRESTRICTIONTYPE_NONE. Returns
+ * UA_STATUSCODE_BADINDEXRANGEINVALID for an unknown namespace. */
+UA_StatusCode UA_EXPORT UA_THREADSAFE
+UA_Server_getNamespaceDefaultAccessRestrictions(UA_Server *server,
+                                                UA_UInt16 namespaceIndex,
+                                                UA_AccessRestrictionType *outRestrictions);
+
+/* Remove the default AccessRestrictions of a namespace. Nodes without their
+ * own AccessRestrictions are then unrestricted. Removing a namespace without a
+ * default succeeds. Returns UA_STATUSCODE_BADINDEXRANGEINVALID for an unknown
+ * namespace. */
+UA_StatusCode UA_EXPORT UA_THREADSAFE
+UA_Server_removeNamespaceDefaultAccessRestrictions(UA_Server *server,
+                                                   UA_UInt16 namespaceIndex);
 
 #endif /* UA_ENABLE_RBAC */
 

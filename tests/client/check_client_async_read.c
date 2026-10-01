@@ -406,11 +406,10 @@ START_TEST(async_readRbacAttributes) {
     ck_assert_uint_eq(res, UA_STATUSCODE_GOOD);
     iterateClient(client);
     ck_assert(asyncCallbackDone);
-#ifdef UA_ENABLE_RBAC
-    ck_assert_uint_eq(asyncOperationStatus, UA_STATUSCODE_GOOD);
-#else
+    /* With RBAC, a Node without RolePermissions in a namespace without a
+     * default publishes no RolePermission information while
+     * allPermissionsForAnonymous is set (Part 3 §5.2.9) */
     ck_assert_uint_eq(asyncOperationStatus, UA_STATUSCODE_BADATTRIBUTEIDINVALID);
-#endif
 
     asyncCallbackDone = false;
     res = UA_Client_readUserRolePermissionsAttribute_async(client,
@@ -418,7 +417,11 @@ START_TEST(async_readRbacAttributes) {
     ck_assert_uint_eq(res, UA_STATUSCODE_GOOD);
     iterateClient(client);
     ck_assert(asyncCallbackDone);
+#ifdef UA_ENABLE_RBAC
+    ck_assert_uint_eq(asyncOperationStatus, UA_STATUSCODE_BADATTRIBUTEIDINVALID);
+#else
     ck_assert_uint_eq(asyncOperationStatus, UA_STATUSCODE_GOOD);
+#endif
 
     asyncCallbackDone = false;
     res = UA_Client_readAccessRestrictionsAttribute_async(client,
@@ -427,8 +430,8 @@ START_TEST(async_readRbacAttributes) {
     iterateClient(client);
     ck_assert(asyncCallbackDone);
 #ifdef UA_ENABLE_RBAC
-    /* With RBAC the attribute reports the effective AccessRestrictions of the
-     * Node (Part 3 §5.2.11) instead of being unsupported. */
+    /* With RBAC the attribute reports the Node's own AccessRestrictions
+     * (Part 3 §5.2.11) instead of being unsupported */
     ck_assert_uint_eq(asyncOperationStatus, UA_STATUSCODE_GOOD);
 #else
     ck_assert_uint_eq(asyncOperationStatus, UA_STATUSCODE_BADATTRIBUTEIDINVALID);

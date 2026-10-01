@@ -247,6 +247,17 @@ START_TEST(Server_getEffectivePermissions_NoPermissionsOnNode) {
     ck_assert_uint_eq(retval, UA_STATUSCODE_GOOD);
     ck_assert_uint_eq(effectivePerms, 0xFFFFFFFF);
 
+    /* Such a Node publishes no RolePermissions (Part 3 §5.2.9) and has no
+     * AccessRestrictions of its own */
+    UA_Variant rolePermissions;
+    UA_Variant_init(&rolePermissions);
+    retval = UA_Server_readRolePermissions(server, testNodeId, &rolePermissions);
+    ck_assert_uint_eq(retval, UA_STATUSCODE_BADATTRIBUTEIDINVALID);
+    UA_AccessRestrictionType restrictions = 0xFFFF;
+    retval = UA_Server_readAccessRestrictions(server, testNodeId, &restrictions);
+    ck_assert_uint_eq(retval, UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(restrictions, UA_ACCESSRESTRICTIONTYPE_NONE);
+
     UA_Server_deleteNode(server, testNodeId, true);
 }
 END_TEST
@@ -493,6 +504,35 @@ START_TEST(Server_getUserRolePermissions_NoPermissionsOnNode) {
     ck_assert_uint_eq(retval, UA_STATUSCODE_GOOD);
     ck_assert_uint_eq(entriesSize, 0);
     ck_assert_ptr_null(entries);
+
+    /* Without RolePermissions on the Node and without a namespace default,
+     * the UserRolePermissions attribute does not exist for the Node while
+     * allPermissionsForAnonymous is set (Part 3 §5.2.9) */
+    UA_Variant userRolePermissions;
+    UA_Variant_init(&userRolePermissions);
+    retval = UA_Server_readUserRolePermissions(server, testNodeId,
+                                               &userRolePermissions);
+    ck_assert_uint_eq(retval, UA_STATUSCODE_BADATTRIBUTEIDINVALID);
+
+    /* With a namespace default it reports the default filtered to the Roles
+     * of the Session */
+    UA_RolePermission nsDefault[2];
+    nsDefault[0].roleId = roleId;
+    nsDefault[0].permissions = UA_PERMISSIONTYPE_BROWSE;
+    nsDefault[1].roleId = UA_NODEID_NUMERIC(0, UA_NS0ID_WELLKNOWNROLE_OBSERVER);
+    nsDefault[1].permissions = UA_PERMISSIONTYPE_BROWSE | UA_PERMISSIONTYPE_READ;
+    retval = UA_Server_setNamespaceDefaultRolePermissions(server, 1, 2, nsDefault);
+    ck_assert_uint_eq(retval, UA_STATUSCODE_GOOD);
+    retval = UA_Server_readUserRolePermissions(server, testNodeId,
+                                               &userRolePermissions);
+    ck_assert_uint_eq(retval, UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(userRolePermissions.arrayLength, 1);
+    UA_RolePermissionType *urp = (UA_RolePermissionType*)userRolePermissions.data;
+    ck_assert(UA_NodeId_equal(&urp[0].roleId, &roleId));
+    ck_assert_uint_eq(urp[0].permissions, UA_PERMISSIONTYPE_BROWSE);
+    UA_Variant_clear(&userRolePermissions);
+    retval = UA_Server_removeNamespaceDefaultRolePermissions(server, 1);
+    ck_assert_uint_eq(retval, UA_STATUSCODE_GOOD);
 
     UA_Server_deleteSessionAttribute(server, &adminSessionId, UA_QUALIFIEDNAME(0, "roles"));
     UA_Server_deleteNode(server, testNodeId, true);

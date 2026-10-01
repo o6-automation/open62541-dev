@@ -573,11 +573,10 @@ START_TEST(ReceiveEvents_storedSeparatelyOnEventTypeAndSource) {
         "Source must NOT inherit RECEIVEEVENTS from the EventType "
         "(effSrc=0x%08x)", effSrc);
 
-    /* Cleanup the bits we set on well-known nodes. */
-    (void)UA_Server_removeRolePermissions(server, etype, roleId,
-        UA_PERMISSIONTYPE_RECEIVEEVENTS, false);
-    (void)UA_Server_removeRolePermissions(server, source, roleId,
-        UA_PERMISSIONTYPE_BROWSE, false);
+    /* Cleanup the overrides we set on well-known nodes. Removing only the
+     * Role's bits would leave an override that grants nothing. */
+    (void)UA_Server_removeNodeRolePermissions(server, etype, false);
+    (void)UA_Server_removeNodeRolePermissions(server, source, false);
 
     clearAdminSessionRoles();
     UA_Server_removeRole(server, UA_QUALIFIEDNAME(0, "EventRole"));
@@ -610,10 +609,8 @@ START_TEST(ReceiveEvents_grantedOnBothPropagates) {
     ck_assert_msg((effSrc & UA_PERMISSIONTYPE_RECEIVEEVENTS) != 0,
         "Source missing RECEIVEEVENTS (eff=0x%08x)", effSrc);
 
-    (void)UA_Server_removeRolePermissions(server, etype, roleId,
-        UA_PERMISSIONTYPE_RECEIVEEVENTS, false);
-    (void)UA_Server_removeRolePermissions(server, source, roleId,
-        UA_PERMISSIONTYPE_RECEIVEEVENTS, false);
+    (void)UA_Server_removeNodeRolePermissions(server, etype, false);
+    (void)UA_Server_removeNodeRolePermissions(server, source, false);
 
     clearAdminSessionRoles();
     UA_Server_removeRole(server, UA_QUALIFIEDNAME(0, "EventRoleBoth"));
@@ -1044,6 +1041,8 @@ START_TEST(AddNode_checked_on_target_namespace) {
 
     clearAdminSessionRoles();
     UA_Server_deleteNode(server, parent, true);
+    ck_assert_uint_eq(UA_Server_removeNamespaceDefaultRolePermissions(server, ns2),
+                      UA_STATUSCODE_GOOD);
     UA_Server_removeRole(server, UA_QUALIFIEDNAME(0, "AddNodeRole"));
     UA_NodeId_clear(&roleId);
 }

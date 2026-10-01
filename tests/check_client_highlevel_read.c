@@ -178,25 +178,28 @@ START_TEST(hl_readRbacAttributes) {
     UA_Variant_init(&permissions);
     UA_StatusCode res = UA_Client_readUserRolePermissionsAttribute(client,
         UA_NODEID_NUMERIC(0, UA_NS0ID_SERVER), &permissions);
+#ifdef UA_ENABLE_RBAC
+    /* The Server Object has no RolePermissions and namespace 0 no default.
+     * With allPermissionsForAnonymous the Server publishes no RolePermission
+     * information for it (Part 3 §5.2.9). */
+    ck_assert_uint_eq(res, UA_STATUSCODE_BADATTRIBUTEIDINVALID);
+#else
     ck_assert_uint_eq(res, UA_STATUSCODE_GOOD);
     UA_Variant_clear(&permissions);
+#endif
 
     res = UA_Client_readRolePermissionsAttribute(client,
         UA_NODEID_NUMERIC(0, UA_NS0ID_SERVER), &permissions);
-#ifdef UA_ENABLE_RBAC
-    ck_assert_uint_eq(res, UA_STATUSCODE_GOOD);
-    UA_Variant_clear(&permissions);
-#else
     ck_assert_uint_eq(res, UA_STATUSCODE_BADATTRIBUTEIDINVALID);
-#endif
 
-    UA_AccessRestrictionType restrictions;
+    UA_AccessRestrictionType restrictions = 0xFFFF;
     res = UA_Client_readAccessRestrictionsAttribute(client,
         UA_NODEID_NUMERIC(0, UA_NS0ID_SERVER), &restrictions);
 #ifdef UA_ENABLE_RBAC
-    /* With RBAC the attribute reports the effective AccessRestrictions of the
-     * Node (Part 3 §5.2.11) instead of being unsupported. */
+    /* With RBAC the attribute reports the Node's own AccessRestrictions
+     * (Part 3 §5.2.11) instead of being unsupported */
     ck_assert_uint_eq(res, UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(restrictions, UA_ACCESSRESTRICTIONTYPE_NONE);
 #else
     ck_assert_uint_eq(res, UA_STATUSCODE_BADATTRIBUTEIDINVALID);
 #endif

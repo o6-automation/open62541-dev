@@ -721,10 +721,10 @@ START_TEST(Client_accessRestrictions_cover_node_management) {
 
     UA_Client_disconnect(client);
     UA_Client_delete(client);
-    ck_assert_uint_eq(UA_Server_setNamespaceDefaultAccessRestrictions(
-        server, 1, UA_ACCESSRESTRICTIONTYPE_NONE), UA_STATUSCODE_GOOD);
-    ck_assert_uint_eq(UA_Server_setNamespaceDefaultRolePermissions(
-        server, 1, 0, NULL), UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(UA_Server_removeNamespaceDefaultAccessRestrictions(server, 1),
+                      UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(UA_Server_removeNamespaceDefaultRolePermissions(server, 1),
+                      UA_STATUSCODE_GOOD);
     UA_Server_deleteNode(server, source, true);
     UA_Server_deleteNode(server, target, true);
     UA_Role_clear(&operatorRole);

@@ -1718,17 +1718,37 @@ START_TEST(removePermissions_recursive) {
     ck_assert_uint_eq(rp->rolePermissions[0].permissions,
                       UA_PERMISSIONTYPE_BROWSE | UA_PERMISSIONTYPE_READ);
 
+    /* Removing the last entry must not widen access: the Nodes keep an
+     * override that grants nothing instead of inheriting */
     res = UA_Server_removeRolePermissions(server, parentId, engineerRole,
         UA_PERMISSIONTYPE_BROWSE | UA_PERMISSIONTYPE_READ, true);
     ck_assert_uint_eq(res, UA_STATUSCODE_GOOD);
 
-    res = UA_Server_getNodePermissionIndex(server, parentId, &permIdx);
-    ck_assert_uint_eq(res, UA_STATUSCODE_GOOD);
-    ck_assert_uint_eq(permIdx, UA_PERMISSION_INDEX_INVALID);
+    UA_NodeId anonymousRole = UA_NODEID_NUMERIC(0, UA_NS0ID_WELLKNOWNROLE_ANONYMOUS);
+    UA_NodeId nodes[2] = {parentId, childId};
+    for(size_t i = 0; i < 2; i++) {
+        res = UA_Server_getNodePermissionIndex(server, nodes[i], &permIdx);
+        ck_assert_uint_eq(res, UA_STATUSCODE_GOOD);
+        ck_assert_uint_ne(permIdx, UA_PERMISSION_INDEX_INVALID);
+        rp = UA_Server_getRolePermissionConfig(server, permIdx);
+        ck_assert_ptr_nonnull(rp);
+        ck_assert_uint_eq(rp->rolePermissionsSize, 1);
+        ck_assert(UA_NodeId_equal(&rp->rolePermissions[0].roleId, &anonymousRole));
+        ck_assert_uint_eq(rp->rolePermissions[0].permissions, 0);
+        UA_PermissionType effective = UA_PERMISSIONTYPE_ALL;
+        res = UA_Server_getEffectivePermissions(server, NULL, &nodes[i], &effective);
+        ck_assert_uint_eq(res, UA_STATUSCODE_GOOD);
+        ck_assert_uint_eq(effective, 0);
+    }
 
-    res = UA_Server_getNodePermissionIndex(server, childId, &permIdx);
+    /* removeNodeRolePermissions drops the override entirely */
+    res = UA_Server_removeNodeRolePermissions(server, parentId, true);
     ck_assert_uint_eq(res, UA_STATUSCODE_GOOD);
-    ck_assert_uint_eq(permIdx, UA_PERMISSION_INDEX_INVALID);
+    for(size_t i = 0; i < 2; i++) {
+        res = UA_Server_getNodePermissionIndex(server, nodes[i], &permIdx);
+        ck_assert_uint_eq(res, UA_STATUSCODE_GOOD);
+        ck_assert_uint_eq(permIdx, UA_PERMISSION_INDEX_INVALID);
+    }
 
     UA_Server_deleteNode(server, parentId, true);
     UA_NodeId_clear(&parentId);
@@ -1897,16 +1917,8 @@ START_TEST(recursivePermissions_onBuildInfo) {
                        buildInfoChildren[i]);
     }
 
-    /* Read RolePermissions attribute via read service */
-    UA_NodeId adminSessionId = UA_NODEID_GUID(0, (UA_Guid){1, 0, 0, {0,0,0,0,0,0,0,0}});
-    {
-        UA_Variant rv;
-        UA_Variant_setArray(&rv, &operatorRole, 1, &UA_TYPES[UA_TYPES_NODEID]);
-        res = UA_Server_setSessionAttribute(server, &adminSessionId,
-                                            UA_QUALIFIEDNAME(0, "roles"), &rv);
-        ck_assert_uint_eq(res, UA_STATUSCODE_GOOD);
-    }
-
+    /* Read RolePermissions attribute via read service. The local admin
+     * Session needs no Role for that. */
     UA_NodeId productUriId = UA_NODEID_NUMERIC(0, UA_NS0ID_SERVER_SERVERSTATUS_BUILDINFO_PRODUCTURI);
     UA_ReadValueId rvid;
     UA_ReadValueId_init(&rvid);
@@ -2087,6 +2099,9 @@ START_TEST(namespaceDefault_setAndGet) {
     ck_assert_uint_eq(retrievedSize, 0);
     ck_assert_ptr_null(retrievedEntries);
 
+    res = UA_Server_removeNamespaceDefaultRolePermissions(server, 1);
+    ck_assert_uint_eq(res, UA_STATUSCODE_GOOD);
+
     removeTestRole("NsDefaultRole", 1);
     UA_NodeId_clear(&roleId);
 }
@@ -2150,7 +2165,7 @@ START_TEST(namespaceDefault_explicitOverrides) {
                                            UA_QUALIFIEDNAME(0, "roles"));
 
     UA_Server_deleteNode(server, newNodeId, true);
-    res = UA_Server_setNamespaceDefaultRolePermissions(server, 1, 0, NULL);
+    res = UA_Server_removeNamespaceDefaultRolePermissions(server, 1);
     ck_assert_uint_eq(res, UA_STATUSCODE_GOOD);
     removeTestRole("OverrideRole", 1);
     UA_NodeId_clear(&roleId);
@@ -2206,7 +2221,7 @@ START_TEST(namespaceDefault_effectiveFallback) {
     (void)UA_Server_deleteSessionAttribute(server, &adminSessionId,
                                            UA_QUALIFIEDNAME(0, "roles"));
     UA_Server_deleteNode(server, testNodeId, true);
-    res = UA_Server_setNamespaceDefaultRolePermissions(server, 1, 0, NULL);
+    res = UA_Server_removeNamespaceDefaultRolePermissions(server, 1);
     ck_assert_uint_eq(res, UA_STATUSCODE_GOOD);
     removeTestRole("NsFallbackRole", 1);
     UA_NodeId_clear(&roleId);
@@ -2259,7 +2274,7 @@ START_TEST(namespaceDefault_noRoleMatchDenied) {
     (void)UA_Server_deleteSessionAttribute(server, &adminSessionId,
                                            UA_QUALIFIEDNAME(0, "roles"));
     UA_Server_deleteNode(server, nodeId, true);
-    res = UA_Server_setNamespaceDefaultRolePermissions(server, 1, 0, NULL);
+    res = UA_Server_removeNamespaceDefaultRolePermissions(server, 1);
     ck_assert_uint_eq(res, UA_STATUSCODE_GOOD);
     removeTestRole("NsDefaultRoleNoMatch", 1);
     removeTestRole("NsOtherRoleNoMatch", 1);
@@ -2339,9 +2354,9 @@ START_TEST(namespaceDefault_perNamespaceIsolation) {
                                            UA_QUALIFIEDNAME(0, "roles"));
     UA_Server_deleteNode(server, nodeNs1, true);
     UA_Server_deleteNode(server, nodeNs2, true);
-    res = UA_Server_setNamespaceDefaultRolePermissions(server, 1, 0, NULL);
+    res = UA_Server_removeNamespaceDefaultRolePermissions(server, 1);
     ck_assert_uint_eq(res, UA_STATUSCODE_GOOD);
-    res = UA_Server_setNamespaceDefaultRolePermissions(server, ns2, 0, NULL);
+    res = UA_Server_removeNamespaceDefaultRolePermissions(server, ns2);
     ck_assert_uint_eq(res, UA_STATUSCODE_GOOD);
     removeTestRole("NsIsolationRole", 1);
     UA_NodeId_clear(&roleId);
@@ -2383,7 +2398,265 @@ START_TEST(namespaceDefault_explicitEmptyDenies) {
     ck_assert_uint_eq(UA_Server_getEffectivePermissions(
         server, NULL, &nodeId, &effective), UA_STATUSCODE_GOOD);
     ck_assert_uint_eq(effective, 0);
+
+    /* Removing the default restores the unconfigured fallback */
+    ck_assert_uint_eq(UA_Server_removeNamespaceDefaultRolePermissions(server, 1),
+                      UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(UA_Server_getEffectivePermissions(
+        server, NULL, &nodeId, &effective), UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(effective, UA_PERMISSIONTYPE_ALL);
     UA_Server_deleteNode(server, nodeId, true);
+}
+END_TEST
+
+/* Removing the default of a namespace returns it to "no explicit default".
+ * In legacy mode its Nodes are unrestricted again and publish no
+ * RolePermissions. */
+START_TEST(namespaceDefault_remove) {
+    ck_assert(UA_Server_getConfig(server)->allPermissionsForAnonymous);
+    UA_NodeId nodeId = UA_NODEID_NUMERIC(1, 51130);
+    UA_ObjectAttributes attr = UA_ObjectAttributes_default;
+    ck_assert_uint_eq(UA_Server_addObjectNode(
+        server, nodeId, UA_NODEID_NUMERIC(0, UA_NS0ID_OBJECTSFOLDER),
+        UA_NODEID_NUMERIC(0, UA_NS0ID_ORGANIZES),
+        UA_QUALIFIEDNAME(1, "RemovedNamespaceDefault"),
+        UA_NODEID_NUMERIC(0, UA_NS0ID_BASEOBJECTTYPE), attr, NULL, NULL),
+        UA_STATUSCODE_GOOD);
+
+    UA_RolePermission entry;
+    entry.roleId = UA_NODEID_NUMERIC(0, UA_NS0ID_WELLKNOWNROLE_OBSERVER);
+    entry.permissions = UA_PERMISSIONTYPE_BROWSE;
+    ck_assert_uint_eq(UA_Server_setNamespaceDefaultRolePermissions(server, 1, 1,
+                                                                   &entry),
+                      UA_STATUSCODE_GOOD);
+    UA_PermissionType effective = UA_PERMISSIONTYPE_ALL;
+    ck_assert_uint_eq(UA_Server_getEffectivePermissions(server, NULL, &nodeId,
+                                                        &effective),
+                      UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(effective, 0);
+    UA_Variant reported;
+    UA_Variant_init(&reported);
+    ck_assert_uint_eq(UA_Server_readRolePermissions(server, nodeId, &reported),
+                      UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(reported.arrayLength, 0);
+    UA_Variant_clear(&reported);
+
+    ck_assert_uint_eq(UA_Server_removeNamespaceDefaultRolePermissions(server, 1),
+                      UA_STATUSCODE_GOOD);
+    size_t entriesSize = 1;
+    UA_RolePermission *entries = NULL;
+    ck_assert_uint_eq(UA_Server_getNamespaceDefaultRolePermissions(server, 1,
+                                                                   &entriesSize,
+                                                                   &entries),
+                      UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(entriesSize, 0);
+    ck_assert_ptr_null(entries);
+    ck_assert_uint_eq(UA_Server_getEffectivePermissions(server, NULL, &nodeId,
+                                                        &effective),
+                      UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(effective, UA_PERMISSIONTYPE_ALL);
+    ck_assert_uint_eq(UA_Server_readRolePermissions(server, nodeId, &reported),
+                      UA_STATUSCODE_BADATTRIBUTEIDINVALID);
+
+    /* Removing again, or for a namespace that never had a default, succeeds */
+    ck_assert_uint_eq(UA_Server_removeNamespaceDefaultRolePermissions(server, 1),
+                      UA_STATUSCODE_GOOD);
+    UA_UInt16 ns2 = UA_Server_addNamespace(server, "urn:rbac:remove-default");
+    ck_assert_uint_eq(UA_Server_removeNamespaceDefaultRolePermissions(server, ns2),
+                      UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(UA_Server_removeNamespaceDefaultRolePermissions(server, 65535),
+                      UA_STATUSCODE_BADINDEXRANGEINVALID);
+    ck_assert_uint_eq(UA_Server_removeNamespaceDefaultRolePermissions(NULL, 1),
+                      UA_STATUSCODE_BADINVALIDARGUMENT);
+
+    UA_Server_deleteNode(server, nodeId, true);
+}
+END_TEST
+
+/* An empty Node override is no override: the Node uses the namespace default
+ * again (Part 3 §5.2.9). Setting an empty list equals removing the override. */
+START_TEST(emptyNodeOverride_inheritsNamespaceDefault) {
+    UA_NodeId roleId;
+    ck_assert_uint_eq(addTestRole("EmptyOverrideRole", 1, 51110, &roleId),
+                      UA_STATUSCODE_GOOD);
+
+    UA_NodeId parentId = UA_NODEID_NUMERIC(1, 51111);
+    UA_NodeId childId = UA_NODEID_NUMERIC(1, 51112);
+    UA_ObjectAttributes attr = UA_ObjectAttributes_default;
+    ck_assert_uint_eq(UA_Server_addObjectNode(
+        server, parentId, UA_NODEID_NUMERIC(0, UA_NS0ID_OBJECTSFOLDER),
+        UA_NODEID_NUMERIC(0, UA_NS0ID_ORGANIZES),
+        UA_QUALIFIEDNAME(1, "EmptyOverrideParent"),
+        UA_NODEID_NUMERIC(0, UA_NS0ID_BASEOBJECTTYPE), attr, NULL, NULL),
+        UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(UA_Server_addObjectNode(
+        server, childId, parentId, UA_NODEID_NUMERIC(0, UA_NS0ID_HASCOMPONENT),
+        UA_QUALIFIEDNAME(1, "EmptyOverrideChild"),
+        UA_NODEID_NUMERIC(0, UA_NS0ID_BASEOBJECTTYPE), attr, NULL, NULL),
+        UA_STATUSCODE_GOOD);
+
+    UA_RolePermission override;
+    override.roleId = roleId;
+    override.permissions = UA_PERMISSIONTYPE_BROWSE;
+    ck_assert_uint_eq(UA_Server_setNodeRolePermissions(server, parentId, 1,
+                                                       &override, true, NULL),
+                      UA_STATUSCODE_GOOD);
+    UA_RolePermission nsDefault;
+    nsDefault.roleId = roleId;
+    nsDefault.permissions = UA_PERMISSIONTYPE_BROWSE | UA_PERMISSIONTYPE_READ;
+    ck_assert_uint_eq(UA_Server_setNamespaceDefaultRolePermissions(server, 1, 1,
+                                                                   &nsDefault),
+                      UA_STATUSCODE_GOOD);
+
+    UA_NodeId adminSessionId = UA_NODEID_GUID(0,
+        (UA_Guid){1, 0, 0, {0,0,0,0,0,0,0,0}});
+    UA_Variant rv;
+    UA_Variant_setArray(&rv, &roleId, 1, &UA_TYPES[UA_TYPES_NODEID]);
+    ck_assert_uint_eq(UA_Server_setSessionAttribute(server, &adminSessionId,
+                          UA_QUALIFIEDNAME(0, "roles"), &rv),
+                      UA_STATUSCODE_GOOD);
+
+    UA_PermissionType eff = 0;
+    ck_assert_uint_eq(UA_Server_getEffectivePermissions(server, &adminSessionId,
+                                                        &childId, &eff),
+                      UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(eff, UA_PERMISSIONTYPE_BROWSE);
+
+    /* Setting an empty list removes the override recursively */
+    ck_assert_uint_eq(UA_Server_setNodeRolePermissions(server, parentId, 0, NULL,
+                                                       true, NULL),
+                      UA_STATUSCODE_GOOD);
+    UA_NodeId nodes[2] = {parentId, childId};
+    for(size_t i = 0; i < 2; i++) {
+        UA_PermissionIndex idx = 0;
+        ck_assert_uint_eq(UA_Server_getNodePermissionIndex(server, nodes[i], &idx),
+                          UA_STATUSCODE_GOOD);
+        ck_assert_uint_eq(idx, UA_PERMISSION_INDEX_INVALID);
+        size_t rpSize = 1;
+        UA_RolePermission *rp = NULL;
+        ck_assert_uint_eq(UA_Server_getNodeRolePermissions(server, nodes[i],
+                                                           &rpSize, &rp),
+                          UA_STATUSCODE_GOOD);
+        ck_assert_uint_eq(rpSize, 0);
+        ck_assert_ptr_null(rp);
+        eff = 0;
+        ck_assert_uint_eq(UA_Server_getEffectivePermissions(server, &adminSessionId,
+                                                            &nodes[i], &eff),
+                          UA_STATUSCODE_GOOD);
+        ck_assert_uint_eq(eff, UA_PERMISSIONTYPE_BROWSE | UA_PERMISSIONTYPE_READ);
+    }
+
+    (void)UA_Server_deleteSessionAttribute(server, &adminSessionId,
+                                           UA_QUALIFIEDNAME(0, "roles"));
+    UA_Server_deleteNode(server, parentId, true);
+    ck_assert_uint_eq(UA_Server_removeNamespaceDefaultRolePermissions(server, 1),
+                      UA_STATUSCODE_GOOD);
+    removeTestRole("EmptyOverrideRole", 1);
+    UA_NodeId_clear(&roleId);
+}
+END_TEST
+
+/* A permission configuration slot with an empty list is no override either,
+ * whether it comes from the server config presets, from
+ * UA_Server_addRolePermissionConfig or from emptying a preset with
+ * UA_Server_updateRolePermissionConfig */
+START_TEST(emptyPermissionConfig_inheritsNamespaceDefault) {
+    UA_ServerConfig sc;
+    memset(&sc, 0, sizeof(UA_ServerConfig));
+    sc.logging = UA_Log_Stdout_new(UA_LOGLEVEL_WARNING);
+    ck_assert_uint_eq(UA_ServerConfig_setMinimal(&sc, 4840, NULL),
+                      UA_STATUSCODE_GOOD);
+    sc.rolePermissionPresets = (UA_RolePermissionSet*)
+        UA_calloc(2, sizeof(UA_RolePermissionSet));
+    ck_assert_ptr_nonnull(sc.rolePermissionPresets);
+    sc.rolePermissionPresetsSize = 2;
+    /* Preset 0 is empty, preset 1 lets Observer browse */
+    sc.rolePermissionPresets[1].rolePermissions = (UA_RolePermission*)
+        UA_calloc(1, sizeof(UA_RolePermission));
+    ck_assert_ptr_nonnull(sc.rolePermissionPresets[1].rolePermissions);
+    sc.rolePermissionPresets[1].rolePermissionsSize = 1;
+    sc.rolePermissionPresets[1].rolePermissions[0].roleId =
+        UA_NODEID_NUMERIC(0, UA_NS0ID_WELLKNOWNROLE_OBSERVER);
+    sc.rolePermissionPresets[1].rolePermissions[0].permissions =
+        UA_PERMISSIONTYPE_BROWSE;
+    UA_Server *presetServer = UA_Server_newWithConfig(&sc);
+    ck_assert_ptr_nonnull(presetServer);
+
+    UA_NodeId nodes[3] = {UA_NODEID_NUMERIC(1, 51120), UA_NODEID_NUMERIC(1, 51121),
+                          UA_NODEID_NUMERIC(1, 51122)};
+    UA_ObjectAttributes attr = UA_ObjectAttributes_default;
+    for(size_t i = 0; i < 3; i++)
+        ck_assert_uint_eq(UA_Server_addObjectNode(
+            presetServer, nodes[i], UA_NODEID_NUMERIC(0, UA_NS0ID_OBJECTSFOLDER),
+            UA_NODEID_NUMERIC(0, UA_NS0ID_ORGANIZES),
+            UA_QUALIFIEDNAME(1, "EmptyConfigNode"),
+            UA_NODEID_NUMERIC(0, UA_NS0ID_BASEOBJECTTYPE), attr, NULL, NULL),
+            UA_STATUSCODE_GOOD);
+
+    /* Node 0: the empty preset. Node 1: an empty runtime configuration.
+     * Node 2: the Observer preset. */
+    UA_PermissionIndex emptyConfig = UA_PERMISSION_INDEX_INVALID;
+    ck_assert_uint_eq(UA_Server_addRolePermissionConfig(presetServer, 0, NULL,
+                                                        &emptyConfig),
+                      UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(UA_Server_setNodePermissionIndex(presetServer, nodes[0], 0,
+                                                       false),
+                      UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(UA_Server_setNodePermissionIndex(presetServer, nodes[1],
+                                                       emptyConfig, false),
+                      UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(UA_Server_setNodePermissionIndex(presetServer, nodes[2], 1,
+                                                       false),
+                      UA_STATUSCODE_GOOD);
+
+    /* Legacy mode without a namespace default: unrestricted, except for the
+     * Node with a real override */
+    UA_PermissionType eff = 0;
+    for(size_t i = 0; i < 2; i++) {
+        ck_assert_uint_eq(UA_Server_getEffectivePermissions(presetServer, NULL,
+                                                            &nodes[i], &eff),
+                          UA_STATUSCODE_GOOD);
+        ck_assert_uint_eq(eff, UA_PERMISSIONTYPE_ALL);
+    }
+    ck_assert_uint_eq(UA_Server_getEffectivePermissions(presetServer, NULL,
+                                                        &nodes[2], &eff),
+                      UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(eff, 0);
+
+    /* With a namespace default the empty slots inherit it */
+    UA_RolePermission nsDefault;
+    nsDefault.roleId = UA_NODEID_NUMERIC(0, UA_NS0ID_WELLKNOWNROLE_ANONYMOUS);
+    nsDefault.permissions = UA_PERMISSIONTYPE_BROWSE | UA_PERMISSIONTYPE_READ;
+    ck_assert_uint_eq(UA_Server_setNamespaceDefaultRolePermissions(presetServer, 1,
+                                                                   1, &nsDefault),
+                      UA_STATUSCODE_GOOD);
+    UA_NodeId adminSessionId = UA_NODEID_GUID(0,
+        (UA_Guid){1, 0, 0, {0,0,0,0,0,0,0,0}});
+    UA_Variant rv;
+    UA_Variant_setArray(&rv, &nsDefault.roleId, 1, &UA_TYPES[UA_TYPES_NODEID]);
+    ck_assert_uint_eq(UA_Server_setSessionAttribute(presetServer, &adminSessionId,
+                          UA_QUALIFIEDNAME(0, "roles"), &rv),
+                      UA_STATUSCODE_GOOD);
+    for(size_t i = 0; i < 2; i++) {
+        ck_assert_uint_eq(UA_Server_getEffectivePermissions(presetServer,
+                              &adminSessionId, &nodes[i], &eff),
+                          UA_STATUSCODE_GOOD);
+        ck_assert_uint_eq(eff, nsDefault.permissions);
+    }
+    ck_assert_uint_eq(UA_Server_getEffectivePermissions(presetServer,
+                          &adminSessionId, &nodes[2], &eff),
+                      UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(eff, 0);
+
+    /* Emptying the Observer preset turns it into "no override" as well */
+    ck_assert_uint_eq(UA_Server_updateRolePermissionConfig(presetServer, 1, 0, NULL),
+                      UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(UA_Server_getEffectivePermissions(presetServer,
+                          &adminSessionId, &nodes[2], &eff),
+                      UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(eff, nsDefault.permissions);
+
+    UA_Server_delete(presetServer);
 }
 END_TEST
 
@@ -2416,25 +2689,28 @@ START_TEST(namespaceDefault_reportedByAttributesAndMetadata) {
         server, &adminSessionId, UA_QUALIFIEDNAME(0, "roles"), &roles),
         UA_STATUSCODE_GOOD);
 
+    /* The Node has no override: RolePermissions is an empty array and the
+     * namespace default applies (Part 3 §5.2.9). The default is not copied
+     * into the attribute. */
     UA_Variant reported;
     UA_Variant_init(&reported);
     ck_assert_uint_eq(UA_Server_readRolePermissions(server, nodeId, &reported),
                       UA_STATUSCODE_GOOD);
     ck_assert(UA_Variant_hasArrayType(
         &reported, &UA_TYPES[UA_TYPES_ROLEPERMISSIONTYPE]));
-    ck_assert_uint_eq(reported.arrayLength, 1);
-    UA_RolePermissionType *rp = (UA_RolePermissionType*)reported.data;
-    ck_assert(UA_NodeId_equal(&rp[0].roleId, &roleId));
-    ck_assert_uint_eq(rp[0].permissions, entry.permissions);
+    ck_assert_uint_eq(reported.arrayLength, 0);
     UA_Variant_clear(&reported);
 
+    /* UserRolePermissions reports the namespace default filtered to the Roles
+     * of the (admin) Session */
     UA_Variant_init(&reported);
     ck_assert_uint_eq(UA_Server_readUserRolePermissions(server, nodeId,
                                                         &reported),
                       UA_STATUSCODE_GOOD);
     ck_assert_uint_eq(reported.arrayLength, 1);
-    rp = (UA_RolePermissionType*)reported.data;
+    UA_RolePermissionType *rp = (UA_RolePermissionType*)reported.data;
     ck_assert(UA_NodeId_equal(&rp[0].roleId, &roleId));
+    ck_assert_uint_eq(rp[0].permissions, entry.permissions);
     UA_Variant_clear(&reported);
 
     /* The Namespace Zero metadata Properties use the same live policy. */
@@ -2461,10 +2737,10 @@ START_TEST(namespaceDefault_reportedByAttributesAndMetadata) {
     (void)UA_Server_deleteSessionAttribute(
         server, &adminSessionId, UA_QUALIFIEDNAME(0, "roles"));
     UA_Server_deleteNode(server, nodeId, true);
-    ck_assert_uint_eq(UA_Server_setNamespaceDefaultRolePermissions(
-        server, 0, 0, NULL), UA_STATUSCODE_GOOD);
-    ck_assert_uint_eq(UA_Server_setNamespaceDefaultRolePermissions(
-        server, 1, 0, NULL), UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(UA_Server_removeNamespaceDefaultRolePermissions(server, 0),
+                      UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(UA_Server_removeNamespaceDefaultRolePermissions(server, 1),
+                      UA_STATUSCODE_GOOD);
     removeTestRole("NsReportedRole", 1);
     UA_NodeId_clear(&roleId);
 }
@@ -2657,9 +2933,10 @@ START_TEST(removeRole_purgesRolePermissions) {
     ck_assert_uint_eq(UA_Server_addRolePermissions(server, nodeId, observerId,
         UA_PERMISSIONTYPE_BROWSE, false, false), UA_STATUSCODE_GOOD);
 
-    /* A second Node has only the Role that will be removed. Its resulting
-     * empty permission set must stay deny-all even with the permissive
-     * unconfigured-node compatibility option enabled. */
+    /* A second Node has only the Role that will be removed. An empty Node
+     * override would fall back to the namespace default (and to the
+     * permissive unconfigured-node compatibility option). The purge must
+     * leave an override that grants nothing instead. */
     UA_NodeId denyNodeId = UA_NODEID_NUMERIC(1, 60002);
     ck_assert_uint_eq(UA_Server_addVariableNode(server, denyNodeId,
         UA_NODEID_NUMERIC(0, UA_NS0ID_OBJECTSFOLDER),
@@ -2669,6 +2946,23 @@ START_TEST(removeRole_purgesRolePermissions) {
         vattr, NULL, NULL), UA_STATUSCODE_GOOD);
     ck_assert_uint_eq(UA_Server_addRolePermissions(server, denyNodeId, purgeRoleId,
         UA_PERMISSIONTYPE_READ, false, false), UA_STATUSCODE_GOOD);
+
+    /* A namespace with a default that has only the Role that will be removed.
+     * A third Node inherits that default. */
+    UA_UInt16 purgeNs = UA_Server_addNamespace(server, "urn:rbac:purge-default");
+    UA_RolePermission nsEntry;
+    nsEntry.roleId = purgeRoleId;
+    nsEntry.permissions = UA_PERMISSIONTYPE_READ;
+    ck_assert_uint_eq(UA_Server_setNamespaceDefaultRolePermissions(server, purgeNs,
+                                                                   1, &nsEntry),
+                      UA_STATUSCODE_GOOD);
+    UA_NodeId inheritNodeId = UA_NODEID_NUMERIC(purgeNs, 60003);
+    ck_assert_uint_eq(UA_Server_addVariableNode(server, inheritNodeId,
+        UA_NODEID_NUMERIC(0, UA_NS0ID_OBJECTSFOLDER),
+        UA_NODEID_NUMERIC(0, UA_NS0ID_ORGANIZES),
+        UA_QUALIFIEDNAME(purgeNs, "PurgeInheritVar"),
+        UA_NODEID_NUMERIC(0, UA_NS0ID_BASEDATAVARIABLETYPE),
+        vattr, NULL, NULL), UA_STATUSCODE_GOOD);
 
     UA_NodeId sessionId = UA_NODEID_GUID(0,
         (UA_Guid){1, 0, 0, {0,0,0,0,0,0,0,0}});
@@ -2695,13 +2989,40 @@ START_TEST(removeRole_purgesRolePermissions) {
     ck_assert_uint_eq(set->rolePermissionsSize, 1);
     ck_assert(UA_NodeId_equal(&set->rolePermissions[0].roleId, &observerId));
 
+    /* The emptied Node override holds {Anonymous, 0} and grants nothing */
+    UA_NodeId anonymousId = UA_NODEID_NUMERIC(0, UA_NS0ID_WELLKNOWNROLE_ANONYMOUS);
+    ck_assert_uint_eq(UA_Server_getNodePermissionIndex(server, denyNodeId, &idx),
+                      UA_STATUSCODE_GOOD);
+    set = UA_Server_getRolePermissionConfig(server, idx);
+    ck_assert_ptr_nonnull(set);
+    ck_assert_uint_eq(set->rolePermissionsSize, 1);
+    ck_assert(UA_NodeId_equal(&set->rolePermissions[0].roleId, &anonymousId));
+    ck_assert_uint_eq(set->rolePermissions[0].permissions, 0);
+
     UA_PermissionType effective = UA_PERMISSIONTYPE_ALL;
     ck_assert_uint_eq(UA_Server_getEffectivePermissions(server, &sessionId,
         &denyNodeId, &effective), UA_STATUSCODE_GOOD);
     ck_assert_uint_eq(effective, 0);
+    effective = UA_PERMISSIONTYPE_ALL;
+    ck_assert_uint_eq(UA_Server_getEffectivePermissions(server, NULL,
+        &denyNodeId, &effective), UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(effective, 0);
+
+    /* The emptied namespace default stays an explicit deny-all */
+    size_t nsSize = 1;
+    UA_RolePermission *nsEntries = NULL;
+    ck_assert_uint_eq(UA_Server_getNamespaceDefaultRolePermissions(server, purgeNs,
+                                                                   &nsSize, &nsEntries),
+                      UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(nsSize, 0);
+    effective = UA_PERMISSIONTYPE_ALL;
+    ck_assert_uint_eq(UA_Server_getEffectivePermissions(server, NULL,
+        &inheritNodeId, &effective), UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(effective, 0);
 
     UA_Server_deleteNode(server, nodeId, true);
     UA_Server_deleteNode(server, denyNodeId, true);
+    UA_Server_deleteNode(server, inheritNodeId, true);
     (void)UA_Server_deleteSessionAttribute(server, &sessionId,
                                            UA_QUALIFIEDNAME(0, "roles"));
     UA_NodeId_clear(&purgeRoleId);
@@ -3155,8 +3476,126 @@ START_TEST(identityCriteria_groupId) {
 }
 END_TEST
 
+/* The node and namespace AccessRestrictions can be removed again. The
+ * namespace default is readable. */
+START_TEST(accessRestrictions_remove) {
+    UA_NodeId x = UA_NODEID_NUMERIC(1, 61020);
+    UA_VariableAttributes vattr = UA_VariableAttributes_default;
+    ck_assert_uint_eq(UA_Server_addVariableNode(server, x,
+        UA_NODEID_NUMERIC(0, UA_NS0ID_OBJECTSFOLDER),
+        UA_NODEID_NUMERIC(0, UA_NS0ID_ORGANIZES),
+        UA_QUALIFIEDNAME(1, "ArRemoveVar"),
+        UA_NODEID_NUMERIC(0, UA_NS0ID_BASEDATAVARIABLETYPE),
+        vattr, NULL, NULL), UA_STATUSCODE_GOOD);
+
+    /* No namespace default */
+    UA_AccessRestrictionType ar = 0xFFFF;
+    ck_assert_uint_eq(UA_Server_getNamespaceDefaultAccessRestrictions(server, 1, &ar),
+                      UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(ar, UA_ACCESSRESTRICTIONTYPE_NONE);
+    ck_assert_uint_eq(UA_Server_getNamespaceDefaultAccessRestrictions(server, 65535,
+                                                                      &ar),
+                      UA_STATUSCODE_BADINDEXRANGEINVALID);
+    ck_assert_uint_eq(UA_Server_getNamespaceDefaultAccessRestrictions(server, 1, NULL),
+                      UA_STATUSCODE_BADINVALIDARGUMENT);
+
+    ck_assert_uint_eq(UA_Server_setNamespaceDefaultAccessRestrictions(server, 1,
+                          UA_ACCESSRESTRICTIONTYPE_SIGNINGREQUIRED),
+                      UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(UA_Server_getNamespaceDefaultAccessRestrictions(server, 1, &ar),
+                      UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(ar, UA_ACCESSRESTRICTIONTYPE_SIGNINGREQUIRED);
+    ck_assert_uint_eq(UA_Server_setNodeAccessRestrictions(server, x,
+                          UA_ACCESSRESTRICTIONTYPE_ENCRYPTIONREQUIRED),
+                      UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(UA_Server_getNodeAccessRestrictions(server, x, &ar),
+                      UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(ar, UA_ACCESSRESTRICTIONTYPE_ENCRYPTIONREQUIRED);
+
+    /* Without its own value the Node falls back to the namespace default */
+    ck_assert_uint_eq(UA_Server_removeNodeAccessRestrictions(server, x),
+                      UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(UA_Server_getNodeAccessRestrictions(server, x, &ar),
+                      UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(ar, UA_ACCESSRESTRICTIONTYPE_SIGNINGREQUIRED);
+    ar = 0xFFFF;
+    ck_assert_uint_eq(UA_Server_readAccessRestrictions(server, x, &ar),
+                      UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(ar, UA_ACCESSRESTRICTIONTYPE_NONE);
+
+    /* Without the namespace default the Node is unrestricted */
+    ck_assert_uint_eq(UA_Server_removeNamespaceDefaultAccessRestrictions(server, 1),
+                      UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(UA_Server_getNamespaceDefaultAccessRestrictions(server, 1, &ar),
+                      UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(ar, UA_ACCESSRESTRICTIONTYPE_NONE);
+    ck_assert_uint_eq(UA_Server_getNodeAccessRestrictions(server, x, &ar),
+                      UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(ar, UA_ACCESSRESTRICTIONTYPE_NONE);
+
+    /* Removing what is not set succeeds; unknown targets are reported */
+    ck_assert_uint_eq(UA_Server_removeNodeAccessRestrictions(server, x),
+                      UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(UA_Server_removeNamespaceDefaultAccessRestrictions(server, 1),
+                      UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(UA_Server_removeNodeAccessRestrictions(server,
+                          UA_NODEID_NUMERIC(1, 61021)),
+                      UA_STATUSCODE_BADNODEIDUNKNOWN);
+    ck_assert_uint_eq(UA_Server_removeNamespaceDefaultAccessRestrictions(server, 65535),
+                      UA_STATUSCODE_BADINDEXRANGEINVALID);
+
+    UA_Server_deleteNode(server, x, true);
+}
+END_TEST
+
+/* The local admin Session is exempt from the ReadRolePermissions check, as it
+ * is from every other RBAC gate. It needs no Role to read the attribute. */
+START_TEST(readRolePermissions_adminSessionExempt) {
+    UA_NodeId nodeId = UA_NODEID_NUMERIC(1, 61010);
+    UA_ObjectAttributes attr = UA_ObjectAttributes_default;
+    ck_assert_uint_eq(UA_Server_addObjectNode(server, nodeId,
+        UA_NODEID_NUMERIC(0, UA_NS0ID_OBJECTSFOLDER),
+        UA_NODEID_NUMERIC(0, UA_NS0ID_ORGANIZES),
+        UA_QUALIFIEDNAME(1, "AdminReadsRolePermissions"),
+        UA_NODEID_NUMERIC(0, UA_NS0ID_BASEOBJECTTYPE), attr, NULL, NULL),
+        UA_STATUSCODE_GOOD);
+
+    /* Only Observer may browse the node */
+    UA_RolePermission entry;
+    entry.roleId = UA_NODEID_NUMERIC(0, UA_NS0ID_WELLKNOWNROLE_OBSERVER);
+    entry.permissions = UA_PERMISSIONTYPE_BROWSE;
+    ck_assert_uint_eq(UA_Server_setNodeRolePermissions(server, nodeId, 1, &entry,
+                                                       false, NULL),
+                      UA_STATUSCODE_GOOD);
+
+    /* The admin Session holds no Role, so the permissions grant it nothing */
+    UA_NodeId adminSessionId = UA_NODEID_GUID(0,
+        (UA_Guid){1, 0, 0, {0,0,0,0,0,0,0,0}});
+    UA_PermissionType effective = UA_PERMISSIONTYPE_ALL;
+    ck_assert_uint_eq(UA_Server_getEffectivePermissions(server, &adminSessionId,
+                                                        &nodeId, &effective),
+                      UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(effective, 0);
+
+    UA_Variant reported;
+    UA_Variant_init(&reported);
+    ck_assert_uint_eq(UA_Server_readRolePermissions(server, nodeId, &reported),
+                      UA_STATUSCODE_GOOD);
+    ck_assert(UA_Variant_hasArrayType(&reported,
+                                      &UA_TYPES[UA_TYPES_ROLEPERMISSIONTYPE]));
+    ck_assert_uint_eq(reported.arrayLength, 1);
+    UA_RolePermissionType *rp = (UA_RolePermissionType*)reported.data;
+    ck_assert(UA_NodeId_equal(&rp[0].roleId, &entry.roleId));
+    ck_assert_uint_eq(rp[0].permissions, UA_PERMISSIONTYPE_BROWSE);
+    UA_Variant_clear(&reported);
+
+    UA_Server_deleteNode(server, nodeId, true);
+}
+END_TEST
+
 /* AccessRestrictions can be set/read via the C API and the attribute service,
- * and fall back to the namespace default (Part 3 §5.2.11). */
+ * and fall back to the namespace default (Part 3 §5.2.11). The attribute
+ * reports the Node's own value only. */
 START_TEST(accessRestrictions_setGetRead) {
     UA_NodeId x = UA_NODEID_NUMERIC(1, 61000);
     UA_VariableAttributes vattr = UA_VariableAttributes_default;
@@ -3210,6 +3649,16 @@ START_TEST(accessRestrictions_setGetRead) {
     ck_assert_uint_eq(UA_Server_getNodeAccessRestrictions(server, y, &ar),
                       UA_STATUSCODE_GOOD);
     ck_assert_uint_eq(ar, UA_ACCESSRESTRICTIONTYPE_SIGNINGREQUIRED);
+
+    /* The attribute of the inheriting Node reports no override, the Node with
+     * its own value keeps it */
+    ar = 0xFFFF;
+    ck_assert_uint_eq(UA_Server_readAccessRestrictions(server, y, &ar),
+                      UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(ar, UA_ACCESSRESTRICTIONTYPE_NONE);
+    ck_assert_uint_eq(UA_Server_readAccessRestrictions(server, x, &ar),
+                      UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(ar, UA_ACCESSRESTRICTIONTYPE_ENCRYPTIONREQUIRED);
 
     UA_Server_deleteNode(server, x, true);
     UA_Server_deleteNode(server, y, true);
@@ -3347,8 +3796,9 @@ START_TEST(accessRestrictions_withoutRolePermissions) {
     ck_assert_ptr_null(UA_Server_getRolePermissionConfig(server, idx));
     ck_assert_uint_eq(ownRolePermissions(x, &role, 0), 0);
 
-    /* Effective permissions, the RolePermissions and UserRolePermissions
-     * Attributes report the namespace default -- not a deny-all */
+    /* Effective permissions and the UserRolePermissions Attribute report the
+     * namespace default -- not a deny-all. The RolePermissions Attribute
+     * reports no override (Part 3 §5.2.9). */
     ck_assert_uint_eq(effectivePerms(x, &role), nsPerms);
     ck_assert_uint_eq(effectivePerms(x, &role), effectivePerms(y, &role));
 
@@ -3361,10 +3811,7 @@ START_TEST(accessRestrictions_withoutRolePermissions) {
     UA_Variant out;
     ck_assert_uint_eq(UA_Server_readRolePermissions(server, x, &out),
                       UA_STATUSCODE_GOOD);
-    ck_assert_uint_eq(out.arrayLength, 1);
-    UA_RolePermissionType *rpt = (UA_RolePermissionType*)out.data;
-    ck_assert(UA_NodeId_equal(&rpt[0].roleId, &role));
-    ck_assert_uint_eq(rpt[0].permissions, nsPerms);
+    ck_assert_uint_eq(out.arrayLength, 0);
     UA_Variant_clear(&out);
     size_t userSize = 0;
     UA_RolePermissionType *userRp = NULL;
@@ -3444,12 +3891,15 @@ START_TEST(accessRestrictions_independentOfRolePermissions) {
                       UA_STATUSCODE_GOOD);
     ck_assert_uint_eq(ownRolePermissions(x, &role, UA_PERMISSIONTYPE_WRITE), 1);
     ck_assert_uint_eq(nodeAr(x), sign);
+    /* Removing the last entry keeps an override that grants nothing */
+    const UA_NodeId anonymous =
+        UA_NODEID_NUMERIC(0, UA_NS0ID_WELLKNOWNROLE_ANONYMOUS);
     ck_assert_uint_eq(UA_Server_removeRolePermissions(server, x, role,
                           UA_PERMISSIONTYPE_WRITE, false),
                       UA_STATUSCODE_GOOD);
-    ck_assert_uint_eq(ownRolePermissions(x, &role, 0), 0);
+    ck_assert_uint_eq(ownRolePermissions(x, &anonymous, 0), 1);
     ck_assert_uint_eq(nodeAr(x), sign);
-    ck_assert_uint_eq(nodePermIdx(x), arOnly);
+    ck_assert_uint_ne(nodePermIdx(x), arOnly);
 
     /* The low-level index setter replaces only the RolePermissions */
     ck_assert_uint_eq(UA_Server_setNodePermissionIndex(server, x, rpOnly, false),
@@ -3462,15 +3912,35 @@ START_TEST(accessRestrictions_independentOfRolePermissions) {
                       UA_STATUSCODE_GOOD);
     ck_assert_uint_eq(nodePermIdx(x), arOnly);
 
+    /* An empty list is no override and keeps the AccessRestrictions */
+    ck_assert_uint_eq(UA_Server_setNodeRolePermissions(server, x, 1, &rp, false, NULL),
+                      UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(nodePermIdx(x), both);
+    ck_assert_uint_eq(UA_Server_setNodeRolePermissions(server, x, 0, NULL, false, NULL),
+                      UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(nodePermIdx(x), arOnly);
+    ck_assert_uint_eq(nodeAr(x), sign);
+
     /* Without AccessRestrictions, removing the RolePermissions leaves no entry */
     UA_NodeId z = addArStorageVariable("ArIndepZ");
     ck_assert_uint_eq(UA_Server_setNodeRolePermissions(server, z, 1, &rp, false, NULL),
                       UA_STATUSCODE_GOOD);
     ck_assert_uint_eq(nodePermIdx(z), rpOnly);
-    ck_assert_uint_eq(UA_Server_removeRolePermissions(server, z, role, perms, false),
+    ck_assert_uint_eq(UA_Server_removeNodeRolePermissions(server, z, false),
                       UA_STATUSCODE_GOOD);
     ck_assert_uint_eq(nodePermIdx(z), UA_PERMISSION_INDEX_INVALID);
     ck_assert_uint_eq(nodeAr(z), UA_ACCESSRESTRICTIONTYPE_NONE);
+
+    /* Removing the AccessRestrictions keeps the RolePermissions, without them
+     * no entry is left */
+    ck_assert_uint_eq(UA_Server_removeNodeAccessRestrictions(server, y),
+                      UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(ownRolePermissions(y, &role, perms), 1);
+    ck_assert_uint_eq(nodeAr(y), UA_ACCESSRESTRICTIONTYPE_NONE);
+    ck_assert_uint_eq(nodePermIdx(y), rpOnly);
+    ck_assert_uint_eq(UA_Server_removeNodeAccessRestrictions(server, x),
+                      UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(nodePermIdx(x), UA_PERMISSION_INDEX_INVALID);
 
     UA_NodeId_clear(&role);
 }
@@ -3536,9 +4006,11 @@ START_TEST(accessRestrictions_survivePurgeOfRemovedRole) {
 
     ck_assert_uint_eq(removeTestRole("ArPurgeRole", 1), UA_STATUSCODE_GOOD);
 
-    /* x keeps an explicit (now empty) RolePermission list: deny-all */
+    /* x keeps an override that grants nothing ({Anonymous, 0}) */
+    const UA_NodeId anonymous =
+        UA_NODEID_NUMERIC(0, UA_NS0ID_WELLKNOWNROLE_ANONYMOUS);
     ck_assert_uint_eq(nodeAr(x), enc);
-    ck_assert_uint_eq(ownRolePermissions(x, &other, 0), 0);
+    ck_assert_uint_eq(ownRolePermissions(x, &anonymous, 0), 1);
     ck_assert_uint_eq(effectivePerms(x, &other), 0);
 
     /* y has no RolePermissions: unconfigured, allPermissionsForAnonymous */
@@ -4775,6 +5247,8 @@ static Suite *testSuite_PermissionMapping(void) {
     tcase_add_test(tc, permissionEntry_slotNoUnsafeReuse);
     tcase_add_test(tc, allPermissionsForAnonymous_config);
     tcase_add_test(tc, accessRestrictions_setGetRead);
+    tcase_add_test(tc, readRolePermissions_adminSessionExempt);
+    tcase_add_test(tc, accessRestrictions_remove);
 #ifdef UA_ENABLE_AUDITING
     tcase_add_test(tc, auditRoleMappingRuleChanged_emitted);
     tcase_add_test(tc, auditRoleMapping_addRoleEmits);
@@ -4822,6 +5296,9 @@ static Suite *testSuite_NamespaceDefaults(void) {
     tcase_add_test(tc, namespaceDefault_perNamespaceIsolation);
     tcase_add_test(tc, namespaceDefault_invalidNamespaceIndex);
     tcase_add_test(tc, namespaceDefault_explicitEmptyDenies);
+    tcase_add_test(tc, emptyNodeOverride_inheritsNamespaceDefault);
+    tcase_add_test(tc, emptyPermissionConfig_inheritsNamespaceDefault);
+    tcase_add_test(tc, namespaceDefault_remove);
     tcase_add_test(tc, namespaceDefault_reportedByAttributesAndMetadata);
     suite_add_tcase(s, tc);
     return s;

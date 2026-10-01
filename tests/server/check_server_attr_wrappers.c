@@ -129,13 +129,10 @@ START_TEST(read_rolePermissions) {
     UA_Variant_init(&permissions);
     UA_StatusCode res = UA_Server_readRolePermissions(server,
         UA_NODEID_NUMERIC(1, 70001), &permissions);
-#ifdef UA_ENABLE_RBAC
-    ck_assert_uint_eq(res, UA_STATUSCODE_GOOD);
-    ck_assert_ptr_eq(permissions.type, &UA_TYPES[UA_TYPES_ROLEPERMISSIONTYPE]);
-    UA_Variant_clear(&permissions);
-#else
+    /* With RBAC, a Node without RolePermissions in a namespace without a
+     * default publishes no RolePermissions while allPermissionsForAnonymous is
+     * set (Part 3 §5.2.9) */
     ck_assert_uint_eq(res, UA_STATUSCODE_BADATTRIBUTEIDINVALID);
-#endif
 } END_TEST
 
 START_TEST(read_userRolePermissions) {
@@ -143,9 +140,14 @@ START_TEST(read_userRolePermissions) {
     UA_Variant_init(&permissions);
     UA_StatusCode res = UA_Server_readUserRolePermissions(server,
         UA_NODEID_NUMERIC(1, 70001), &permissions);
+#ifdef UA_ENABLE_RBAC
+    /* Not published, like RolePermissions */
+    ck_assert_uint_eq(res, UA_STATUSCODE_BADATTRIBUTEIDINVALID);
+#else
     ck_assert_uint_eq(res, UA_STATUSCODE_GOOD);
     ck_assert_ptr_eq(permissions.type, &UA_TYPES[UA_TYPES_ROLEPERMISSIONTYPE]);
     UA_Variant_clear(&permissions);
+#endif
 } END_TEST
 
 START_TEST(read_accessRestrictions) {
@@ -153,9 +155,9 @@ START_TEST(read_accessRestrictions) {
     UA_StatusCode res = UA_Server_readAccessRestrictions(server,
         UA_NODEID_NUMERIC(1, 70001), &restrictions);
 #ifdef UA_ENABLE_RBAC
-    /* With RBAC the attribute reports the effective AccessRestrictions of the
-     * Node (Part 3 §5.2.11) instead of being unsupported. A Node without its
-     * own value and without a namespace default resolves to none set. */
+    /* With RBAC the attribute reports the AccessRestrictions of the Node
+     * itself (Part 3 §5.2.11) instead of being unsupported. A Node without its
+     * own value reports none. */
     ck_assert_uint_eq(res, UA_STATUSCODE_GOOD);
     ck_assert_uint_eq(restrictions, 0);
 #else
@@ -328,7 +330,12 @@ START_TEST(write_rolePermissions) {
 START_TEST(write_accessRestrictions) {
     UA_StatusCode res = UA_Server_writeAccessRestrictions(server,
         UA_NODEID_NUMERIC(1, 70001), UA_ACCESSRESTRICTIONTYPE_NONE);
+#ifdef UA_ENABLE_RBAC
+    /* The attribute exists with RBAC but is read-only */
+    ck_assert_uint_eq(res, UA_STATUSCODE_BADNOTWRITABLE);
+#else
     ck_assert_uint_eq(res, UA_STATUSCODE_BADATTRIBUTEIDINVALID);
+#endif
 } END_TEST
 
 START_TEST(write_objectProperty) {

@@ -67,9 +67,10 @@ typedef struct {
  *
  * An entry holds the per-node RBAC state so that the node head only needs the
  * index: the RolePermissions and the AccessRestrictions (Part 3 §5.2.11).
- * Either part can be absent. An entry without RolePermissions behaves for the
- * RolePermissions exactly like UA_PERMISSION_INDEX_INVALID (the namespace
- * default applies); an entry without AccessRestrictions falls back to the
+ * Either part can be absent. An entry without RolePermissions, or with an
+ * empty list (no override, Part 3 §5.2.9), behaves for the RolePermissions
+ * exactly like UA_PERMISSION_INDEX_INVALID (the namespace default applies);
+ * an entry without AccessRestrictions falls back to the
  * namespace default AccessRestrictions. A node with neither part uses
  * UA_PERMISSION_INDEX_INVALID. Entries are never modified on behalf of a
  * single node: changing one part of a node selects (or creates) the entry with

@@ -134,6 +134,11 @@ getUserExecutable(UA_Server *server, const UA_Session *session,
 /****************/
 
 #ifdef UA_ENABLE_RBAC
+/* The RolePermissions and UserRolePermissions attributes (Part 3 §5.2.9,
+ * §5.2.10). A Node without its own RolePermissions uses the default of its
+ * namespace. If the namespace has no RolePermission model either (legacy mode
+ * without a namespace default), the Server publishes no information about how
+ * it manages Permissions and the attributes do not exist for the Node. */
 static UA_StatusCode
 readRolePermissions(UA_Server *server, UA_Session *session,
                     const UA_Node *node, UA_DataValue *v) {
@@ -142,35 +147,29 @@ readRolePermissions(UA_Server *server, UA_Session *session,
     if(!session)
         return UA_STATUSCODE_BADUSERACCESSDENIED;
 
-    /* Check if the user has ReadRolePermissions permission on this node */
-    UA_UInt32 effectivePerms = 0;
-    UA_StatusCode retval = UA_Server_getEffectivePermissions(
-        server, &session->sessionId, &node->head.nodeId, &effectivePerms);
+    size_t permissionsSize = 0;
+    const UA_RolePermission *sourcePermissions = NULL;
+    UA_Boolean isOverride = false;
+    UA_Boolean nsHasModel = false;
+    UA_StatusCode retval =
+        resolveNodeRolePermissions(server, node, &permissionsSize,
+                                   &sourcePermissions, &isOverride, &nsHasModel);
     if(retval != UA_STATUSCODE_GOOD)
         return retval;
+    if(!isOverride && !nsHasModel)
+        return UA_STATUSCODE_BADATTRIBUTEIDINVALID;
 
-    if(!(effectivePerms & UA_PERMISSIONTYPE_READROLEPERMISSIONS))
+    /* Check if the user has ReadRolePermissions permission on this node. The
+     * local admin user has all rights. */
+    if(session != &server->adminSession &&
+       !(getNodeEffectivePermissions(server, session, node) &
+         UA_PERMISSIONTYPE_READROLEPERMISSIONS))
         return UA_STATUSCODE_BADUSERACCESSDENIED;
 
-    /* Resolve explicit permissions or the inherited namespace default. */
-    const UA_RolePermission *sourcePermissions = NULL;
-    size_t permissionsSize = 0;
-    const UA_RolePermissionEntry *rp =
-        getRolePermissionsEntry(server, node->head.permissionIndex);
-    if(rp) {
-        sourcePermissions = rp->rolePermissions;
-        permissionsSize = rp->rolePermissionsSize;
-    } else {
-        UA_UInt16 ns = node->head.nodeId.namespaceIndex;
-        if(ns < server->namespaceMetadataSize && server->namespaceMetadata &&
-           server->namespaceMetadata[ns].hasDefaultRolePermissions) {
-            sourcePermissions = server->namespaceMetadata[ns].entries;
-            permissionsSize = server->namespaceMetadata[ns].entriesSize;
-        }
-    }
-
-    /* If no entries -> return empty array */
-    if(permissionsSize == 0 || !sourcePermissions) {
+    /* A Node without its own RolePermissions reports an empty array: there is
+     * no override and the DefaultRolePermissions of the namespace apply. The
+     * inherited default is not copied into the attribute. */
+    if(!isOverride) {
         UA_Variant_setArray(&v->value, NULL, 0,
                            &UA_TYPES[UA_TYPES_ROLEPERMISSIONTYPE]);
         return UA_STATUSCODE_GOOD;
@@ -181,7 +180,6 @@ readRolePermissions(UA_Server *server, UA_Session *session,
     if(!outPermissions)
         return UA_STATUSCODE_BADOUTOFMEMORY;
 
-    retval = UA_STATUSCODE_GOOD;
     for(size_t i = 0; i < permissionsSize; i++) {
         retval = UA_NodeId_copy(&sourcePermissions[i].roleId,
                                 &outPermissions[i].roleId);
@@ -205,14 +203,27 @@ readUserRolePermissions(UA_Server *server, UA_Session *session,
     if(!session)
         return UA_STATUSCODE_BADUSERACCESSDENIED;
 
-    /* Return only the roles that the current session has been granted */
+    /* The Node's own RolePermissions, else the namespace default (the
+     * DefaultUserRolePermissions of the namespace) */
+    size_t permissionsSize = 0;
+    const UA_RolePermission *sourcePermissions = NULL;
+    UA_Boolean isOverride = false;
+    UA_Boolean nsHasModel = false;
+    UA_StatusCode retval =
+        resolveNodeRolePermissions(server, node, &permissionsSize,
+                                   &sourcePermissions, &isOverride, &nsHasModel);
+    if(retval != UA_STATUSCODE_GOOD)
+        return retval;
+    if(!isOverride && !nsHasModel)
+        return UA_STATUSCODE_BADATTRIBUTEIDINVALID;
+
+    /* Return only the roles that the current session has been granted. The
+     * local admin Session holds no Roles unless they were assigned to it. */
     size_t entriesSize = 0;
     UA_RolePermissionType *entries = NULL;
-
-    UA_StatusCode retval = UA_Server_getUserRolePermissions(
-        server, &session->sessionId, &node->head.nodeId,
-        &entriesSize, &entries);
-
+    retval = filterRolePermissionsForSession(session, permissionsSize,
+                                             sourcePermissions,
+                                             &entriesSize, &entries);
     if(retval != UA_STATUSCODE_GOOD)
         return retval;
 
@@ -830,7 +841,10 @@ Operation_ReadWithNode(UA_Server *server, UA_Session *session,
     case UA_ATTRIBUTEID_ACCESSRESTRICTIONS:
 #ifdef UA_ENABLE_RBAC
         {
-        UA_AccessRestrictionType ar = getNodeAccessRestrictions(server, node);
+        /* The Node's own AccessRestrictions (Part 3 §5.2.11). A Node without
+         * an override reports none; the DefaultAccessRestrictions of its
+         * namespace apply. The enforcement uses the effective value. */
+        UA_AccessRestrictionType ar = getNodeOwnAccessRestrictions(server, node);
         retval = UA_Variant_setScalarCopy(&v->value, &ar,
                                           &UA_TYPES[UA_TYPES_ACCESSRESTRICTIONTYPE]);
         }
@@ -955,7 +969,11 @@ readWithReadValue(UA_Server *server, const UA_NodeId *nodeId,
         /* Return the entire variant */
         memcpy(v, &dv.value, sizeof(UA_Variant));
     } else {
-        /* Return the variant content only */
+        /* Return the variant content only. The attribute must be a scalar. */
+        if(!dv.value.type || !UA_Variant_isScalar(&dv.value)) {
+            UA_DataValue_clear(&dv);
+            return UA_STATUSCODE_BADUNEXPECTEDERROR;
+        }
         memcpy(v, dv.value.data, dv.value.type->memSize);
         UA_free(dv.value.data);
     }
@@ -2233,6 +2251,13 @@ copyAttributeIntoNode(UA_Server *server, UA_Session *session,
         /* UserRolePermissions is read-only, cannot be written */
         retval = UA_STATUSCODE_BADNOTWRITABLE;
         break;
+#ifdef UA_ENABLE_RBAC
+    case UA_ATTRIBUTEID_ACCESSRESTRICTIONS:
+        /* The attribute is supported but read-only through the attribute
+         * service. Use UA_Server_setNodeAccessRestrictions instead. */
+        retval = UA_STATUSCODE_BADNOTWRITABLE;
+        break;
+#endif
     default:
         retval = UA_STATUSCODE_BADATTRIBUTEIDINVALID;
         break;

@@ -495,6 +495,285 @@ START_TEST(eventItem_browsableNode) {
 } END_TEST
 #endif /* UA_ENABLE_SUBSCRIPTIONS_EVENTS */
 
+/*********************************************/
+/* RolePermissions, UserRolePermissions and  */
+/* AccessRestrictions (Part 3 §5.2.9-5.2.11) */
+/*********************************************/
+
+/* Read with Operation_Read. A NULL Session reads like a detached
+ * Subscription. */
+static UA_DataValue
+readAs(UA_Session *session, const UA_NodeId nodeId, UA_UInt32 attributeId) {
+    UA_ReadValueId rvi;
+    UA_ReadValueId_init(&rvi);
+    rvi.nodeId = nodeId;
+    rvi.attributeId = attributeId;
+    UA_DataValue dv;
+    UA_DataValue_init(&dv);
+    lockServer(server);
+    Operation_Read(server, session, UA_TIMESTAMPSTORETURN_NEITHER, &rvi, &dv);
+    unlockServer(server);
+    return dv;
+}
+
+static UA_StatusCode
+readStatusAs(UA_Session *session, const UA_NodeId nodeId, UA_UInt32 attributeId) {
+    UA_DataValue dv = readAs(session, nodeId, attributeId);
+    UA_StatusCode res = (dv.hasStatus) ? dv.status : UA_STATUSCODE_GOOD;
+    if(res == UA_STATUSCODE_GOOD)
+        ck_assert(dv.hasValue);
+    UA_DataValue_clear(&dv);
+    return res;
+}
+
+/* The attribute is a RolePermissionType array with the expected entries */
+static void
+expectRolePermissions(UA_Session *session, const UA_NodeId nodeId,
+                      UA_UInt32 attributeId, size_t expectedSize,
+                      const UA_RolePermission *expected) {
+    UA_DataValue dv = readAs(session, nodeId, attributeId);
+    ck_assert_msg(!dv.hasStatus || dv.status == UA_STATUSCODE_GOOD,
+                  "Attribute %u returned %s", (unsigned)attributeId,
+                  UA_StatusCode_name(dv.status));
+    ck_assert(dv.hasValue);
+    ck_assert(UA_Variant_hasArrayType(&dv.value,
+                                      &UA_TYPES[UA_TYPES_ROLEPERMISSIONTYPE]));
+    ck_assert_uint_eq(dv.value.arrayLength, expectedSize);
+    const UA_RolePermissionType *rp = (const UA_RolePermissionType*)dv.value.data;
+    for(size_t i = 0; i < expectedSize; i++) {
+        ck_assert(UA_NodeId_equal(&rp[i].roleId, &expected[i].roleId));
+        ck_assert_uint_eq(rp[i].permissions, expected[i].permissions);
+    }
+    UA_DataValue_clear(&dv);
+}
+
+static void
+expectAccessRestrictions(UA_Session *session, const UA_NodeId nodeId,
+                         UA_AccessRestrictionType expected) {
+    UA_DataValue dv = readAs(session, nodeId, UA_ATTRIBUTEID_ACCESSRESTRICTIONS);
+    ck_assert(!dv.hasStatus || dv.status == UA_STATUSCODE_GOOD);
+    ck_assert(UA_Variant_hasScalarType(&dv.value,
+                                       &UA_TYPES[UA_TYPES_ACCESSRESTRICTIONTYPE]));
+    ck_assert_uint_eq(*(UA_AccessRestrictionType*)dv.value.data, expected);
+    UA_DataValue_clear(&dv);
+}
+
+
+#define ROLE(id) UA_NODEID_NUMERIC(0, UA_NS0ID_WELLKNOWNROLE_##id)
+
+/* The Node has its own override: RolePermissions reports it,
+ * UserRolePermissions filters it, AccessRestrictions reports the Node's own
+ * value. This holds although namespace 1 has no RolePermission model. */
+START_TEST(rbacAttributes_nodeOverride) {
+    UA_NodeId nodeId = addObject("Override", UA_NS0ID(OBJECTSFOLDER),
+                                 UA_NS0ID(ORGANIZES), 0);
+    UA_RolePermission override[2] = {
+        {ROLE(CONFIGUREADMIN),
+         UA_PERMISSIONTYPE_BROWSE | UA_PERMISSIONTYPE_READROLEPERMISSIONS},
+        {ROLE(OBSERVER), UA_PERMISSIONTYPE_BROWSE}};
+    ck_assert_uint_eq(UA_Server_setNodeRolePermissions(server, nodeId, 2, override,
+                                                       false, NULL),
+                      UA_STATUSCODE_GOOD);
+    UA_AccessRestrictionType ar = UA_ACCESSRESTRICTIONTYPE_SESSIONREQUIRED |
+        UA_ACCESSRESTRICTIONTYPE_APPLYRESTRICTIONSTOBROWSE;
+    ck_assert_uint_eq(UA_Server_setNodeAccessRestrictions(server, nodeId, ar),
+                      UA_STATUSCODE_GOOD);
+
+    UA_Session *admin = createSessionWithRole(UA_NS0ID_WELLKNOWNROLE_CONFIGUREADMIN);
+    UA_Session *observer = createSessionWithRole(UA_NS0ID_WELLKNOWNROLE_OBSERVER);
+
+    expectRolePermissions(admin, nodeId, UA_ATTRIBUTEID_ROLEPERMISSIONS, 2, override);
+    expectRolePermissions(admin, nodeId, UA_ATTRIBUTEID_USERROLEPERMISSIONS,
+                          1, &override[0]);
+    expectAccessRestrictions(admin, nodeId, ar);
+
+    /* RolePermissions requires ReadRolePermissions, the others Browse */
+    ck_assert_uint_eq(readStatusAs(observer, nodeId, UA_ATTRIBUTEID_ROLEPERMISSIONS),
+                      UA_STATUSCODE_BADUSERACCESSDENIED);
+    expectRolePermissions(observer, nodeId, UA_ATTRIBUTEID_USERROLEPERMISSIONS,
+                          1, &override[1]);
+    expectAccessRestrictions(observer, nodeId, ar);
+
+    /* The local admin Session holds no Role */
+    expectRolePermissions(&server->adminSession, nodeId,
+                          UA_ATTRIBUTEID_ROLEPERMISSIONS, 2, override);
+    expectRolePermissions(&server->adminSession, nodeId,
+                          UA_ATTRIBUTEID_USERROLEPERMISSIONS, 0, NULL);
+    UA_AccessRestrictionType reported = 0;
+    ck_assert_uint_eq(UA_Server_readAccessRestrictions(server, nodeId, &reported),
+                      UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(reported, ar);
+} END_TEST
+
+/* Legacy mode (allPermissionsForAnonymous) and no namespace default: the
+ * Server publishes no information about how it manages Permissions (Part 3
+ * §5.2.9). AccessRestrictions exists and reports that the Node has none of its
+ * own. */
+START_TEST(rbacAttributes_legacyWithoutModel) {
+    ck_assert(UA_Server_getConfig(server)->allPermissionsForAnonymous);
+    UA_NodeId nodeId = addObject("Unconfigured", UA_NS0ID(OBJECTSFOLDER),
+                                 UA_NS0ID(ORGANIZES), 0);
+    ck_assert_uint_eq(UA_Server_setNamespaceDefaultAccessRestrictions(server, 1,
+                          UA_ACCESSRESTRICTIONTYPE_SESSIONREQUIRED),
+                      UA_STATUSCODE_GOOD);
+    UA_Session *session = createSessionWithRole(UA_NS0ID_WELLKNOWNROLE_CONFIGUREADMIN);
+    UA_Session *sessions[2] = {session, &server->adminSession};
+    for(size_t i = 0; i < 2; i++) {
+        ck_assert_uint_eq(readStatusAs(sessions[i], nodeId,
+                                       UA_ATTRIBUTEID_ROLEPERMISSIONS),
+                          UA_STATUSCODE_BADATTRIBUTEIDINVALID);
+        ck_assert_uint_eq(readStatusAs(sessions[i], nodeId,
+                                       UA_ATTRIBUTEID_USERROLEPERMISSIONS),
+                          UA_STATUSCODE_BADATTRIBUTEIDINVALID);
+        expectAccessRestrictions(sessions[i], nodeId, UA_ACCESSRESTRICTIONTYPE_NONE);
+    }
+
+    /* The enforced value is the namespace default */
+    UA_AccessRestrictionType effective = 0;
+    ck_assert_uint_eq(UA_Server_getNodeAccessRestrictions(server, nodeId, &effective),
+                      UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(effective, UA_ACCESSRESTRICTIONTYPE_SESSIONREQUIRED);
+} END_TEST
+
+/* No override, the namespace has a default: RolePermissions is an empty array
+ * (no override), UserRolePermissions is the namespace default filtered to the
+ * Session's Roles */
+START_TEST(rbacAttributes_namespaceDefault) {
+    UA_NodeId nodeId = addObject("Inheriting", UA_NS0ID(OBJECTSFOLDER),
+                                 UA_NS0ID(ORGANIZES), 0);
+    UA_RolePermission nsDefault[2] = {
+        {ROLE(CONFIGUREADMIN),
+         UA_PERMISSIONTYPE_BROWSE | UA_PERMISSIONTYPE_READROLEPERMISSIONS},
+        {ROLE(OBSERVER), UA_PERMISSIONTYPE_BROWSE}};
+    ck_assert_uint_eq(UA_Server_setNamespaceDefaultRolePermissions(server, 1, 2,
+                                                                   nsDefault),
+                      UA_STATUSCODE_GOOD);
+
+    UA_Session *admin = createSessionWithRole(UA_NS0ID_WELLKNOWNROLE_CONFIGUREADMIN);
+    UA_Session *observer = createSessionWithRole(UA_NS0ID_WELLKNOWNROLE_OBSERVER);
+    UA_Session *user = createSessionWithRole(UA_NS0ID_WELLKNOWNROLE_AUTHENTICATEDUSER);
+
+    expectRolePermissions(admin, nodeId, UA_ATTRIBUTEID_ROLEPERMISSIONS,
+                          0, NULL);
+    expectRolePermissions(admin, nodeId, UA_ATTRIBUTEID_USERROLEPERMISSIONS,
+                          1, &nsDefault[0]);
+    expectAccessRestrictions(admin, nodeId, UA_ACCESSRESTRICTIONTYPE_NONE);
+
+    ck_assert_uint_eq(readStatusAs(observer, nodeId, UA_ATTRIBUTEID_ROLEPERMISSIONS),
+                      UA_STATUSCODE_BADUSERACCESSDENIED);
+    expectRolePermissions(observer, nodeId, UA_ATTRIBUTEID_USERROLEPERMISSIONS,
+                          1, &nsDefault[1]);
+
+    /* Without Browse the Session reads none of them */
+    ck_assert_uint_eq(readStatusAs(user, nodeId, UA_ATTRIBUTEID_ROLEPERMISSIONS),
+                      UA_STATUSCODE_BADUSERACCESSDENIED);
+    ck_assert_uint_eq(readStatusAs(user, nodeId, UA_ATTRIBUTEID_USERROLEPERMISSIONS),
+                      UA_STATUSCODE_BADUSERACCESSDENIED);
+    ck_assert_uint_eq(readStatusAs(user, nodeId, UA_ATTRIBUTEID_ACCESSRESTRICTIONS),
+                      UA_STATUSCODE_BADUSERACCESSDENIED);
+
+    /* The local admin Session needs no Role */
+    expectRolePermissions(&server->adminSession, nodeId,
+                          UA_ATTRIBUTEID_ROLEPERMISSIONS, 0, NULL);
+    expectRolePermissions(&server->adminSession, nodeId,
+                          UA_ATTRIBUTEID_USERROLEPERMISSIONS, 0, NULL);
+    expectAccessRestrictions(&server->adminSession, nodeId,
+                             UA_ACCESSRESTRICTIONTYPE_NONE);
+} END_TEST
+
+/* Strict mode: every namespace has a model, even without an explicit default.
+ * It grants nothing to Nodes without an override. */
+START_TEST(rbacAttributes_strictWithoutDefault) {
+    UA_Server_getConfig(server)->allPermissionsForAnonymous = false;
+    UA_NodeId inheriting = addObject("Inheriting", UA_NS0ID(OBJECTSFOLDER),
+                                     UA_NS0ID(ORGANIZES), 0);
+    UA_NodeId overridden = addObject("Overridden", UA_NS0ID(OBJECTSFOLDER),
+                                     UA_NS0ID(ORGANIZES), 0);
+    UA_RolePermission override[1] = {
+        {ROLE(CONFIGUREADMIN),
+         UA_PERMISSIONTYPE_BROWSE | UA_PERMISSIONTYPE_READROLEPERMISSIONS}};
+    ck_assert_uint_eq(UA_Server_setNodeRolePermissions(server, overridden, 1,
+                                                       override, false, NULL),
+                      UA_STATUSCODE_GOOD);
+
+    expectRolePermissions(&server->adminSession, inheriting,
+                          UA_ATTRIBUTEID_ROLEPERMISSIONS, 0, NULL);
+    expectRolePermissions(&server->adminSession, inheriting,
+                          UA_ATTRIBUTEID_USERROLEPERMISSIONS, 0, NULL);
+    expectAccessRestrictions(&server->adminSession, inheriting,
+                             UA_ACCESSRESTRICTIONTYPE_NONE);
+
+    UA_Session *session = createSessionWithRole(UA_NS0ID_WELLKNOWNROLE_CONFIGUREADMIN);
+    ck_assert_uint_eq(readStatusAs(session, inheriting, UA_ATTRIBUTEID_ROLEPERMISSIONS),
+                      UA_STATUSCODE_BADUSERACCESSDENIED);
+    ck_assert_uint_eq(readStatusAs(session, inheriting,
+                                   UA_ATTRIBUTEID_USERROLEPERMISSIONS),
+                      UA_STATUSCODE_BADUSERACCESSDENIED);
+    expectRolePermissions(session, overridden, UA_ATTRIBUTEID_ROLEPERMISSIONS,
+                          1, override);
+    expectRolePermissions(session, overridden, UA_ATTRIBUTEID_USERROLEPERMISSIONS,
+                          1, override);
+} END_TEST
+
+/* A detached Subscription samples without a Session and is denied */
+START_TEST(rbacAttributes_withoutSession) {
+    UA_NodeId nodeId = addObject("NoSession", UA_NS0ID(OBJECTSFOLDER),
+                                 UA_NS0ID(ORGANIZES), 0);
+    setPermissions(nodeId, UA_PERMISSIONTYPE_BROWSE |
+                   UA_PERMISSIONTYPE_READROLEPERMISSIONS);
+    ck_assert_uint_eq(readStatusAs(NULL, nodeId, UA_ATTRIBUTEID_ROLEPERMISSIONS),
+                      UA_STATUSCODE_BADUSERACCESSDENIED);
+    ck_assert_uint_eq(readStatusAs(NULL, nodeId, UA_ATTRIBUTEID_USERROLEPERMISSIONS),
+                      UA_STATUSCODE_BADUSERACCESSDENIED);
+    ck_assert_uint_eq(readStatusAs(NULL, nodeId, UA_ATTRIBUTEID_ACCESSRESTRICTIONS),
+                      UA_STATUSCODE_BADUSERACCESSDENIED);
+} END_TEST
+
+/* A Node override emptied by removing a Role reports the deny entry */
+START_TEST(rbacAttributes_purgedOverride) {
+    UA_Role role;
+    UA_Role_init(&role);
+    role.roleName = UA_QUALIFIEDNAME(1, "PurgedRole");
+    UA_NodeId roleId;
+    ck_assert_uint_eq(UA_Server_addRole(server, &role, &roleId), UA_STATUSCODE_GOOD);
+    UA_NodeId nodeId = addObject("Purged", UA_NS0ID(OBJECTSFOLDER),
+                                 UA_NS0ID(ORGANIZES), 0);
+    UA_RolePermission override = {roleId, UA_PERMISSIONTYPE_BROWSE};
+    ck_assert_uint_eq(UA_Server_setNodeRolePermissions(server, nodeId, 1, &override,
+                                                       false, NULL),
+                      UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(UA_Server_removeRole(server, role.roleName), UA_STATUSCODE_GOOD);
+
+    UA_RolePermission deny = {ROLE(ANONYMOUS), 0};
+    expectRolePermissions(&server->adminSession, nodeId,
+                          UA_ATTRIBUTEID_ROLEPERMISSIONS, 1, &deny);
+    UA_NodeId_clear(&roleId);
+} END_TEST
+
+/* The three attributes are read-only */
+START_TEST(rbacAttributes_notWritable) {
+    UA_NodeId nodeId = addObject("ReadOnly", UA_NS0ID(OBJECTSFOLDER),
+                                 UA_NS0ID(ORGANIZES), 0);
+    UA_RolePermissionType rp;
+    UA_RolePermissionType_init(&rp);
+    rp.roleId = ROLE(ANONYMOUS);
+    UA_AccessRestrictionType ar = UA_ACCESSRESTRICTIONTYPE_NONE;
+    UA_WriteValue wv;
+    UA_WriteValue_init(&wv);
+    wv.nodeId = nodeId;
+    wv.value.hasValue = true;
+    UA_Variant_setArray(&wv.value.value, &rp, 1,
+                        &UA_TYPES[UA_TYPES_ROLEPERMISSIONTYPE]);
+    wv.attributeId = UA_ATTRIBUTEID_ROLEPERMISSIONS;
+    ck_assert_uint_eq(UA_Server_write(server, &wv), UA_STATUSCODE_BADNOTWRITABLE);
+    wv.attributeId = UA_ATTRIBUTEID_USERROLEPERMISSIONS;
+    ck_assert_uint_eq(UA_Server_write(server, &wv), UA_STATUSCODE_BADNOTWRITABLE);
+    UA_Variant_setScalar(&wv.value.value, &ar,
+                         &UA_TYPES[UA_TYPES_ACCESSRESTRICTIONTYPE]);
+    wv.attributeId = UA_ATTRIBUTEID_ACCESSRESTRICTIONS;
+    ck_assert_uint_eq(UA_Server_write(server, &wv), UA_STATUSCODE_BADNOTWRITABLE);
+} END_TEST
+
 static Suite *testSuite_rbacServices(void) {
     Suite *s = suite_create("RBAC Services");
 
@@ -506,6 +785,17 @@ static Suite *testSuite_rbacServices(void) {
     tcase_add_test(tc_delete, deleteNodes_removesIncomingReferences);
     tcase_add_test(tc_delete, deleteNodes_childWithOtherParentNotCollected);
     suite_add_tcase(s, tc_delete);
+
+    TCase *tc_attr = tcase_create("RBAC attributes");
+    tcase_add_checked_fixture(tc_attr, setup, teardown);
+    tcase_add_test(tc_attr, rbacAttributes_nodeOverride);
+    tcase_add_test(tc_attr, rbacAttributes_legacyWithoutModel);
+    tcase_add_test(tc_attr, rbacAttributes_namespaceDefault);
+    tcase_add_test(tc_attr, rbacAttributes_strictWithoutDefault);
+    tcase_add_test(tc_attr, rbacAttributes_withoutSession);
+    tcase_add_test(tc_attr, rbacAttributes_purgedOverride);
+    tcase_add_test(tc_attr, rbacAttributes_notWritable);
+    suite_add_tcase(s, tc_attr);
 
     TCase *tc_add = tcase_create("AddNodes");
     tcase_add_checked_fixture(tc_add, setup, teardown);

@@ -2125,6 +2125,20 @@ START_TEST(Server_detachedSubscriptionSamplesWithoutSession) {
     const size_t attributeIdsSize = sizeof(attributeIds) / sizeof(attributeIds[0]);
     UA_UInt32 itemIds[3];
 
+#ifdef UA_ENABLE_RBAC
+    /* Without RolePermissions of its own and without a namespace default, the
+     * Server Object has no RolePermissions attribute in the permissive
+     * allPermissionsForAnonymous mode (Part 3 §5.2.9). Give it an override so
+     * the MonitoredItem can be created. */
+    UA_RolePermission rp;
+    rp.roleId = UA_NODEID_NUMERIC(0, UA_NS0ID_WELLKNOWNROLE_ANONYMOUS);
+    rp.permissions = UA_PERMISSIONTYPE_ALL;
+    ck_assert_uint_eq(UA_Server_setNodeRolePermissions(
+                          server, UA_NODEID_NUMERIC(0, UA_NS0ID_SERVER),
+                          1, &rp, false, NULL),
+                      UA_STATUSCODE_GOOD);
+#endif
+
     createSubscription();
     for(size_t i = 0; i < attributeIdsSize; i++) {
         createMonitoredItemForAttribute(attributeIds[i]);

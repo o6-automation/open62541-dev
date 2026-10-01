@@ -33,6 +33,20 @@
  *   AddIdentity/RemoveIdentity/... Methods that route through updateRole),
  *   per Part 18 §4.4.1.
  *
+ * - The RolePermissions of a Node override the default of its namespace. An
+ *   empty Node list is no override and the namespace default applies (Part 3
+ *   §5.2.9); an empty namespace default denies everything. Removing a Role or
+ *   the last entry of a Node list never widens access: the Node keeps the
+ *   override {Anonymous, 0}, which grants nothing.
+ *
+ * - The RolePermissions and AccessRestrictions attributes report only the
+ *   Node's own override: an empty array and 0 for a Node that uses the
+ *   namespace default. UserRolePermissions reports the override or the
+ *   namespace default, filtered to the Session's Roles. In legacy mode
+ *   (allPermissionsForAnonymous) without a namespace default, RolePermissions
+ *   and UserRolePermissions do not exist for Nodes without an override
+ *   (Bad_AttributeIdInvalid; Part 3 §5.2.9: "should not publish").
+ *
  * - AccessRestrictions (Part 3 §5.2.11: Signing/Encryption/Session required,
  *   ApplyRestrictionsToBrowse) are set per node (held in the node's shared
  *   entry next to its RolePermissions) with a namespace default and
@@ -498,10 +512,13 @@ findOrCreateEntry(UA_Server *server, const EntryContent *c,
         }
     }
 
-    /* Never recycle a zero-refCount slot: indices are handed out through the
-     * API (UA_Server_addRolePermissionConfig, UA_Server_getNodePermissionIndex)
-     * and may be assigned later, and the refCount only covers the references
-     * the server itself takes. So refCount == 0 does not prove the slot is
+    /* Slots are never recycled, not even with refCount == 0, so a
+     * permissionIndex stays valid for the lifetime of the server: indices are
+     * handed out through the API (UA_Server_addRolePermissionConfig,
+     * UA_Server_getNodePermissionIndex) and may be assigned later, and the
+     * refCount only covers the references the server itself takes (every Node
+     * that uses the slot, including the Methods copied with
+     * copyMethodsOnInstances). So refCount == 0 does not prove the slot is
      * unused. The array grows with the number of distinct entry contents;
      * copy-on-write changes leave the entries no longer referenced in place. */
 
@@ -1210,9 +1227,15 @@ UA_Server_addRole(UA_Server *server, const UA_Role *role,
 }
 
 /* Remove every UA_RolePermission entry that references roleId from a
- * RolePermission array in place, freeing the array if it becomes empty. */
+ * RolePermission array in place. If the array becomes empty, it is freed, or,
+ * with keepDenyEntry, reduced to the deny entry {Anonymous, 0}. An empty Node
+ * override means "no override" and would fall back to the namespace default,
+ * so the deny entry keeps the override and grants nothing. The Anonymous Role
+ * is protected and can never be purged itself. The deny entry reuses the
+ * array memory and cannot fail. */
 static void
-purgeRoleFromArray(size_t *size, UA_RolePermission **arr, const UA_NodeId *roleId) {
+purgeRoleFromArray(size_t *size, UA_RolePermission **arr,
+                   const UA_NodeId *roleId, UA_Boolean keepDenyEntry) {
     UA_RolePermission *entries = *arr;
     size_t n = *size;
     size_t w = 0;
@@ -1228,6 +1251,13 @@ purgeRoleFromArray(size_t *size, UA_RolePermission **arr, const UA_NodeId *roleI
     if(w == n)
         return; /* nothing removed */
     if(w == 0) {
+        if(keepDenyEntry) {
+            entries[0].roleId =
+                UA_NODEID_NUMERIC(0, UA_NS0ID_WELLKNOWNROLE_ANONYMOUS);
+            entries[0].permissions = 0;
+            *size = 1;
+            return;
+        }
         UA_free(entries);
         *arr = NULL;
         *size = 0;
@@ -1237,21 +1267,25 @@ purgeRoleFromArray(size_t *size, UA_RolePermission **arr, const UA_NodeId *roleI
 }
 
 /* Drop all RolePermission references to a removed Role (Part 18: all
- * Permissions associated with the Role shall be deleted). The AccessRestrictions
- * of the entries are not affected; an entry keeps its RolePermissions part even
- * if it becomes empty (explicit deny-all).
+ * Permissions associated with the Role shall be deleted). Removing a Role must
+ * never widen access: a Node override keeps the deny entry when it becomes
+ * empty, and an empty namespace default stays an explicit deny-all. The
+ * AccessRestrictions of the entries are not affected.
  * Must be called with the server lock held. */
 static void
 purgeRoleFromPermissions(UA_Server *server, const UA_NodeId *roleId) {
+    /* The entries are shared by all Nodes referencing them and edited in
+     * place. Every such Node loses the Role and keeps an override. */
     for(size_t i = 0; i < server->rolePermissionsSize; i++) {
         UA_RolePermissionEntry *rp = &server->rolePermissions[i];
         if(!rp->hasRolePermissions)
             continue; /* Only AccessRestrictions, nothing to purge */
-        purgeRoleFromArray(&rp->rolePermissionsSize, &rp->rolePermissions, roleId);
+        purgeRoleFromArray(&rp->rolePermissionsSize, &rp->rolePermissions,
+                           roleId, true);
     }
     for(size_t i = 0; i < server->namespaceMetadataSize; i++) {
         UA_NamespaceMetadata *nm = &server->namespaceMetadata[i];
-        purgeRoleFromArray(&nm->entriesSize, &nm->entries, roleId);
+        purgeRoleFromArray(&nm->entriesSize, &nm->entries, roleId, false);
     }
 }
 
@@ -1551,14 +1585,17 @@ UA_Server_setNodeRolePermissions(UA_Server *server,
     lockServer(server);
 
     /* Point the node (and optionally its children) at the deduplicated entry
-     * with these RolePermissions and the node's own AccessRestrictions */
+     * with these RolePermissions and the node's own AccessRestrictions. An
+     * empty array removes the override, the namespace default applies again
+     * (Part 3 §5.2.9). */
+    UA_Boolean hasRolePermissions = (rolePermissionsSize > 0);
     UA_StatusCode res;
     if(recursive)
-        res = setRolePermissionsRecursive(server, &nodeId, true,
+        res = setRolePermissionsRecursive(server, &nodeId, hasRolePermissions,
                                           rolePermissionsSize, rolePermissions,
                                           true);
     else
-        res = setNodeRolePermissionsLocked(server, &nodeId, true,
+        res = setNodeRolePermissionsLocked(server, &nodeId, hasRolePermissions,
                                            rolePermissionsSize, rolePermissions);
 
     unlockServer(server);
@@ -2663,8 +2700,17 @@ removeRolePermissionsInternal(UA_Server *server, const UA_NodeId *nodeId,
      * when a new entry is created. */
     size_t newEntriesSize = (newPerms == 0) ?
         c.rolePermissionsSize - 1 : c.rolePermissionsSize;
+    UA_RolePermission denyEntry;
     UA_RolePermission *newEntries = NULL;
-    if(newEntriesSize > 0) {
+    if(newEntriesSize == 0) {
+        /* Removing the last entry must not widen access. An empty override
+         * would fall back to the namespace default. Keep an override that
+         * grants nothing. UA_Server_removeNodeRolePermissions removes the
+         * override entirely. */
+        denyEntry.roleId = UA_NODEID_NUMERIC(0, UA_NS0ID_WELLKNOWNROLE_ANONYMOUS);
+        denyEntry.permissions = 0;
+        EntryContent_setRolePermissions(&c, true, 1, &denyEntry);
+    } else {
         newEntries = (UA_RolePermission*)
             UA_malloc(newEntriesSize * sizeof(UA_RolePermission));
         if(!newEntries)
@@ -2678,12 +2724,10 @@ removeRolePermissionsInternal(UA_Server *server, const UA_NodeId *nodeId,
                 newEntries[j].permissions = newPerms;
             j++;
         }
+        EntryContent_setRolePermissions(&c, true, newEntriesSize, newEntries);
     }
 
-    /* Removing the last entry drops the node's own RolePermissions (the
-     * namespace default applies again). The AccessRestrictions are kept. */
-    EntryContent_setRolePermissions(&c, newEntriesSize > 0,
-                                    newEntriesSize, newEntries);
+    /* The AccessRestrictions are kept */
     res = setNodeEntryContent(server, nodeId, &c);
     UA_free(newEntries);
     return res;
@@ -3030,72 +3074,179 @@ UA_Server_updateRolePermissionConfig(UA_Server *server, UA_PermissionIndex index
 }
 
 /************************************/
-/* Effective Permission Queries     */
+/* RolePermission Resolution        */
 /************************************/
 
-/* Compute effective permissions for a set of roles on a node.
- * Falls back to namespace DefaultRolePermissions if none are set. */
-static UA_PermissionType
-computeEffectivePermissions(UA_Server *server, const UA_Node *node,
-                            size_t rolesSize, const UA_NodeId *roles) {
+/* The functions below are the single place that decides which RolePermissions
+ * apply to a Node (Part 3 §4.9.3, §5.2.9). The effective permission checks and
+ * the RolePermission attributes and Properties all build on them. */
+
+UA_Boolean
+getNamespaceRolePermissionModel(UA_Server *server, UA_UInt16 namespaceIndex,
+                                size_t *entriesSize,
+                                const UA_RolePermission **entries) {
+    UA_LOCK_ASSERT(&server->serviceMutex);
+    *entriesSize = 0;
+    *entries = NULL;
+
+    /* An explicit default. An empty list denies everything. */
+    if(server->namespaceMetadata &&
+       namespaceIndex < server->namespaceMetadataSize &&
+       server->namespaceMetadata[namespaceIndex].hasDefaultRolePermissions) {
+        *entriesSize = server->namespaceMetadata[namespaceIndex].entriesSize;
+        *entries = server->namespaceMetadata[namespaceIndex].entries;
+        return true;
+    }
+
+    /* Without an explicit default, a namespace has a model only in strict mode.
+     * It then grants nothing to Nodes without their own RolePermissions. */
+    return !server->config.allPermissionsForAnonymous;
+}
+
+UA_StatusCode
+resolveNodeRolePermissions(UA_Server *server, const UA_Node *node,
+                           size_t *entriesSize, const UA_RolePermission **entries,
+                           UA_Boolean *isOverride, UA_Boolean *nsHasModel) {
+    UA_LOCK_ASSERT(&server->serviceMutex);
+
+    /* The namespace model, also reported for Nodes with an override */
+    size_t nsEntriesSize = 0;
+    const UA_RolePermission *nsEntries = NULL;
+    UA_Boolean model =
+        getNamespaceRolePermissionModel(server, node->head.nodeId.namespaceIndex,
+                                        &nsEntriesSize, &nsEntries);
+    if(nsHasModel)
+        *nsHasModel = model;
+
+    /* A corrupt index (a problem in the Nodestore) resolves to an empty
+     * override, so callers fail closed */
     UA_PermissionIndex permIdx = node->head.permissionIndex;
-    const UA_RolePermission *entries = NULL;
-    size_t entriesSize = 0;
-    UA_Boolean permissionsConfigured = false;
-
-    /* Fail closed on an index that is out of range (Nodestore problem) */
     if(permIdx != UA_PERMISSION_INDEX_INVALID &&
-       permIdx >= server->rolePermissionsSize)
-        return 0;
+       permIdx >= server->rolePermissionsSize) {
+        if(isOverride)
+            *isOverride = true;
+        *entriesSize = 0;
+        *entries = NULL;
+        return UA_STATUSCODE_BADINTERNALERROR;
+    }
 
-    /* If node has explicit permission configuration, use it. An entry with
-     * only AccessRestrictions does not configure RolePermissions. */
+    /* The Node has its own RolePermissions. An entry with only
+     * AccessRestrictions or with an empty list (e.g. an empty preset) is no
+     * override (Part 3 §5.2.9). */
     const UA_RolePermissionEntry *rp = getRolePermissionsEntry(server, permIdx);
-    if(rp) {
-        permissionsConfigured = true;
-        entries = rp->rolePermissions;
-        entriesSize = rp->rolePermissionsSize;
-    } else {
-        /* No explicit permissions, check namespace defaults */
-        UA_UInt16 nsIdx = node->head.nodeId.namespaceIndex;
-        if(nsIdx < server->namespaceMetadataSize && server->namespaceMetadata &&
-           server->namespaceMetadata[nsIdx].hasDefaultRolePermissions) {
-            const UA_NamespaceMetadata *metadata =
-                &server->namespaceMetadata[nsIdx];
-            permissionsConfigured = true;
-            entries = metadata->entries;
-            entriesSize = metadata->entriesSize;
-        }
+    if(rp && rp->rolePermissionsSize > 0) {
+        if(isOverride)
+            *isOverride = true;
+        *entriesSize = rp->rolePermissionsSize;
+        *entries = rp->rolePermissions;
+        return UA_STATUSCODE_GOOD;
     }
 
-    /* If no permissions configured, check allPermissionsForAnonymous.
-     * When true (the default), un-configured nodes are fully permissive.
-     * When false, only explicitly configured nodes grant access. */
-    if(!permissionsConfigured) {
-        if(server->config.allPermissionsForAnonymous)
-            return UA_PERMISSIONTYPE_ALL; /* All permissions granted */
-        return 0; /* Strict: deny unless explicitly configured */
-    }
+    /* No override: the namespace default applies */
+    if(isOverride)
+        *isOverride = false;
+    *entriesSize = nsEntriesSize;
+    *entries = nsEntries;
+    return UA_STATUSCODE_GOOD;
+}
 
-    /* An explicitly configured empty array is an explicit deny-all. This is
-     * security-relevant when the last entry is removed together with a Role. */
-    if(entriesSize == 0)
-        return 0;
-
-    /* Compute logical OR of permissions for all session roles */
-    UA_PermissionType effectivePerms = 0;
-
+/* Logical OR of the permissions that the list grants to the given Roles */
+static UA_PermissionType
+combineRolePermissions(size_t rolesSize, const UA_NodeId *roles,
+                       size_t entriesSize, const UA_RolePermission *entries) {
+    UA_PermissionType permissions = 0;
     for(size_t i = 0; i < rolesSize; i++) {
         for(size_t j = 0; j < entriesSize; j++) {
             if(UA_NodeId_equal(&roles[i], &entries[j].roleId)) {
-                effectivePerms |= entries[j].permissions;
+                permissions |= entries[j].permissions;
                 break;
             }
         }
     }
-
-    return effectivePerms;
+    return permissions;
 }
+
+UA_PermissionType
+getNodeEffectivePermissions(UA_Server *server, const UA_Session *session,
+                            const UA_Node *node) {
+    size_t entriesSize = 0;
+    const UA_RolePermission *entries = NULL;
+    UA_Boolean isOverride = false;
+    UA_Boolean nsHasModel = false;
+    UA_StatusCode res =
+        resolveNodeRolePermissions(server, node, &entriesSize, &entries,
+                                   &isOverride, &nsHasModel);
+    if(res != UA_STATUSCODE_GOOD)
+        return 0; /* Fail closed */
+
+    /* Legacy mode (allPermissionsForAnonymous): a Node without its own
+     * RolePermissions in a namespace without a default is unrestricted */
+    if(!isOverride && !nsHasModel)
+        return UA_PERMISSIONTYPE_ALL;
+
+    /* An empty namespace default, or strict mode without one, denies
+     * everything */
+    if(!session)
+        return 0;
+    return combineRolePermissions(session->rolesSize, session->roles,
+                                  entriesSize, entries);
+}
+
+UA_StatusCode
+filterRolePermissionsForSession(const UA_Session *session,
+                                size_t entriesSize,
+                                const UA_RolePermission *entries,
+                                size_t *outSize, UA_RolePermissionType **out) {
+    *outSize = 0;
+    *out = NULL;
+    if(!session)
+        return UA_STATUSCODE_GOOD;
+
+    /* Count the entries for one of the Session's Roles */
+    size_t matchCount = 0;
+    for(size_t i = 0; i < entriesSize; i++) {
+        for(size_t j = 0; j < session->rolesSize; j++) {
+            if(UA_NodeId_equal(&entries[i].roleId, &session->roles[j])) {
+                matchCount++;
+                break;
+            }
+        }
+    }
+    if(matchCount == 0)
+        return UA_STATUSCODE_GOOD;
+
+    UA_RolePermissionType *result = (UA_RolePermissionType*)
+        UA_Array_new(matchCount, &UA_TYPES[UA_TYPES_ROLEPERMISSIONTYPE]);
+    if(!result)
+        return UA_STATUSCODE_BADOUTOFMEMORY;
+
+    /* Copy them in the order of the list */
+    size_t resultIdx = 0;
+    for(size_t i = 0; i < entriesSize && resultIdx < matchCount; i++) {
+        for(size_t j = 0; j < session->rolesSize; j++) {
+            if(!UA_NodeId_equal(&entries[i].roleId, &session->roles[j]))
+                continue;
+            UA_StatusCode res = UA_NodeId_copy(&entries[i].roleId,
+                                               &result[resultIdx].roleId);
+            if(res != UA_STATUSCODE_GOOD) {
+                UA_Array_delete(result, matchCount,
+                                &UA_TYPES[UA_TYPES_ROLEPERMISSIONTYPE]);
+                return res;
+            }
+            result[resultIdx].permissions = entries[i].permissions;
+            resultIdx++;
+            break;
+        }
+    }
+
+    *outSize = matchCount;
+    *out = result;
+    return UA_STATUSCODE_GOOD;
+}
+
+/************************************/
+/* Effective Permission Queries     */
+/************************************/
 
 UA_StatusCode
 UA_Server_getEffectivePermissions(UA_Server *server, const UA_NodeId *sessionId,
@@ -3112,19 +3263,8 @@ UA_Server_getEffectivePermissions(UA_Server *server, const UA_NodeId *sessionId,
         return UA_STATUSCODE_BADNODEIDUNKNOWN;
     }
 
-    /* Get session roles */
-    size_t rolesSize = 0;
-    UA_NodeId *roles = NULL;
-
-    if(sessionId) {
-        UA_Session *session = getSessionById(server, sessionId);
-        if(session && session->rolesSize > 0) {
-            rolesSize = session->rolesSize;
-            roles = session->roles;
-        }
-    }
-
-    *effectivePermissions = computeEffectivePermissions(server, node, rolesSize, roles);
+    const UA_Session *session = sessionId ? getSessionById(server, sessionId) : NULL;
+    *effectivePermissions = getNodeEffectivePermissions(server, session, node);
 
     UA_NODESTORE_RELEASE(server, node);
 
@@ -3146,39 +3286,20 @@ UA_Server_getEffectiveNamespacePermissions(UA_Server *server,
         return UA_STATUSCODE_BADINDEXRANGEINVALID;
     }
 
-    const UA_NamespaceMetadata *metadata = NULL;
-    if(server->namespaceMetadata &&
-       namespaceIndex < server->namespaceMetadataSize &&
-       server->namespaceMetadata[namespaceIndex].hasDefaultRolePermissions)
-        metadata = &server->namespaceMetadata[namespaceIndex];
-
-    if(!metadata) {
-        *effectivePermissions = server->config.allPermissionsForAnonymous ?
-            UA_PERMISSIONTYPE_ALL : 0;
+    size_t entriesSize = 0;
+    const UA_RolePermission *entries = NULL;
+    if(!getNamespaceRolePermissionModel(server, namespaceIndex,
+                                        &entriesSize, &entries)) {
+        /* Legacy mode without a namespace default: unrestricted */
+        *effectivePermissions = UA_PERMISSIONTYPE_ALL;
         unlockServer(server);
         return UA_STATUSCODE_GOOD;
     }
 
-    size_t rolesSize = 0;
-    const UA_NodeId *roles = NULL;
-    if(sessionId) {
-        UA_Session *session = getSessionById(server, sessionId);
-        if(session && session->rolesSize > 0) {
-            rolesSize = session->rolesSize;
-            roles = session->roles;
-        }
-    }
-
-    UA_PermissionType permissions = 0;
-    for(size_t i = 0; i < rolesSize; i++) {
-        for(size_t j = 0; j < metadata->entriesSize; j++) {
-            if(UA_NodeId_equal(&roles[i], &metadata->entries[j].roleId)) {
-                permissions |= metadata->entries[j].permissions;
-                break;
-            }
-        }
-    }
-    *effectivePermissions = permissions;
+    const UA_Session *session = sessionId ? getSessionById(server, sessionId) : NULL;
+    *effectivePermissions = (session) ?
+        combineRolePermissions(session->rolesSize, session->roles,
+                               entriesSize, entries) : 0;
     unlockServer(server);
     return UA_STATUSCODE_GOOD;
 }
@@ -3200,14 +3321,7 @@ getEffectivePermissions(UA_Server *server,
         return UA_STATUSCODE_GOOD;
     }
 
-    size_t rolesSize = 0;
-    const UA_NodeId *roles = NULL;
-    if(session && session->rolesSize > 0) {
-        rolesSize = session->rolesSize;
-        roles = session->roles;
-    }
-
-    *effectivePermissions = computeEffectivePermissions(server, node, rolesSize, roles);
+    *effectivePermissions = getNodeEffectivePermissions(server, session, node);
     UA_NODESTORE_RELEASE(server, node);
     return UA_STATUSCODE_GOOD;
 }
@@ -3231,98 +3345,59 @@ UA_Server_getUserRolePermissions(UA_Server *server, const UA_NodeId *sessionId,
         return UA_STATUSCODE_BADNODEIDUNKNOWN;
     }
 
-    const UA_RolePermission *permissionEntries = NULL;
+    /* The Node's own RolePermissions or the namespace default */
     size_t permissionEntriesSize = 0;
-    const UA_RolePermissionEntry *rp =
-        getRolePermissionsEntry(server, node->head.permissionIndex);
-    if(rp) {
-        permissionEntries = rp->rolePermissions;
-        permissionEntriesSize = rp->rolePermissionsSize;
-    } else {
-        UA_UInt16 ns = node->head.nodeId.namespaceIndex;
-        if(server->namespaceMetadata && ns < server->namespaceMetadataSize &&
-           server->namespaceMetadata[ns].hasDefaultRolePermissions) {
-            permissionEntries = server->namespaceMetadata[ns].entries;
-            permissionEntriesSize = server->namespaceMetadata[ns].entriesSize;
-        }
+    const UA_RolePermission *permissionEntries = NULL;
+    UA_StatusCode res =
+        resolveNodeRolePermissions(server, node, &permissionEntriesSize,
+                                   &permissionEntries, NULL, NULL);
+
+    /* Filtered to the Roles of the Session */
+    if(res == UA_STATUSCODE_GOOD) {
+        const UA_Session *session = sessionId ?
+            getSessionById(server, sessionId) : NULL;
+        res = filterRolePermissionsForSession(session, permissionEntriesSize,
+                                              permissionEntries,
+                                              entriesSize, entries);
     }
-
-    if(!permissionEntries || permissionEntriesSize == 0) {
-        UA_NODESTORE_RELEASE(server, node);
-        unlockServer(server);
-        return UA_STATUSCODE_GOOD;
-    }
-
-    /* Get session roles */
-    size_t rolesSize = 0;
-    UA_NodeId *roles = NULL;
-
-    if(sessionId) {
-        UA_Session *session = getSessionById(server, sessionId);
-        if(session && session->rolesSize > 0) {
-            rolesSize = session->rolesSize;
-            roles = session->roles;
-        }
-    }
-
-    /* Count how many roles the session has that also have permissions on this node */
-    size_t matchCount = 0;
-    for(size_t i = 0; i < rolesSize; i++) {
-        for(size_t j = 0; j < permissionEntriesSize; j++) {
-            if(UA_NodeId_equal(&roles[i], &permissionEntries[j].roleId)) {
-                matchCount++;
-                break;
-            }
-        }
-    }
-
-    if(matchCount == 0) {
-        UA_NODESTORE_RELEASE(server, node);
-        unlockServer(server);
-        return UA_STATUSCODE_GOOD;
-    }
-
-    /* Allocate result array */
-    UA_RolePermissionType *result = (UA_RolePermissionType*)
-        UA_Array_new(matchCount, &UA_TYPES[UA_TYPES_ROLEPERMISSIONTYPE]);
-    if(!result) {
-        UA_NODESTORE_RELEASE(server, node);
-        unlockServer(server);
-        return UA_STATUSCODE_BADOUTOFMEMORY;
-    }
-
-    /* Fill result array */
-    size_t resultIdx = 0;
-    UA_StatusCode res = UA_STATUSCODE_GOOD;
-    for(size_t i = 0; i < rolesSize && resultIdx < matchCount; i++) {
-        for(size_t j = 0; j < permissionEntriesSize; j++) {
-            if(UA_NodeId_equal(&roles[i], &permissionEntries[j].roleId)) {
-                res = UA_NodeId_copy(&roles[i], &result[resultIdx].roleId);
-                if(res != UA_STATUSCODE_GOOD) {
-                    UA_Array_delete(result, resultIdx, &UA_TYPES[UA_TYPES_ROLEPERMISSIONTYPE]);
-                    UA_NODESTORE_RELEASE(server, node);
-                    unlockServer(server);
-                    return res;
-                }
-                result[resultIdx].permissions = permissionEntries[j].permissions;
-                resultIdx++;
-                break;
-            }
-        }
-    }
-
-    *entriesSize = matchCount;
-    *entries = result;
 
     UA_NODESTORE_RELEASE(server, node);
-
     unlockServer(server);
-    return UA_STATUSCODE_GOOD;
+    return res;
 }
 
 /********************************************/
 /* Namespace Default Role Permissions       */
 /********************************************/
+
+/* Allocate or grow the namespace metadata array to cover all namespaces. New
+ * entries have no defaults. Must be called with the server lock held. */
+static UA_StatusCode
+ensureNamespaceMetadataSize(UA_Server *server) {
+    if(server->namespaceMetadata &&
+       server->namespaceMetadataSize >= server->namespacesSize)
+        return UA_STATUSCODE_GOOD;
+    UA_NamespaceMetadata *newMetadata = (UA_NamespaceMetadata*)
+        UA_realloc(server->namespaceMetadata,
+                   server->namespacesSize * sizeof(UA_NamespaceMetadata));
+    if(!newMetadata)
+        return UA_STATUSCODE_BADOUTOFMEMORY;
+    memset(&newMetadata[server->namespaceMetadataSize], 0,
+           (server->namespacesSize - server->namespaceMetadataSize) *
+           sizeof(UA_NamespaceMetadata));
+    server->namespaceMetadata = newMetadata;
+    server->namespaceMetadataSize = server->namespacesSize;
+    return UA_STATUSCODE_GOOD;
+}
+
+static void
+clearNamespaceDefaultRolePermissions(UA_NamespaceMetadata *nm) {
+    for(size_t i = 0; i < nm->entriesSize; i++)
+        UA_NodeId_clear(&nm->entries[i].roleId);
+    UA_free(nm->entries);
+    nm->entries = NULL;
+    nm->entriesSize = 0;
+}
 
 UA_StatusCode
 UA_Server_setNamespaceDefaultRolePermissions(UA_Server *server,
@@ -3341,40 +3416,16 @@ UA_Server_setNamespaceDefaultRolePermissions(UA_Server *server,
         return UA_STATUSCODE_BADINDEXRANGEINVALID;
     }
 
-    if(!server->namespaceMetadata) {
-        server->namespaceMetadata = (UA_NamespaceMetadata*)
-            UA_calloc(server->namespacesSize, sizeof(UA_NamespaceMetadata));
-        if(!server->namespaceMetadata) {
-            unlockServer(server);
-            return UA_STATUSCODE_BADOUTOFMEMORY;
-        }
-        server->namespaceMetadataSize = server->namespacesSize;
-    } else if(server->namespaceMetadataSize < server->namespacesSize) {
-        UA_NamespaceMetadata *newMetadata = (UA_NamespaceMetadata*)
-            UA_realloc(server->namespaceMetadata,
-                       server->namespacesSize * sizeof(UA_NamespaceMetadata));
-        if(!newMetadata) {
-            unlockServer(server);
-            return UA_STATUSCODE_BADOUTOFMEMORY;
-        }
-        server->namespaceMetadata = newMetadata;
-        memset(&server->namespaceMetadata[server->namespaceMetadataSize], 0,
-               (server->namespacesSize - server->namespaceMetadataSize) *
-               sizeof(UA_NamespaceMetadata));
-        server->namespaceMetadataSize = server->namespacesSize;
+    UA_StatusCode res = ensureNamespaceMetadataSize(server);
+    if(res != UA_STATUSCODE_GOOD) {
+        unlockServer(server);
+        return res;
     }
 
     /* Clear old entries */
-    if(server->namespaceMetadata[namespaceIndex].entries) {
-        for(size_t i = 0; i < server->namespaceMetadata[namespaceIndex].entriesSize; i++)
-            UA_NodeId_clear(&server->namespaceMetadata[namespaceIndex].entries[i].roleId);
-        UA_free(server->namespaceMetadata[namespaceIndex].entries);
-        server->namespaceMetadata[namespaceIndex].entries = NULL;
-        server->namespaceMetadata[namespaceIndex].entriesSize = 0;
-    }
+    clearNamespaceDefaultRolePermissions(&server->namespaceMetadata[namespaceIndex]);
 
     /* Set new entries if provided */
-    UA_StatusCode res = UA_STATUSCODE_GOOD;
     if(entriesSize > 0) {
         res = copyRolePermissionArray(entriesSize, entries,
                                       &server->namespaceMetadata[namespaceIndex].entriesSize,
@@ -3405,16 +3456,38 @@ UA_Server_getNamespaceDefaultRolePermissions(UA_Server *server,
         return UA_STATUSCODE_BADINDEXRANGEINVALID;
     }
 
-    UA_StatusCode res = UA_STATUSCODE_GOOD;
-    if(server->namespaceMetadata && namespaceIndex < server->namespaceMetadataSize) {
-        res = copyRolePermissionArray(
-            server->namespaceMetadata[namespaceIndex].entriesSize,
-            server->namespaceMetadata[namespaceIndex].entries,
-            entriesSize, entries);
-    }
+    size_t defaultSize = 0;
+    const UA_RolePermission *defaultEntries = NULL;
+    getNamespaceRolePermissionModel(server, namespaceIndex,
+                                    &defaultSize, &defaultEntries);
+    UA_StatusCode res = copyRolePermissionArray(defaultSize, defaultEntries,
+                                                entriesSize, entries);
 
     unlockServer(server);
     return res;
+}
+
+UA_StatusCode
+UA_Server_removeNamespaceDefaultRolePermissions(UA_Server *server,
+                                                UA_UInt16 namespaceIndex) {
+    if(!server)
+        return UA_STATUSCODE_BADINVALIDARGUMENT;
+
+    lockServer(server);
+
+    if(namespaceIndex >= server->namespacesSize) {
+        unlockServer(server);
+        return UA_STATUSCODE_BADINDEXRANGEINVALID;
+    }
+
+    if(server->namespaceMetadata && namespaceIndex < server->namespaceMetadataSize) {
+        UA_NamespaceMetadata *nm = &server->namespaceMetadata[namespaceIndex];
+        clearNamespaceDefaultRolePermissions(nm);
+        nm->hasDefaultRolePermissions = false;
+    }
+
+    unlockServer(server);
+    return UA_STATUSCODE_GOOD;
 }
 
 /************************************/
@@ -3455,6 +3528,17 @@ retainInstanceAccessRestrictions(UA_Server *server, UA_PermissionIndex declIndex
 /************************************/
 /* AccessRestrictions (Part 3)      */
 /************************************/
+
+/* The node's own AccessRestrictions, stored in its shared role-permission
+ * entry. Requires the server lock. */
+UA_AccessRestrictionType
+getNodeOwnAccessRestrictions(UA_Server *server, const UA_Node *node) {
+    UA_PermissionIndex idx = node->head.permissionIndex;
+    if(idx != UA_PERMISSION_INDEX_INVALID && idx < server->rolePermissionsSize &&
+       server->rolePermissions[idx].hasAccessRestrictions)
+        return server->rolePermissions[idx].accessRestrictions;
+    return UA_ACCESSRESTRICTIONTYPE_NONE;
+}
 
 /* Effective AccessRestrictions of a node: its own value if set, otherwise the
  * namespace default (Part 3 §5.2.11). The node's own value is stored in its
@@ -3508,28 +3592,51 @@ checkNodeAccessRestrictions(UA_Server *server, const UA_Session *session,
     return UA_STATUSCODE_GOOD;
 }
 
+/* Copy-on-write change of the AccessRestrictions part of a node's entry. The
+ * RolePermissions of the node are kept. With hasRestrictions == false the node
+ * no longer has AccessRestrictions of its own (the namespace default applies).
+ * Must be called with the server lock held. */
+static UA_StatusCode
+setNodeAccessRestrictionsLocked(UA_Server *server, const UA_NodeId *nodeId,
+                                UA_Boolean hasRestrictions,
+                                UA_AccessRestrictionType restrictions) {
+    const UA_Node *node = UA_NODESTORE_GET(server, nodeId);
+    if(!node)
+        return UA_STATUSCODE_BADNODEIDUNKNOWN;
+    UA_PermissionIndex currentIndex = node->head.permissionIndex;
+    UA_NODESTORE_RELEASE(server, node);
+
+    /* Point the node at the (shared) entry with its RolePermissions and the
+     * new AccessRestrictions. Replaces the whole part: a node with an invalid
+     * index is repaired. */
+    EntryContent c;
+    UA_StatusCode res = getEntryContent(server, nodeId, currentIndex, true, &c);
+    if(res != UA_STATUSCODE_GOOD)
+        return res;
+    EntryContent_setAccessRestrictions(&c, hasRestrictions, restrictions);
+    return setNodeEntryContent(server, nodeId, &c);
+}
+
 UA_StatusCode
 UA_Server_setNodeAccessRestrictions(UA_Server *server, const UA_NodeId nodeId,
                                     UA_AccessRestrictionType restrictions) {
     if(!server)
         return UA_STATUSCODE_BADINVALIDARGUMENT;
     lockServer(server);
-    const UA_Node *node = UA_NODESTORE_GET(server, &nodeId);
-    if(!node) {
-        unlockServer(server);
-        return UA_STATUSCODE_BADNODEIDUNKNOWN;
-    }
-    UA_PermissionIndex currentIndex = node->head.permissionIndex;
-    UA_NODESTORE_RELEASE(server, node);
+    UA_StatusCode res =
+        setNodeAccessRestrictionsLocked(server, &nodeId, true, restrictions);
+    unlockServer(server);
+    return res;
+}
 
-    /* Copy-on-write: keep the RolePermissions of the node and point it at the
-     * (shared) entry with the new AccessRestrictions */
-    EntryContent c;
-    UA_StatusCode res = getEntryContent(server, &nodeId, currentIndex, true, &c);
-    if(res == UA_STATUSCODE_GOOD) {
-        EntryContent_setAccessRestrictions(&c, true, restrictions);
-        res = setNodeEntryContent(server, &nodeId, &c);
-    }
+UA_StatusCode
+UA_Server_removeNodeAccessRestrictions(UA_Server *server, const UA_NodeId nodeId) {
+    if(!server)
+        return UA_STATUSCODE_BADINVALIDARGUMENT;
+    lockServer(server);
+    UA_StatusCode res =
+        setNodeAccessRestrictionsLocked(server, &nodeId, false,
+                                        UA_ACCESSRESTRICTIONTYPE_NONE);
     unlockServer(server);
     return res;
 }
@@ -3564,31 +3671,53 @@ UA_Server_setNamespaceDefaultAccessRestrictions(UA_Server *server, UA_UInt16 nam
     }
 
     /* Allocate/grow the namespace metadata array on demand */
-    if(!server->namespaceMetadata) {
-        server->namespaceMetadata = (UA_NamespaceMetadata*)
-            UA_calloc(server->namespacesSize, sizeof(UA_NamespaceMetadata));
-        if(!server->namespaceMetadata) {
-            unlockServer(server);
-            return UA_STATUSCODE_BADOUTOFMEMORY;
-        }
-        server->namespaceMetadataSize = server->namespacesSize;
-    } else if(server->namespaceMetadataSize < server->namespacesSize) {
-        UA_NamespaceMetadata *newMetadata = (UA_NamespaceMetadata*)
-            UA_realloc(server->namespaceMetadata,
-                       server->namespacesSize * sizeof(UA_NamespaceMetadata));
-        if(!newMetadata) {
-            unlockServer(server);
-            return UA_STATUSCODE_BADOUTOFMEMORY;
-        }
-        server->namespaceMetadata = newMetadata;
-        memset(&server->namespaceMetadata[server->namespaceMetadataSize], 0,
-               (server->namespacesSize - server->namespaceMetadataSize) *
-               sizeof(UA_NamespaceMetadata));
-        server->namespaceMetadataSize = server->namespacesSize;
+    UA_StatusCode res = ensureNamespaceMetadataSize(server);
+    if(res != UA_STATUSCODE_GOOD) {
+        unlockServer(server);
+        return res;
     }
 
     server->namespaceMetadata[namespaceIndex].defaultAccessRestrictions = restrictions;
     server->namespaceMetadata[namespaceIndex].hasDefaultAccessRestrictions = true;
+    unlockServer(server);
+    return UA_STATUSCODE_GOOD;
+}
+
+UA_StatusCode
+UA_Server_getNamespaceDefaultAccessRestrictions(UA_Server *server,
+                                                UA_UInt16 namespaceIndex,
+                                                UA_AccessRestrictionType *outRestrictions) {
+    if(!server || !outRestrictions)
+        return UA_STATUSCODE_BADINVALIDARGUMENT;
+    lockServer(server);
+    if(namespaceIndex >= server->namespacesSize) {
+        unlockServer(server);
+        return UA_STATUSCODE_BADINDEXRANGEINVALID;
+    }
+    *outRestrictions = UA_ACCESSRESTRICTIONTYPE_NONE;
+    if(server->namespaceMetadata && namespaceIndex < server->namespaceMetadataSize &&
+       server->namespaceMetadata[namespaceIndex].hasDefaultAccessRestrictions)
+        *outRestrictions =
+            server->namespaceMetadata[namespaceIndex].defaultAccessRestrictions;
+    unlockServer(server);
+    return UA_STATUSCODE_GOOD;
+}
+
+UA_StatusCode
+UA_Server_removeNamespaceDefaultAccessRestrictions(UA_Server *server,
+                                                   UA_UInt16 namespaceIndex) {
+    if(!server)
+        return UA_STATUSCODE_BADINVALIDARGUMENT;
+    lockServer(server);
+    if(namespaceIndex >= server->namespacesSize) {
+        unlockServer(server);
+        return UA_STATUSCODE_BADINDEXRANGEINVALID;
+    }
+    if(server->namespaceMetadata && namespaceIndex < server->namespaceMetadataSize) {
+        UA_NamespaceMetadata *nm = &server->namespaceMetadata[namespaceIndex];
+        nm->defaultAccessRestrictions = UA_ACCESSRESTRICTIONTYPE_NONE;
+        nm->hasDefaultAccessRestrictions = false;
+    }
     unlockServer(server);
     return UA_STATUSCODE_GOOD;
 }

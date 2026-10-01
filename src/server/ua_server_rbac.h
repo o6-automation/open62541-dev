@@ -61,6 +61,13 @@ UA_Server_updateRoleFromMethod(UA_Server *server, const UA_Role *role,
 UA_AccessRestrictionType
 getNodeAccessRestrictions(UA_Server *server, const UA_Node *node);
 
+/* The node's own AccessRestrictions (stored in its shared role-permission
+ * entry), UA_ACCESSRESTRICTIONTYPE_NONE if the node has none and the namespace
+ * default applies. The value of the AccessRestrictions Attribute (Part 3
+ * §5.2.11). Must be called with the server lock held. */
+UA_AccessRestrictionType
+getNodeOwnAccessRestrictions(UA_Server *server, const UA_Node *node);
+
 /* Enforce a node's AccessRestrictions against the session (Part 3 §5.2.11).
  * forBrowse limits enforcement to the ApplyRestrictionsToBrowse bit.
  * Must be called with the server lock held. */
@@ -85,7 +92,9 @@ UA_StatusCode
 retainInstanceAccessRestrictions(UA_Server *server, UA_PermissionIndex declIndex,
                                  UA_PermissionIndex *outIndex);
 
-/* Low-level permission index functions (internal, used by tests) */
+/* Low-level permission index functions (internal, used by tests). A
+ * configuration slot with an empty list is no override: Nodes referencing it
+ * use the namespace default (Part 3 §5.2.9). */
 
 /* Give the node (and with recursive its hierarchical children) the
  * RolePermissions of the entry at permissionIndex. Each node keeps its own
@@ -110,8 +119,8 @@ UA_Server_addRolePermissionConfig(UA_Server *server,
 
 /* The RolePermissions of the entry at index. NULL if the index is out of
  * range or the entry has no RolePermissions (only AccessRestrictions; the
- * namespace default applies to its nodes). An empty set is an explicit
- * deny-all. */
+ * namespace default applies to its nodes). An empty set is no override
+ * either: the namespace default applies to its nodes. */
 const UA_RolePermissionSet *
 UA_Server_getRolePermissionConfig(UA_Server *server,
                                   UA_PermissionIndex index);
@@ -153,6 +162,48 @@ bindRoleRepresentation(UA_Server *server, const UA_NodeId *roleId,
  * SecurityAdmin Role (defined in ua_server_ns0_rbac.c) */
 UA_StatusCode
 initRoleSetRolePermissions(UA_Server *server);
+
+/* RolePermission resolution (Part 3 §4.9.3, §5.2.9). Single source of truth
+ * for the effective permission checks and the RolePermission attributes and
+ * Properties. All of them must be called with the server lock held. */
+
+/* Whether the namespace has a RolePermission model: an explicit
+ * DefaultRolePermissions, or strict mode (allPermissionsForAnonymous ==
+ * false). Without a model (legacy mode), Nodes without their own
+ * RolePermissions are unrestricted and the Server publishes no RolePermission
+ * information for them. entries points to the namespace default (borrowed,
+ * may be empty to deny everything). */
+UA_Boolean
+getNamespaceRolePermissionModel(UA_Server *server, UA_UInt16 namespaceIndex,
+                                size_t *entriesSize,
+                                const UA_RolePermission **entries);
+
+/* Resolve the RolePermissions that apply to a Node: its own override, else the
+ * default of its namespace (borrowed). An empty list on the Node is no
+ * override. isOverride reports whether the Node has its own RolePermissions,
+ * nsHasModel whether its namespace has a model. Both may be NULL. A corrupt
+ * permission index returns Bad_InternalError with an empty override. */
+UA_StatusCode
+resolveNodeRolePermissions(UA_Server *server, const UA_Node *node,
+                           size_t *entriesSize, const UA_RolePermission **entries,
+                           UA_Boolean *isOverride, UA_Boolean *nsHasModel);
+
+/* Effective permissions of the Session on the Node: the logical OR over the
+ * Session's Roles. UA_PERMISSIONTYPE_ALL for a Node without RolePermissions in
+ * a namespace without a model. The Session may be NULL (no Roles). The local
+ * admin Session is not special-cased here; callers exempt it. */
+UA_PermissionType
+getNodeEffectivePermissions(UA_Server *server, const UA_Session *session,
+                            const UA_Node *node);
+
+/* Copy the entries of a RolePermission list that belong to one of the
+ * Session's Roles (UserRolePermissions semantics). A NULL Session has no
+ * Roles. */
+UA_StatusCode
+filterRolePermissionsForSession(const UA_Session *session,
+                                size_t entriesSize,
+                                const UA_RolePermission *entries,
+                                size_t *outSize, UA_RolePermissionType **out);
 
 /* Effective permission queries (internal, used by attribute service and tests) */
 UA_StatusCode
