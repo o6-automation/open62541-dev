@@ -117,6 +117,8 @@ OPC_UA_NAMESPACE = "http://opcfoundation.org/UA/"
 #
 # Boolean is not overlayable 1-byte type. We get "undefined behavior" errors
 # during fuzzing if we don't force the value to either exactly true or false.
+# DateTime is not overlayable either: its encoding clamps out-of-range values
+# (Part 6, 5.2.2.5), which a memcpy of an array would skip.
 builtin_overlayable = {"SByte": "true",
                        "Byte": "true",
                        "Int16": "UA_BINARY_OVERLAYABLE_INTEGER",
@@ -127,7 +129,6 @@ builtin_overlayable = {"SByte": "true",
                        "UInt64": "UA_BINARY_OVERLAYABLE_INTEGER",
                        "Float": "UA_BINARY_OVERLAYABLE_FLOAT",
                        "Double": "UA_BINARY_OVERLAYABLE_FLOAT",
-                       "DateTime": "UA_BINARY_OVERLAYABLE_INTEGER",
                        "StatusCode": "UA_BINARY_OVERLAYABLE_INTEGER",
                        "Guid": "(UA_BINARY_OVERLAYABLE_INTEGER && " +
                                "offsetof(UA_Guid, data2) == sizeof(UA_UInt32) && " +

@@ -1040,6 +1040,44 @@ START_TEST(UA_ExpandedNodeId_encodeWithUriWritesIndexZero) {
 }
 END_TEST
 
+/* Part 6, 5.2.2.5: a DateTime at or before 1601-01-01 is encoded as 0, one at
+ * or after 9999-12-31 23:59:59 as the maximum Int64. Arrays included. */
+START_TEST(UA_DateTime_encodeClampsToTheValidRange) {
+    const UA_DateTime last = 265046774399LL * UA_DATETIME_SEC;
+    UA_DateTime in[5] = {-1, 0, 5, last - 1, last};
+    UA_DateTime out[5] = {0, 0, 5, last - 1, UA_INT64_MAX};
+
+    for(size_t i = 0; i < 5; i++) {
+        UA_ByteString dst = UA_BYTESTRING_NULL;
+        UA_StatusCode retval =
+            UA_encodeBinary(&in[i], &UA_TYPES[UA_TYPES_DATETIME], &dst, NULL);
+        ck_assert_int_eq(retval, UA_STATUSCODE_GOOD);
+        UA_DateTime back;
+        retval = UA_decodeBinary(&dst, &back, &UA_TYPES[UA_TYPES_DATETIME], NULL);
+        ck_assert_int_eq(retval, UA_STATUSCODE_GOOD);
+        ck_assert_int_eq(back, out[i]);
+        UA_ByteString_clear(&dst);
+    }
+
+    UA_Variant v;
+    UA_Variant_setArray(&v, in, 5, &UA_TYPES[UA_TYPES_DATETIME]);
+    UA_ByteString dst = UA_BYTESTRING_NULL;
+    UA_StatusCode retval =
+        UA_encodeBinary(&v, &UA_TYPES[UA_TYPES_VARIANT], &dst, NULL);
+    ck_assert_int_eq(retval, UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(dst.length,
+                      UA_calcSizeBinary(&v, &UA_TYPES[UA_TYPES_VARIANT], NULL));
+    UA_Variant back;
+    retval = UA_decodeBinary(&dst, &back, &UA_TYPES[UA_TYPES_VARIANT], NULL);
+    ck_assert_int_eq(retval, UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(back.arrayLength, 5);
+    for(size_t i = 0; i < 5; i++)
+        ck_assert_int_eq(((UA_DateTime*)back.data)[i], out[i]);
+    UA_Variant_clear(&back);
+    UA_ByteString_clear(&dst);
+}
+END_TEST
+
 START_TEST(UA_DataValue_encodeShallWorkOnExampleWithoutVariant) {
     // given
     UA_DataValue src;
@@ -2075,6 +2113,7 @@ static Suite *testSuite_builtin(void) {
     tcase_add_test(tc_encode, UA_String_encodeShallWorkOnEmpty);
     tcase_add_test(tc_encode, UA_ExpandedNodeId_encodeShallWorkOnExample);
     tcase_add_test(tc_encode, UA_ExpandedNodeId_encodeWithUriWritesIndexZero);
+    tcase_add_test(tc_encode, UA_DateTime_encodeClampsToTheValidRange);
     tcase_add_test(tc_encode, UA_DataValue_encodeShallWorkOnExampleWithoutVariant);
     tcase_add_test(tc_encode, UA_DataValue_encodeShallWorkOnExampleWithVariant);
     tcase_add_test(tc_encode, UA_ExtensionObject_encodeDecodeShallWorkOnExtensionObject);

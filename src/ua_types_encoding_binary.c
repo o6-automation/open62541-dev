@@ -284,6 +284,21 @@ FUNC_ENCODE_BINARY(UInt64) {
     return UA_STATUSCODE_GOOD;
 }
 
+/* 9999-12-31 23:59:59 UTC */
+#define UA_DATETIME_ENCODE_MAX (265046774399LL * UA_DATETIME_SEC)
+
+/* Part 6, 5.2.2.5: a DateTime at or before 1601-01-01 00:00 UTC is encoded
+ * as 0, and one at or after 9999-12-31 23:59:59 UTC as the maximum Int64.
+ * This is why DateTime is not overlayable: arrays go through here too. */
+FUNC_ENCODE_BINARY(DateTime) {
+    UA_DateTime v = *(const UA_DateTime*)_src;
+    if(v < 0)
+        v = 0;
+    else if(v >= UA_DATETIME_ENCODE_MAX)
+        v = UA_INT64_MAX;
+    return UInt64_encodeBinary(ctx, &v, NULL);
+}
+
 FUNC_DECODE_BINARY(UInt64) {
     UA_UInt64 *dst = (UA_UInt64*)_dst;
     UA_CHECK(ctx->pos + sizeof(u64) <= ctx->end,
@@ -1750,7 +1765,7 @@ const encodeBinarySignature encodeBinaryJumpTable[UA_DATATYPEKINDS] = {
     Float_encodeBinary,
     Double_encodeBinary,
     String_encodeBinary,
-    UInt64_encodeBinary, /* DateTime */
+    DateTime_encodeBinary,
     Guid_encodeBinary,
     String_encodeBinary, /* ByteString */
     String_encodeBinary, /* XmlElement */
