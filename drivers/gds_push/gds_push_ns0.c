@@ -65,28 +65,8 @@ UA_GDSPush_checkSecurityMode(UA_Server *server, const UA_NodeId *sessionId,
 
 UA_CertificateGroup*
 UA_GDSPush_getCertGroup(UA_Server *server, const UA_NodeId *objectId) {
-    UA_ServerConfig *sc = UA_Server_getConfig(server);
-
-    static UA_NodeId defaultApplicationTrustList =
-        STATIC_NS0ID(SERVERCONFIGURATION_CERTIFICATEGROUPS_DEFAULTAPPLICATIONGROUP_TRUSTLIST);
-    static UA_NodeId defaultUserTokenTrustList =
-        STATIC_NS0ID(SERVERCONFIGURATION_CERTIFICATEGROUPS_DEFAULTUSERTOKENGROUP_TRUSTLIST);
-    static UA_NodeId defaultApplicationGroup =
-        STATIC_NS0ID(SERVERCONFIGURATION_CERTIFICATEGROUPS_DEFAULTAPPLICATIONGROUP);
-    static UA_NodeId defaultUserTokenGroup =
-        STATIC_NS0ID(SERVERCONFIGURATION_CERTIFICATEGROUPS_DEFAULTUSERTOKENGROUP);
-
-    if(UA_NodeId_equal(objectId, &defaultApplicationGroup) ||
-       UA_NodeId_equal(objectId, &defaultApplicationTrustList)) {
-        return &sc->secureChannelPKI;
-    }
-
-    if(UA_NodeId_equal(objectId, &defaultUserTokenGroup) ||
-       UA_NodeId_equal(objectId, &defaultUserTokenTrustList)) {
-        return &sc->sessionPKI;
-    }
-
-    return NULL;
+    /* The groups of the ServerConfiguration and their TrustLists */
+    return UA_GDS_getCertificateGroup(UA_Server_getConfig(server), objectId);
 }
 
 static UA_StatusCode

@@ -11,6 +11,7 @@
 #define UA_DRIVER_GDS_PUSH_INTERNAL_H_
 
 #include <open62541/driver/gds_push.h>
+#include "../gds_common/gds_core.h"
 
 #ifdef UA_ENABLE_DRIVER_GDS_PUSH
 
@@ -18,24 +19,6 @@ _UA_BEGIN_DECLS
 
 typedef struct UA_GDSPushContext UA_GDSPushContext;
 
-/* A CertificateType slot of a CertificateGroup (Part 12, 7.8.3) with the state
- * of the last CreateSigningRequest for the type. The certificate and the key
- * of the slot are kept by the SecurityPolicies. */
-typedef struct {
-    UA_NodeId certificateTypeId;
-    UA_ByteString pendingCsr;        /* The last CreateSigningRequest */
-} UA_GDSCertificateSlot;
-
-/* Discard the state of the last CreateSigningRequest */
-void
-UA_GDSCertificateSlot_clearPending(UA_GDSCertificateSlot *slot);
-
-UA_GDSCertificateSlot *
-UA_GDSCertificateSlots_find(UA_GDSCertificateSlot *slots, size_t slotsSize,
-                            const UA_NodeId *certificateTypeId);
-
-void
-UA_GDSCertificateSlots_delete(UA_GDSCertificateSlot *slots, size_t slotsSize);
 
 UA_StatusCode
 UA_GDSPush_initNS0(UA_GDSPushContext *ctx);
@@ -62,13 +45,6 @@ UA_GDSPush_serverSlots(UA_GDSPushContext *ctx, size_t *slotsSize);
 /* Write the CertificateTypes of the DefaultApplicationGroup from the slots */
 UA_StatusCode
 UA_GDSPush_writeCertificateTypes(UA_GDSPushContext *ctx);
-
-/* The key of the certificate must fit the certificate type (Part 12, 7.8.4):
- * Bad_CertificateInvalid otherwise. Types that the crypto backend cannot check
- * (for example certificate types of non-OPC UA applications) are accepted. */
-UA_StatusCode
-UA_GDSPush_checkCertificateType(const UA_NodeId *certificateTypeId,
-                                    const UA_ByteString *certificate);
 
 UA_StatusCode
 UA_GDSPush_writeOpenCount(UA_GDSPushContext *ctx, UA_CertificateGroup *group);

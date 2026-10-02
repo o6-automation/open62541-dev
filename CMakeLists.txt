@@ -1007,8 +1007,10 @@ if(UA_ENABLE_DRIVER_GDS_PUSH)
     list(APPEND exported_headers
          ${PROJECT_SOURCE_DIR}/include/open62541/driver/gds_push.h)
     list(APPEND lib_headers
+         ${PROJECT_SOURCE_DIR}/drivers/gds_common/gds_core.h
          ${PROJECT_SOURCE_DIR}/drivers/gds_push/gds_push_internal.h)
     list(APPEND lib_sources
+         ${PROJECT_SOURCE_DIR}/drivers/gds_common/gds_core.c
          ${PROJECT_SOURCE_DIR}/drivers/gds_push/gds_push.c
          ${PROJECT_SOURCE_DIR}/drivers/gds_push/gds_push_ns0.c)
 endif()
