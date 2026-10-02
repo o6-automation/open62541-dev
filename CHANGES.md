@@ -21,6 +21,16 @@ Receiver driver of the development branch:
 Create the driver and add it with `UA_Server_addDriver` before the server
 starts.
 
+### GDS Pull driver
+
+The GDS Pull driver implements the client side of OPC UA PullManagement (Part
+12): it requests certificates and TrustLists from a CertificateManager and
+installs them. Build with `UA_ENABLE_DRIVER_GDS_PULL`, include
+`<open62541/driver/gds_pull.h>` and create the driver with
+`UA_GDSPullDriver_new(params)`. It can run together with the GDS Push driver;
+both install certificates and TrustLists without overwriting each other's
+changes.
+
 ### Blocking and asynchronous server shutdown
 
 `UA_Server_run_shutdown` now waits for shutdown to complete even with an external

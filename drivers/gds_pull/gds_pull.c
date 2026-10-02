@@ -44,7 +44,7 @@ struct UA_GDSPullConfiguration {
     /* The NodeId this application is registered under in the
      * CertificateManager. */
     UA_NodeId applicationId;
-    UA_GDSPullRequesterNotificationCallback notificationCallback;
+    UA_GDSPullNotificationCallback notificationCallback;
     void *notificationCallbackContext;
 
     /* Whether the CertificateManager should create a new private key on behalf
@@ -191,7 +191,7 @@ UA_GDSPull_finishWorkflow(UA_Client *client, UA_GDSPullContext *ctx) {
 }
 
 static void
-notify_cycle(UA_GDSPullContext *ctx, UA_GDSPullRequesterNotification type) {
+notify_cycle(UA_GDSPullContext *ctx, UA_GDSPullNotification type) {
     if(!ctx->conf.notificationCallback)
         return;
 
@@ -201,14 +201,14 @@ notify_cycle(UA_GDSPullContext *ctx, UA_GDSPullRequesterNotification type) {
                          &UA_TYPES[UA_TYPES_STRING]);
     UA_KeyValueMap payloadMap = { 1, payload };
 
-    ctx->conf.notificationCallback((UA_GDSPullRequester *)ctx,
+    ctx->conf.notificationCallback((UA_GDSPullDriver *)ctx,
                                    ctx->conf.notificationCallbackContext, type,
                                    payloadMap);
 }
 
 static void
 notify_pendingRequest(UA_GDSPullContext *ctx,
-                      UA_GDSPullRequesterNotification type,
+                      UA_GDSPullNotification type,
                       const UA_GDSPullPendingRequest *request) {
     if(!ctx->conf.notificationCallback)
         return;
@@ -228,13 +228,13 @@ notify_pendingRequest(UA_GDSPullContext *ctx,
                          &UA_TYPES[UA_TYPES_NODEID]);
     UA_KeyValueMap payloadMap = { 3, payload };
 
-    ctx->conf.notificationCallback((UA_GDSPullRequester *)ctx,
+    ctx->conf.notificationCallback((UA_GDSPullDriver *)ctx,
                                    ctx->conf.notificationCallbackContext, type,
                                    payloadMap);
 }
 
 static void
-notify_certificate(UA_GDSPullContext *ctx, UA_GDSPullRequesterNotification type,
+notify_certificate(UA_GDSPullContext *ctx, UA_GDSPullNotification type,
                    const UA_NodeId *certificateGroupId,
                    const UA_NodeId *certificateTypeId, UA_StatusCode status) {
     if(!ctx->conf.notificationCallback)
@@ -254,13 +254,13 @@ notify_certificate(UA_GDSPullContext *ctx, UA_GDSPullRequesterNotification type,
                          &UA_TYPES[UA_TYPES_STATUSCODE]);
     UA_KeyValueMap payloadMap = { 3, payload };
 
-    ctx->conf.notificationCallback((UA_GDSPullRequester *)ctx,
+    ctx->conf.notificationCallback((UA_GDSPullDriver *)ctx,
                                    ctx->conf.notificationCallbackContext, type,
                                    payloadMap);
 }
 
 static void
-notify_trustList(UA_GDSPullContext *ctx, UA_GDSPullRequesterNotification type,
+notify_trustList(UA_GDSPullContext *ctx, UA_GDSPullNotification type,
                  const UA_NodeId *certificateGroupId, UA_StatusCode status) {
     if(!ctx->conf.notificationCallback)
         return;
@@ -275,7 +275,7 @@ notify_trustList(UA_GDSPullContext *ctx, UA_GDSPullRequesterNotification type,
                          &UA_TYPES[UA_TYPES_STATUSCODE]);
     UA_KeyValueMap payloadMap = { 2, payload };
 
-    ctx->conf.notificationCallback((UA_GDSPullRequester *)ctx,
+    ctx->conf.notificationCallback((UA_GDSPullDriver *)ctx,
                                    ctx->conf.notificationCallbackContext, type,
                                    payloadMap);
 }
@@ -319,7 +319,7 @@ UA_GDSPull_clearTrustListScratch(UA_GDSPullContext *ctx) {
 
 static void
 UA_GDSPull_dropPendingRequest(UA_GDSPullContext *ctx, size_t index,
-                              UA_GDSPullRequesterNotification notification) {
+                              UA_GDSPullNotification notification) {
     UA_GDSPullPendingRequest dropped = ctx->pendingRequests[index];
 
     ctx->pendingRequestsSize--;
@@ -604,7 +604,7 @@ UA_GDSPull_finishRequestCallback(UA_Client *client, void *userdata,
             issuersSize = result->outputArguments[2].arrayLength;
         }
 
-        UA_GDSPullRequesterNotification notification =
+        UA_GDSPullNotification notification =
             UA_GDSPULL_REQUEST_FINISHED;
         if(certificate.length == 0) {
             notification = UA_GDSPULL_REQUEST_DROPPED;
@@ -1980,7 +1980,7 @@ UA_GDSPull_runWorkflowCallback(UA_Server *server, void *data) {
 #define UA_GDSPULL_DEFAULT_CYCLE_TIMEOUT_MS 60000
 
 /* Read the configuration from the key-value map of the generic driver. The map
- * is the wire format: it is either passed to UA_GDSPull_new() or written to
+ * is the wire format: it is either passed to UA_GDSPullDriver_new() or written to
  * drv.params before the driver is started. Reading it here, and not when the
  * driver is created, is what makes the second way work. A driver that is
  * stopped and started again picks the map up as it stands then.
@@ -2292,8 +2292,8 @@ UA_GDSPull_free(UA_Driver *drv) {
     return UA_STATUSCODE_GOOD;
 }
 
-UA_GDSPullRequester *
-UA_GDSPull_new(const UA_KeyValueMap params) {
+UA_GDSPullDriver *
+UA_GDSPullDriver_new(const UA_KeyValueMap params) {
     UA_GDSPullContext *ctx =
         (UA_GDSPullContext *)UA_calloc(1, sizeof(UA_GDSPullContext));
     if(!ctx)
@@ -2305,7 +2305,7 @@ UA_GDSPull_new(const UA_KeyValueMap params) {
         return NULL;
     }
 
-    ctx->drv.driverType = UA_DRIVERTYPE_GENERIC;
+    ctx->drv.driverType = UA_DRIVERTYPE_GENERIC; /* Several per server */
     ctx->drv.name = UA_STRING("gds-pull");
     ctx->drv.start = UA_GDSPull_start;
     ctx->drv.stop = UA_GDSPull_stop;
@@ -2316,12 +2316,12 @@ UA_GDSPull_new(const UA_KeyValueMap params) {
     UA_GDSCore_init(&ctx->core, &ctx->drv);
     ctx->core.idle = UA_GDSPull_coreIdle;
 
-    return (UA_GDSPullRequester *)ctx;
+    return (UA_GDSPullDriver *)ctx;
 }
 
 void
-UA_GDSPull_setNotificationCallback(
-    UA_GDSPullRequester *pull, UA_GDSPullRequesterNotificationCallback callback,
+UA_GDSPullDriver_setNotificationCallback(
+    UA_GDSPullDriver *pull, UA_GDSPullNotificationCallback callback,
     void *context) {
     UA_GDSPullContext *ctx = (UA_GDSPullContext *)&pull->drv;
 

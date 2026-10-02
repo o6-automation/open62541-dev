@@ -2,7 +2,7 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-/* Lifecycle tests for the GDS Pull Requester driver. */
+/* Lifecycle tests for the GDS Pull driver. */
 
 #include <open62541/driver/gds_pull.h>
 #ifdef UA_ENABLE_DRIVER_GDS_PUSH
@@ -680,11 +680,11 @@ teardownCertificateManager(void) {
 /******************************/
 
 static UA_Server *server;
-static UA_GDSPullRequester *pull;
+static UA_GDSPullDriver *pull;
 static UA_Boolean serverStarted;
 
 typedef struct {
-    UA_GDSPullRequesterNotification type;
+    UA_GDSPullNotification type;
     UA_KeyValueMap payload;
 } Notification;
 
@@ -692,7 +692,7 @@ static Notification notifications[MAX_NOTIFICATIONS];
 static size_t notificationsSize;
 
 static const char *
-notificationName(UA_GDSPullRequesterNotification type) {
+notificationName(UA_GDSPullNotification type) {
     switch(type) {
     case UA_GDSPULL_CYCLE_STARTED: return "CYCLE_STARTED";
     case UA_GDSPULL_CYCLE_FINISHED: return "CYCLE_FINISHED";
@@ -709,8 +709,8 @@ notificationName(UA_GDSPullRequesterNotification type) {
 }
 
 static void
-onNotification(UA_GDSPullRequester *requester, void *context,
-               UA_GDSPullRequesterNotification type,
+onNotification(UA_GDSPullDriver *requester, void *context,
+               UA_GDSPullNotification type,
                const UA_KeyValueMap payload) {
     ck_assert_ptr_eq(requester, context);
     ck_assert_uint_lt(notificationsSize, MAX_NOTIFICATIONS);
@@ -728,7 +728,7 @@ clearNotifications(void) {
 }
 
 static size_t
-countNotifications(UA_GDSPullRequesterNotification type) {
+countNotifications(UA_GDSPullNotification type) {
     size_t count = 0;
     for(size_t i = 0; i < notificationsSize; i++)
         count += (notifications[i].type == type);
@@ -738,7 +738,7 @@ countNotifications(UA_GDSPullRequesterNotification type) {
 /* Position of the n-th (1-based) notification of the type. The notification
  * must exist. */
 static size_t
-positionOf(UA_GDSPullRequesterNotification type, size_t n) {
+positionOf(UA_GDSPullNotification type, size_t n) {
     for(size_t i = 0; i < notificationsSize; i++) {
         if(notifications[i].type != type)
             continue;
@@ -796,14 +796,14 @@ deadline(void) {
 /* Iterate until the n-th notification of the given type was seen. Returns
  * false when the time budget is used up. */
 static UA_Boolean
-runUntil(UA_GDSPullRequesterNotification type, size_t n) {
+runUntil(UA_GDSPullNotification type, size_t n) {
     UA_DateTime end = deadline();
     while(countNotifications(type) < n && UA_DateTime_nowMonotonic() < end)
         iterate();
     return countNotifications(type) >= n;
 }
 
-static UA_GDSPullRequester *
+static UA_GDSPullDriver *
 newRequester(const char *endpointUrl, size_t pendingSize,
              const UA_NodeId *pendingRequestIds) {
     UA_KeyValueMap params = UA_KEYVALUEMAP_NULL;
@@ -850,10 +850,10 @@ newRequester(const char *endpointUrl, size_t pendingSize,
     }
     ck_assert_uint_eq(res, UA_STATUSCODE_GOOD);
 
-    UA_GDSPullRequester *requester = UA_GDSPull_new(params);
+    UA_GDSPullDriver *requester = UA_GDSPullDriver_new(params);
     UA_KeyValueMap_clear(&params);
     ck_assert_ptr_nonnull(requester);
-    UA_GDSPull_setNotificationCallback(requester, onNotification, requester);
+    UA_GDSPullDriver_setNotificationCallback(requester, onNotification, requester);
     return requester;
 }
 
@@ -1380,14 +1380,14 @@ createCertificate(const char *commonName, const char *uri,
 
 int
 main(void) {
-    createCertificate("CN=GDS Pull Requester", "URI:" REQUESTER_URI,
+    createCertificate("CN=GDS Pull", "URI:" REQUESTER_URI,
                       &requesterKey, &requesterCert);
     createCertificate("CN=Mock CertificateManager", "URI:" GDS_URI,
                       &gdsKey, &gdsCert);
     createCertificate("CN=Foreign Application", "URI:urn:open62541.test.foreign",
                       &foreignKey, &foreignCert);
 
-    Suite *suite = suite_create("GDS Pull Requester lifecycle");
+    Suite *suite = suite_create("GDS Pull lifecycle");
     TCase *tc = tcase_create("lifecycle");
     tcase_add_checked_fixture(tc, setup, teardown);
     tcase_add_test(tc, issueCertificateAndUpdateTrustList);

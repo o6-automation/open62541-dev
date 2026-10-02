@@ -9,27 +9,35 @@
  * ---------------
  *
  * The GDS Pull driver implements the client side of OPC UA PullManagement. It
- * runs the full PullManagement workflow and installs the issued certificates. 
+ * runs the full PullManagement workflow and installs the issued certificates.
  * State changes and events are exposed via the callback interface.
  *
  * Build open62541 with ``UA_ENABLE_DRIVER_GDS_PULL`` enabled.
  * PullManagement additionally requires encryption and the full Namespace Zero.
  *
- * Create the driver with UA_GDSPull_new() and attach its ``drv`` member to the
- * server with UA_Server_addDriver() before calling UA_Server_run_startup(). A
- * server can have multiple GDS Pull Requester drivers. The server takes
- * ownership of the requester after it has been added successfully.
+ * Create the driver with UA_GDSPullDriver_new() and attach its ``drv`` member
+ * to the server with UA_Server_addDriver() before calling
+ * UA_Server_run_startup(). A server can have multiple GDS Pull drivers. The
+ * server takes ownership of the driver after it has been added successfully.
+ *
+ * The GDS Push driver (PushManagement) can run on the same server. Both drivers
+ * install certificates and TrustLists the same way and do not overwrite each
+ * other's changes: While a transaction of the GDS Push driver is pending, the
+ * GDS Pull driver finishes its signing requests and downloads the TrustLists
+ * in a later cycle. A signing request of the GDS Pull driver does not discard
+ * the new private key of a pending CreateSigningRequest. A new TrustList
+ * closes the SecureChannels whose remote certificate is no longer trusted.
  * */
 
 #ifdef UA_ENABLE_DRIVER_GDS_PULL
 
 _UA_BEGIN_DECLS
 
-typedef struct UA_GDSPullRequester {
+typedef struct UA_GDSPullDriver {
     UA_Driver drv;
-} UA_GDSPullRequester;
+} UA_GDSPullDriver;
 
-typedef enum UA_GDSPullRequesterNotification {
+typedef enum UA_GDSPullNotification {
     /* A workflow has begun and a connection to the CertificateManager is being established. */
     UA_GDSPULL_CYCLE_STARTED,
 
@@ -68,11 +76,11 @@ typedef enum UA_GDSPullRequesterNotification {
     /* A local TrustList could not be updated with the assigned remote TrustList
      * of the CertificateManager. */
     UA_GDSPULL_TRUSTLIST_FAILED
-} UA_GDSPullRequesterNotification;
+} UA_GDSPullNotification;
 
-typedef void (*UA_GDSPullRequesterNotificationCallback)(
-    UA_GDSPullRequester *pull, void *context,
-    UA_GDSPullRequesterNotification notificationType,
+typedef void (*UA_GDSPullNotificationCallback)(
+    UA_GDSPullDriver *pull, void *context,
+    UA_GDSPullNotification notificationType,
     const UA_KeyValueMap payload);
 
 /* Create a GDS Pull driver. The returned driver is heap-allocated and must
@@ -107,8 +115,8 @@ typedef void (*UA_GDSPullRequesterNotificationCallback)(
  * - pending-certificate-group-id: [NodeId array]
  * - pending-certificate-type-id: [NodeId array]
  * */
-UA_EXPORT UA_GDSPullRequester *
-UA_GDSPull_new(const UA_KeyValueMap params);
+UA_EXPORT UA_GDSPullDriver *
+UA_GDSPullDriver_new(const UA_KeyValueMap params);
 
 /* Some events might need to be persisted by the driver user. This includes for
  * example the pending requests, since a request might be outstanding for a
@@ -116,8 +124,8 @@ UA_GDSPull_new(const UA_KeyValueMap params);
  * crashes or restarts, the user should supply the previously outstanding
  * requests through the ``pending-`` parameters. */
 UA_EXPORT void
-UA_GDSPull_setNotificationCallback(
-    UA_GDSPullRequester *pull, UA_GDSPullRequesterNotificationCallback callback,
+UA_GDSPullDriver_setNotificationCallback(
+    UA_GDSPullDriver *pull, UA_GDSPullNotificationCallback callback,
     void *context);
 
 _UA_END_DECLS
