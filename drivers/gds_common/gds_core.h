@@ -15,7 +15,7 @@
 
 #include "open62541_queue.h"
 
-#ifdef UA_ENABLE_DRIVER_GDS_PUSH
+#if defined(UA_ENABLE_DRIVER_GDS_PUSH) || defined(UA_ENABLE_DRIVER_GDS_PULL)
 
 _UA_BEGIN_DECLS
 
@@ -133,9 +133,10 @@ struct UA_GDSCore {
 
     LIST_HEAD(, UA_GDSChannel) channels;
 
-    /* Delayed callbacks that use the core. The host driver is stopped when the
-     * last one has run. */
+    /* Delayed callbacks that use the core. When the last one has run, the idle
+     * callback is called. Without it, a stopping host driver is stopped. */
     size_t pendingDelayedCallbacks;
+    void (*idle)(UA_GDSCore *core);
 
     /* Set by the GDS Push driver. The pending changes of a transaction must not
      * be overwritten, so the GDS Pull driver waits until it is done. */
@@ -157,9 +158,11 @@ UA_GDSCore_clear(UA_GDSCore *core);
 UA_GDSCore *
 UA_GDSCore_find(UA_Server *server, UA_GDSCore *fallback);
 
+#ifdef UA_ENABLE_DRIVER_GDS_PUSH
 /* The core of a GDS Push driver */
 UA_GDSCore *
 UA_GDSPush_getCore(UA_Driver *drv);
+#endif
 
 UA_Boolean
 UA_GDSCore_changesPending(UA_GDSCore *core);
@@ -251,6 +254,6 @@ UA_GDSCore_delayedCallbackDone(UA_GDSCore *core);
 
 _UA_END_DECLS
 
-#endif /* UA_ENABLE_DRIVER_GDS_PUSH */
+#endif /* UA_ENABLE_DRIVER_GDS_PUSH || UA_ENABLE_DRIVER_GDS_PULL */
 
 #endif /* UA_DRIVER_GDS_CORE_H_ */

@@ -9,7 +9,7 @@
 
 #include "gds_core.h"
 
-#ifdef UA_ENABLE_DRIVER_GDS_PUSH
+#if defined(UA_ENABLE_DRIVER_GDS_PUSH) || defined(UA_ENABLE_DRIVER_GDS_PULL)
 
 #define STATIC_NS0ID(ID) {0, UA_NODEIDTYPE_NUMERIC, {UA_NS0ID_##ID}}
 
@@ -265,11 +265,13 @@ UA_GDSCore_clear(UA_GDSCore *core) {
 
 UA_GDSCore *
 UA_GDSCore_find(UA_Server *server, UA_GDSCore *fallback) {
+#ifdef UA_ENABLE_DRIVER_GDS_PUSH
     for(UA_Driver *drv = UA_Server_getDrivers(server); drv; drv = drv->next) {
         if(drv->driverType == UA_DRIVERTYPE_GDS_PUSH &&
            drv->state == UA_LIFECYCLESTATE_STARTED)
             return UA_GDSPush_getCore(drv);
     }
+#endif
     return fallback;
 }
 
@@ -557,8 +559,11 @@ void
 UA_GDSCore_delayedCallbackDone(UA_GDSCore *core) {
     UA_assert(core->pendingDelayedCallbacks > 0);
     core->pendingDelayedCallbacks--;
-    if(core->pendingDelayedCallbacks == 0 &&
-       core->drv->state == UA_LIFECYCLESTATE_STOPPING)
+    if(core->pendingDelayedCallbacks > 0)
+        return;
+    if(core->idle)
+        core->idle(core);
+    else if(core->drv->state == UA_LIFECYCLESTATE_STOPPING)
         core->drv->state = UA_LIFECYCLESTATE_STOPPED;
 }
 
@@ -712,4 +717,4 @@ UA_GDSCore_addToTrustList(UA_GDSCore *core, const UA_NodeId *certificateGroupId,
     return changeTrustList(core, certificateGroupId, trustList, false);
 }
 
-#endif /* UA_ENABLE_DRIVER_GDS_PUSH */
+#endif /* UA_ENABLE_DRIVER_GDS_PUSH || UA_ENABLE_DRIVER_GDS_PULL */

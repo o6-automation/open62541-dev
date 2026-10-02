@@ -5,6 +5,9 @@
 /* Lifecycle tests for the GDS Pull Requester driver. */
 
 #include <open62541/driver/gds_pull.h>
+#ifdef UA_ENABLE_DRIVER_GDS_PUSH
+#include <open62541/driver/gds_push.h>
+#endif
 #include <open62541/server_config_default.h>
 #include <open62541/plugin/create_certificate.h>
 #include <open62541/plugin/log_stdout.h>
@@ -1279,6 +1282,75 @@ START_TEST(certificateNotMatchingKeyIsNotInstalled) {
     ck_assert_uint_eq(pull->drv.state, UA_LIFECYCLESTATE_STARTED);
 } END_TEST
 
+#ifdef UA_ENABLE_DRIVER_GDS_PUSH
+static UA_StatusCode
+callMethod(UA_NodeId objectId, UA_NodeId methodId, size_t inputSize,
+           UA_Variant *input) {
+    UA_CallMethodRequest request;
+    UA_CallMethodRequest_init(&request);
+    request.objectId = objectId;
+    request.methodId = methodId;
+    request.inputArgumentsSize = inputSize;
+    request.inputArguments = input;
+    UA_CallMethodResult result = UA_Server_call(server, &request);
+    UA_StatusCode res = result.statusCode;
+    UA_CallMethodResult_clear(&result);
+    return res;
+}
+
+/* With a GDS Push driver, the certificates and TrustLists are installed with
+ * its core. While a transaction of the GDS Push driver is pending, the signing
+ * request is finished and the TrustList is downloaded in a later cycle. */
+START_TEST(pushTransactionDefersInstallation) {
+    UA_GDSPushDriver *push = UA_GDSPushDriver_new(UA_KEYVALUEMAP_NULL);
+    ck_assert_ptr_nonnull(push);
+    ck_assert_uint_eq(UA_Server_addDriver(server, &push->drv), UA_STATUSCODE_GOOD);
+    startup();
+    ck_assert_uint_eq(push->drv.state, UA_LIFECYCLESTATE_STARTED);
+
+    /* Opening the TrustList for writing starts a transaction of the GDS Push
+     * driver. AddCertificate and RemoveCertificate would apply right away. */
+    UA_Byte mode = UA_OPENFILEMODE_WRITE | UA_OPENFILEMODE_ERASEEXISTING;
+    UA_Variant input;
+    UA_Variant_setScalar(&input, &mode, &UA_TYPES[UA_TYPES_BYTE]);
+    ck_assert_uint_eq(callMethod(
+        UA_NS0ID(SERVERCONFIGURATION_CERTIFICATEGROUPS_DEFAULTAPPLICATIONGROUP_TRUSTLIST),
+        UA_NS0ID(SERVERCONFIGURATION_CERTIFICATEGROUPS_DEFAULTAPPLICATIONGROUP_TRUSTLIST_OPEN),
+        1, &input), UA_STATUSCODE_GOOD);
+
+    ck_assert(runUntil(UA_GDSPULL_CYCLE_FINISHED, 1));
+    MockCertificateManager c = snapshot();
+    ck_assert_uint_eq(c.startSigningRequest, 1);
+    ck_assert_uint_eq(c.finishRequest, 0);
+    ck_assert_uint_eq(c.getTrustList, 0);
+    ck_assert_uint_eq(countNotifications(UA_GDSPULL_CERTIFICATE_INSTALLED), 0);
+    ck_assert_uint_eq(countNotifications(UA_GDSPULL_TRUSTLIST_UPDATED), 0);
+
+    /* CancelChanges discards the transaction and closes the TrustList. The
+     * next cycle installs both. */
+    ck_assert_uint_eq(callMethod(UA_NS0ID(SERVERCONFIGURATION),
+                                 UA_NS0ID(SERVERCONFIGURATION_CANCELCHANGES),
+                                 0, NULL), UA_STATUSCODE_GOOD);
+    ck_assert(runUntil(UA_GDSPULL_CYCLE_FINISHED, 2));
+    c = snapshot();
+    ck_assert_uint_eq(c.startSigningRequest, 1);
+    ck_assert_uint_eq(c.finishRequest, 1);
+    ck_assert_uint_eq(countNotifications(UA_GDSPULL_CERTIFICATE_INSTALLED), 1);
+    ck_assert_uint_eq(countNotifications(UA_GDSPULL_TRUSTLIST_UPDATED), 1);
+    assertLocalTrustListEquals(&c.trustList);
+
+    /* The TrustList of the information model of the GDS Push driver shows the
+     * update */
+    UA_Variant lastUpdateTime;
+    ck_assert_uint_eq(UA_Server_readValue(server,
+        UA_NS0ID(SERVERCONFIGURATION_CERTIFICATEGROUPS_DEFAULTAPPLICATIONGROUP_TRUSTLIST_LASTUPDATETIME),
+        &lastUpdateTime), UA_STATUSCODE_GOOD);
+    ck_assert(UA_Variant_hasScalarType(&lastUpdateTime, &UA_TYPES[UA_TYPES_UTCTIME]));
+    ck_assert_int_gt(*(UA_UtcTime*)lastUpdateTime.data, 0);
+    UA_Variant_clear(&lastUpdateTime);
+} END_TEST
+#endif
+
 /******************************/
 /* Suite                      */
 /******************************/
@@ -1329,6 +1401,9 @@ main(void) {
     tcase_add_test(tc, unchangedTrustListIsNotDownloadedAgain);
     tcase_add_test(tc, changedTrustListIsDownloadedAgain);
     tcase_add_test(tc, certificateNotMatchingKeyIsNotInstalled);
+#ifdef UA_ENABLE_DRIVER_GDS_PUSH
+    tcase_add_test(tc, pushTransactionDefersInstallation);
+#endif
     suite_add_tcase(suite, tc);
 
     SRunner *runner = srunner_create(suite);

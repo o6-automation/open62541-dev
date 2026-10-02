@@ -1,5 +1,5 @@
 #include "gds_pull_internal.h"
-#include "../gds_common/gds_certificates.h"
+#include "../gds_common/gds_core.h"
 
 #include <open62541/common.h>
 #include <open62541/plugin/log.h>
@@ -149,7 +149,16 @@ struct UA_GDSPullContext {
      * outside. */
     size_t groupsSize;
     struct UA_GDSPullGroup *groups;
+
+    /* The certificates and TrustLists are installed with the core of the GDS
+     * Push driver. Without a GDS Push driver, this core is used. */
+    UA_GDSCore core;
 };
+
+static UA_GDSCore *
+UA_GDSPull_getCore(UA_GDSPullContext *ctx) {
+    return UA_GDSCore_find(ctx->drv.server, &ctx->core);
+}
 
 static UA_INLINE UA_NodeId
 UA_GDSPull_gdsNodeId(const UA_GDSPullContext *ctx, UA_UInt32 identifier) {
@@ -433,28 +442,19 @@ UA_GDSPull_applyPendingCertificate(UA_GDSPullContext *ctx,
                                    size_t issuerCertificatesSize) {
     /* StartSigningRequest signs the key the CSR was created with. That key is
      * still held by the SecurityPolicy, so an empty privateKey means "keep the
-     * key you have". StartNewKeyPairRequest returns the key here instead. */
-    if(privateKey.length > 0) {
-        UA_StatusCode res =
-            UA_CertificateUtils_checkKeyPair(&certificate, &privateKey);
-        if(res != UA_STATUSCODE_GOOD)
-            return res;
-    }
-
+     * key you have". StartNewKeyPairRequest returns the key here instead. The
+     * core checks that the certificate belongs to the key. */
+    UA_GDSCore *core = UA_GDSPull_getCore(ctx);
     UA_ServerConfig *sc = UA_Server_getConfig(ctx->drv.server);
 
     if(issuerCertificatesSize > 0) {
-        UA_CertificateGroup *certGroup =
-            UA_GDS_getCertificateGroup(sc, &pending->certificateGroupId);
-        UA_StatusCode res = UA_STATUSCODE_BADNOTSUPPORTED;
-        if(certGroup && certGroup->addToTrustList) {
-            UA_TrustListDataType issuers;
-            UA_TrustListDataType_init(&issuers);
-            issuers.specifiedLists = UA_TRUSTLISTMASKS_ISSUERCERTIFICATES;
-            issuers.issuerCertificates = issuerCertificates;
-            issuers.issuerCertificatesSize = issuerCertificatesSize;
-            res = certGroup->addToTrustList(certGroup, &issuers);
-        }
+        UA_TrustListDataType issuers;
+        UA_TrustListDataType_init(&issuers);
+        issuers.specifiedLists = UA_TRUSTLISTMASKS_ISSUERCERTIFICATES;
+        issuers.issuerCertificates = issuerCertificates;
+        issuers.issuerCertificatesSize = issuerCertificatesSize;
+        UA_StatusCode res = UA_GDSCore_addToTrustList(
+            core, &pending->certificateGroupId, &issuers);
         if(res != UA_STATUSCODE_GOOD)
             UA_LOG_WARNING(
                 sc->logging, UA_LOGCATEGORY_CLIENT,
@@ -468,8 +468,9 @@ UA_GDSPull_applyPendingCertificate(UA_GDSPullContext *ctx,
     UA_Boolean renewsIdentity = UA_GDSPull_identityIsCertificateType(
         ctx, sc, &pending->certificateTypeId);
 
-    UA_StatusCode res = UA_GDS_applyCertificateToPolicies(
-        sc, &pending->certificateTypeId, certificate, privateKey);
+    UA_StatusCode res = UA_GDSCore_updateCertificate(
+        core, UA_GDSREQUESTOWNER_PULL, &pending->certificateTypeId,
+        certificate, privateKey);
     if(res == UA_STATUSCODE_GOOD && renewsIdentity)
         UA_GDSPull_updateClientIdentity(ctx, certificate, privateKey);
     return res;
@@ -652,6 +653,18 @@ UA_GDSPull_finishRequestCallback(UA_Client *client, void *userdata,
  * FINISH_PENDING and FINISH_REQUEST steps. */
 static UA_StatusCode
 UA_GDSPull_callFinishRequest(UA_Client *client, UA_GDSPullContext *ctx) {
+    /* The certificate could not be installed while a transaction of the GDS
+     * Push driver is pending. The CertificateManager keeps the request, so it
+     * is finished in the next cycle. */
+    if(UA_GDSCore_changesPending(UA_GDSPull_getCore(ctx))) {
+        UA_LOG_INFO(UA_Client_getConfig(client)->logging, UA_LOGCATEGORY_CLIENT,
+                    "A transaction of the GDS Push driver is pending. The "
+                    "signing requests are finished in the next cycle.");
+        ctx->pendingRequestIndex = ctx->pendingRequestsSize;
+        ctx->finishAttempts = 0;
+        return UA_GDSPull_scheduleDispatch(ctx, 0);
+    }
+
     /* FinishRequest(ApplicationId, RequestId)
      *     -> Certificate, PrivateKey, IssuerCertificates */
     UA_Variant input[2];
@@ -975,33 +988,6 @@ UA_GDSPull_workflowStepGetCertStatus(UA_Client *client,
     return res;
 }
 
-static UA_StatusCode
-UA_GDSPull_createSigningRequest(UA_ServerConfig *sc,
-                                const UA_SecurityPolicy *pair,
-                                UA_ByteString *csr) {
-    /* The policies of a pair share one key. The first call fills the CSR from
-     * the policy's current certificate, the others see a non-empty CSR and
-     * leave it alone. No new key is requested: StartSigningRequest re-signs
-     * the key the policies already hold. */
-    UA_String subjectName = UA_STRING_NULL;
-    UA_ByteString nonce = UA_BYTESTRING_NULL;
-    for(size_t i = 0; i < sc->securityPoliciesSize; i++) {
-        UA_SecurityPolicy *sp = &sc->securityPolicies[i];
-        if(!UA_NodeId_equal(&sp->certificateGroupId,
-                            &pair->certificateGroupId) ||
-           !UA_NodeId_equal(&sp->certificateTypeId, &pair->certificateTypeId))
-            continue;
-        if(!sp->createSigningRequest)
-            return UA_STATUSCODE_BADNOTSUPPORTED;
-        UA_StatusCode res = sp->createSigningRequest(
-            sp, &subjectName, &nonce, &UA_KEYVALUEMAP_NULL, csr, NULL);
-        if(res != UA_STATUSCODE_GOOD)
-            return res;
-    }
-    return (csr->length > 0) ? UA_STATUSCODE_GOOD
-                             : UA_STATUSCODE_BADINTERNALERROR;
-}
-
 /* Shared by StartSigningRequest and StartNewKeyPairRequest. Both return a
  * single RequestId. Everything that differs between the two methods, the key
  * that FinishRequest may return, is handled when the request is finished. */
@@ -1067,8 +1053,14 @@ UA_GDSPull_workflowStepStartSigningNoKey(UA_Client *client,
     UA_ServerConfig *sc = UA_Server_getConfig(ctx->drv.server);
     UA_SecurityPolicy *sp = &sc->securityPolicies[ctx->policyIndex];
 
+    /* No new key is requested: StartSigningRequest re-signs the key the
+     * policies already hold. Bad_TransactionPending if the GDS Push driver
+     * waits for the certificate of a new key. The request is tried again in
+     * the next cycle. */
     UA_ByteString csr = UA_BYTESTRING_NULL;
-    UA_StatusCode res = UA_GDSPull_createSigningRequest(sc, sp, &csr);
+    UA_StatusCode res = UA_GDSCore_createSigningRequest(
+        UA_GDSPull_getCore(ctx), UA_GDSREQUESTOWNER_PULL,
+        &sp->certificateTypeId, NULL, NULL, false, &csr);
     if(res != UA_STATUSCODE_GOOD) {
         UA_LOG_WARNING(logging, UA_LOGCATEGORY_CLIENT,
                        "No CSR could be created for CertificateType %N (%s). "
@@ -1241,6 +1233,15 @@ UA_GDSPull_workflowStepGetTrustList(UA_Client *client, UA_GDSPullContext *ctx) {
         ctx->groupIndex++;
     if(ctx->groupIndex >= ctx->groupsSize)
         return UA_GDSPull_finishWorkflow(client, ctx);
+
+    /* The TrustLists cannot be replaced while a transaction of the GDS Push
+     * driver is pending. They are downloaded in the next cycle. */
+    if(UA_GDSCore_changesPending(UA_GDSPull_getCore(ctx))) {
+        UA_LOG_INFO(UA_Client_getConfig(client)->logging, UA_LOGCATEGORY_CLIENT,
+                    "A transaction of the GDS Push driver is pending. The "
+                    "TrustLists are updated in the next cycle.");
+        return UA_GDSPull_finishWorkflow(client, ctx);
+    }
 
     struct UA_GDSPullGroup *group = &ctx->groups[ctx->groupIndex];
     UA_NodeId_clear(&group->trustListId);
@@ -1610,27 +1611,19 @@ static UA_StatusCode
 UA_GDSPull_workflowStepCommit(UA_Client *client, UA_GDSPullContext *ctx) {
     const UA_Logger *logging = UA_Client_getConfig(client)->logging;
     struct UA_GDSPullGroup *group = &ctx->groups[ctx->groupIndex];
-    UA_ServerConfig *sc = UA_Server_getConfig(ctx->drv.server);
 
-    UA_CertificateGroup *certGroup =
-        UA_GDS_getCertificateGroup(sc, &group->localGroupId);
-    if(!certGroup || !certGroup->setTrustList) {
-        UA_LOG_WARNING(logging, UA_LOGCATEGORY_CLIENT,
-                       "The local CertificateGroup %N cannot store a "
-                       "TrustList. The download is discarded.",
-                       group->localGroupId);
-        notify_trustList(ctx, UA_GDSPULL_TRUSTLIST_FAILED,
-                         &group->localGroupId, UA_STATUSCODE_BADNOTSUPPORTED);
-        return UA_GDSPull_continueTrustList(ctx);
-    }
-
+    /* The core verifies the SecureChannels with the new TrustList and refuses
+     * it while a transaction of the GDS Push driver is pending. Then the
+     * LastUpdateTime is not taken over and the TrustList is downloaded again
+     * in the next cycle. */
     UA_TrustListDataType trustList;
     UA_TrustListDataType_init(&trustList);
     UA_StatusCode res =
         UA_decodeBinary(&ctx->trustList.data, &trustList,
                         &UA_TYPES[UA_TYPES_TRUSTLISTDATATYPE], NULL);
     if(res == UA_STATUSCODE_GOOD)
-        res = certGroup->setTrustList(certGroup, &trustList);
+        res = UA_GDSCore_setTrustList(UA_GDSPull_getCore(ctx),
+                                      &group->localGroupId, &trustList);
 
     if(res != UA_STATUSCODE_GOOD) {
         UA_LOG_WARNING(logging, UA_LOGCATEGORY_CLIENT,
@@ -1749,8 +1742,10 @@ UA_GDSPull_deleteClientCallback(void *application, void *context) {
 
     notify_cycle(ctx, UA_GDSPULL_CYCLE_FINISHED);
 
-    /* A stop() that was waiting for the client can now complete */
-    if(ctx->drv.state == UA_LIFECYCLESTATE_STOPPING)
+    /* A stop() that was waiting for the client can now complete, unless a
+     * delayed callback still uses the own core */
+    if(ctx->drv.state == UA_LIFECYCLESTATE_STOPPING &&
+       ctx->core.pendingDelayedCallbacks == 0)
         ctx->drv.state = UA_LIFECYCLESTATE_STOPPED;
 }
 
@@ -2206,6 +2201,24 @@ UA_GDSPull_readParams(UA_GDSPullContext *ctx) {
     return UA_GDSPull_readPendingRequests(ctx, logging);
 }
 
+/* The last delayed callback of the own core has run. A stop() that was
+ * waiting for it can complete, unless the client is still torn down. */
+static void
+UA_GDSPull_coreIdle(UA_GDSCore *core) {
+    UA_GDSPullContext *ctx = (UA_GDSPullContext *)core->drv;
+    if(ctx->drv.state == UA_LIFECYCLESTATE_STOPPING && !ctx->client)
+        ctx->drv.state = UA_LIFECYCLESTATE_STOPPED;
+}
+
+/* The own core tracks the SecureChannels in case no GDS Push driver runs */
+static void
+UA_GDSPull_notificationCallback(UA_Driver *drv,
+                                UA_ApplicationNotificationType type,
+                                const UA_KeyValueMap payload) {
+    UA_GDSPullContext *ctx = (UA_GDSPullContext *)drv;
+    UA_GDSCore_handleNotification(&ctx->core, type, payload);
+}
+
 static UA_StatusCode
 UA_GDSPull_start(UA_Driver *drv) {
     UA_GDSPullContext *ctx = (UA_GDSPullContext *)drv;
@@ -2214,6 +2227,12 @@ UA_GDSPull_start(UA_Driver *drv) {
         return UA_STATUSCODE_BADINVALIDSTATE;
 
     UA_StatusCode res = UA_GDSPull_readParams(ctx);
+    if(res != UA_STATUSCODE_GOOD)
+        return res;
+
+    /* The certificate types of the endpoints can change while the driver is
+     * stopped */
+    res = UA_GDSCore_updateSlots(&ctx->core);
     if(res != UA_STATUSCODE_GOOD)
         return res;
 
@@ -2240,14 +2259,16 @@ UA_GDSPull_stop(UA_Driver *drv) {
     }
 
     /* Tearing down the client needs EventLoop cycles. The delayed teardown
-     * moves the driver to STOPPED once the client is gone. */
+     * moves the driver to STOPPED once the client is gone and no delayed
+     * callback uses the own core. */
     if(ctx->client) {
         drv->state = UA_LIFECYCLESTATE_STOPPING;
         UA_Client_disconnectAsync(ctx->client);
         return;
     }
 
-    drv->state = UA_LIFECYCLESTATE_STOPPED;
+    drv->state = (ctx->core.pendingDelayedCallbacks > 0) ?
+        UA_LIFECYCLESTATE_STOPPING : UA_LIFECYCLESTATE_STOPPED;
 }
 
 static UA_StatusCode
@@ -2266,6 +2287,7 @@ UA_GDSPull_free(UA_Driver *drv) {
     UA_GDSPull_clearPendingRequests(ctx);
     UA_GDSPull_clearGroups(ctx);
     UA_GDSPull_clearTrustListScratch(ctx);
+    UA_GDSCore_clear(&ctx->core);
     UA_free(ctx);
     return UA_STATUSCODE_GOOD;
 }
@@ -2288,6 +2310,11 @@ UA_GDSPull_new(const UA_KeyValueMap params) {
     ctx->drv.start = UA_GDSPull_start;
     ctx->drv.stop = UA_GDSPull_stop;
     ctx->drv.free = UA_GDSPull_free;
+    ctx->drv.notificationCallback = UA_GDSPull_notificationCallback;
+    ctx->drv.notificationFilter = UA_APPLICATIONNOTIFICATIONTYPE_SECURECHANNEL;
+
+    UA_GDSCore_init(&ctx->core, &ctx->drv);
+    ctx->core.idle = UA_GDSPull_coreIdle;
 
     return (UA_GDSPullRequester *)ctx;
 }

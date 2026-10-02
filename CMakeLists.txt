@@ -1014,21 +1014,19 @@ set(lib_sources ${PROJECT_SOURCE_DIR}/src/ua_types.c
                 ${PROJECT_SOURCE_DIR}/src/server/ua_services_securechannel.c
                 ${PROJECT_SOURCE_DIR}/src/server/ua_services_nodemanagement.c)
 
-if(UA_ENABLE_DRIVER_GDS_PULL)
+if(UA_ENABLE_DRIVER_GDS_PUSH OR UA_ENABLE_DRIVER_GDS_PULL)
     list(APPEND lib_headers
-         ${PROJECT_SOURCE_DIR}/drivers/gds_common/gds_certificates.h)
+         ${PROJECT_SOURCE_DIR}/drivers/gds_common/gds_core.h)
     list(APPEND lib_sources
-         ${PROJECT_SOURCE_DIR}/drivers/gds_common/gds_certificates.c)
+         ${PROJECT_SOURCE_DIR}/drivers/gds_common/gds_core.c)
 endif()
 
 if(UA_ENABLE_DRIVER_GDS_PUSH)
     list(APPEND exported_headers
          ${PROJECT_SOURCE_DIR}/include/open62541/driver/gds_push.h)
     list(APPEND lib_headers
-         ${PROJECT_SOURCE_DIR}/drivers/gds_common/gds_core.h
          ${PROJECT_SOURCE_DIR}/drivers/gds_push/gds_push_internal.h)
     list(APPEND lib_sources
-         ${PROJECT_SOURCE_DIR}/drivers/gds_common/gds_core.c
          ${PROJECT_SOURCE_DIR}/drivers/gds_push/gds_push.c
          ${PROJECT_SOURCE_DIR}/drivers/gds_push/gds_push_ns0.c)
 endif()
