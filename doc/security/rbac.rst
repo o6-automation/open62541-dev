@@ -4,31 +4,29 @@ Role-Based Access Control
 =========================
 
 :doc:`authentication` establishes *who* uses a Session.  Role-Based Access
-Control (RBAC, OPC UA Part 18 and Part 3 §4.9) decides *what* the Session may
-do.  At ``ActivateSession`` the server grants the Session a set of *Roles*.
-Nodes carry *RolePermissions*, a list of Role/PermissionType pairs.  The
-effective permissions of a Session on a Node are the union of the permissions
-of all its Roles.
+Control (RBAC, OPC UA Part 18 and Part 3 §4.9) decides *what* it may do.  At
+``ActivateSession`` the server grants the Session a set of *Roles*.  Nodes
+carry *RolePermissions*, a list of Role/PermissionType pairs; the effective
+permissions of a Session are the union over its Roles.
 
 RBAC is experimental and off by default.  Enable it with
-``-DUA_ENABLE_RBAC=ON``; CMake requires ``UA_ENABLE_METHODCALLS`` and
-``UA_NAMESPACE_ZERO=FULL``.  The API is documented in :ref:`server-rbac`.
+``-DUA_ENABLE_RBAC=ON`` (requires ``UA_ENABLE_METHODCALLS`` and
+``UA_NAMESPACE_ZERO=FULL``).  The API is documented in :ref:`server-rbac`.
 
-Roles
------
+Roles and their assignment
+--------------------------
 
 The server registers the well-known Roles of Part 18: Anonymous,
 AuthenticatedUser, TrustedApplication, Observer, Operator, Engineer,
 Supervisor, ConfigureAdmin, SecurityAdmin and the three SecurityKeyServer
-Roles.  They cannot be removed and carry no permissions by themselves.  Custom
-Roles come from ``UA_ServerConfig::roles`` (JSON ``rbac.roles``), from
-``UA_Server_addRole`` and from the ``AddRole`` Method.  Configured Roles are
-protected; Roles added at runtime can be removed with ``UA_Server_removeRole``
-or ``RemoveRole``.  Every Role appears as a RoleType Object under
-``Server/ServerCapabilities/RoleSet``.
-
-Assigning Roles to a Session
-----------------------------
+Roles.  They cannot be removed.  Custom Roles come from
+``UA_ServerConfig::roles`` (JSON ``rbac.roles``, protected), from
+``UA_Server_addRole`` and from the ``AddRole`` Method (removable).  Every Role
+is a RoleType Object under ``Server/ServerCapabilities/RoleSet``.  All
+Sessions may browse the RoleSet and the Role Objects; their Properties and
+Methods are reserved to SecurityAdmin over an encrypted channel, also in
+legacy mode.  Anonymous, AuthenticatedUser and TrustedApplication have no
+mapping Methods.
 
 Every Session gets Anonymous.  AuthenticatedUser is added for any
 non-anonymous identity token, TrustedApplication for a validated client
@@ -36,40 +34,36 @@ certificate on a signed SecureChannel with a SecurityPolicy other than None.
 These three mappings are fixed.  Any other Role is granted when one of its
 identity mapping rules matches.  The rule types ``Anonymous``,
 ``AuthenticatedUser`` and ``TrustedApplication`` (empty criteria) match as
-just described, the others when the criteria equals:
+just described, the others when the criteria equals
 
 - ``UserName`` -- the user name of the UserNameIdentityToken,
-- ``Thumbprint`` -- the SHA-1 thumbprint of the user certificate (40
-  upper-case hex digits),
-- ``X509Subject`` -- the subject or issuer of the user certificate, see
-  ``UA_CertificateUtils_getRoleSubjectCriteria``,
+- ``Thumbprint`` -- the SHA-1 thumbprint of the user certificate (upper case),
+- ``X509Subject`` -- the subject or issuer of the user certificate, as
+  formatted by ``UA_CertificateUtils_getRoleSubjectCriteria``,
 - ``Application`` -- the ApplicationUri in the validated client certificate,
-- ``GroupId`` -- a group returned by the AccessControl callback
-  ``getUserGroups``,
-- ``Role`` -- a Role claim of an IssuedIdentityToken, from
-  ``getUserTokenRoles``.
+- ``GroupId`` -- a group from the AccessControl callback ``getUserGroups``,
+- ``Role`` -- a Role claim of an IssuedIdentityToken (``getUserTokenRoles``).
 
-A matching rule grants the Role only if the Session also passes the Role's
-Application and Endpoint filters.  With ``applicationsExclude`` /
-``endpointsExclude`` set (the ``UA_Role_init`` default) the list excludes; with
-the flag cleared it includes, and an empty include list grants nothing.
-Endpoints are compared with the configured ServerUrl of the listener that
-accepted the SecureChannel.  A Role without rules is never granted
-automatically.
+A matching rule grants the Role only if the Session passes the Role's
+Application and Endpoint filters: with ``applicationsExclude`` /
+``endpointsExclude`` set (the ``UA_Role_init`` default) the list excludes,
+otherwise it includes and an empty list grants nothing.  Endpoints are
+compared with the configured ServerUrl of the accepting listener.  A Role
+without rules is never granted automatically.
 
-- ``wellKnownRoleMappings`` in the config (or ``UA_Server_updateRole``) sets
-  the rules and filters of the other well-known Roles.
-- The Session attribute ``UA_QUALIFIEDNAME(0, "roles")`` (a NodeId array, set
-  with ``UA_Server_setSessionAttribute``) pins the Roles of a Session, e.g. for
-  Roles with ``customConfiguration``.  Deleting it returns to the rules.
-- Changes of the RoleSet re-evaluate all active Sessions immediately.
+``wellKnownRoleMappings`` in the config (or ``UA_Server_updateRole``) sets the
+rules and filters of the other well-known Roles.  The Session attribute
+``UA_QUALIFIEDNAME(0, "roles")`` (a NodeId array, set with
+``UA_Server_setSessionAttribute``) pins the Roles of a Session, e.g. for Roles
+with ``customConfiguration``; deleting it returns to the rules.  Changes of
+the RoleSet re-evaluate all active Sessions immediately.
 
 Permissions
 -----------
 
-The services and the default AccessControl plugin check the PermissionType
-bits (``UA_PERMISSIONTYPE_*``) as follows.  The derived UserAccessLevel,
-UserWriteMask and UserExecutable never exceed the Node's own attributes.
+The services and the default AccessControl plugin decide from the
+PermissionType bits (``UA_PERMISSIONTYPE_*``) only, within the Node's
+AccessLevel, WriteMask and Executable:
 
 .. list-table::
    :header-rows: 1
@@ -77,135 +71,172 @@ UserWriteMask and UserExecutable never exceed the Node's own attributes.
 
    * - Permission
      - Gates
-   * - ``BROWSE``
-     - Browse, TranslateBrowsePathsToNodeIds; reading attributes other than
-       Value and RolePermissions.
-   * - ``READROLEPERMISSIONS``
-     - Reading the RolePermissions attribute.
-   * - ``WRITEATTRIBUTE``, ``WRITEROLEPERMISSIONS``, ``WRITEHISTORIZING``
-     - UserWriteMask: other attributes, RolePermissions, Historizing.
+   * - ``BROWSE``, ``READROLEPERMISSIONS``
+     - Browse, TranslateBrowsePathsToNodeIds and reading attributes other than
+       Value and RolePermissions; reading RolePermissions.
    * - ``READ``, ``WRITE``, ``READHISTORY``, ``INSERTHISTORY``,
        ``MODIFYHISTORY``, ``DELETEHISTORY``
-     - UserAccessLevel CurrentRead, CurrentWrite, HistoryRead; HistoryUpdate
-       insert, replace/update, delete.
-   * - ``RECEIVEEVENTS``
-     - Event delivery; needed on the EventType and on the SourceNode.
-   * - ``CALL``
-     - Call and UserExecutable; needed on the Object and on the Method.
+     - CurrentRead; CurrentWrite, StatusWrite and TimestampWrite; HistoryRead;
+       HistoryUpdate insert, replace/update, delete.
+   * - ``WRITEATTRIBUTE``, ``WRITEHISTORIZING``
+     - UserWriteMask for the other attributes and for Historizing.
+   * - ``RECEIVEEVENTS``, ``CALL``
+     - Events, checked on the EventType and on the SourceNode; Call, checked
+       on the Object and on the Method.
    * - ``ADDREFERENCE``, ``REMOVEREFERENCE``, ``DELETENODE``, ``ADDNODE``
      - AddReferences / DeleteReferences on the source Node, DeleteNodes;
        AddNodes against the default of the new Node's namespace.
 
-A Node's own RolePermissions apply first: ``UA_Server_setNodeRolePermissions``
+A Node uses its own RolePermissions (``UA_Server_setNodeRolePermissions``
 replaces the list, ``UA_Server_addRolePermissions`` /
-``UA_Server_removeRolePermissions`` change one Role's entry (all optionally
-recursive), ``UA_Server_removeNodeRolePermissions`` drops the list, as does
-removing its last entry.  ``rolePermissionPresets`` preloads lists that Nodes
-share.  Without a list the namespace default of
-``UA_Server_setNamespaceDefaultRolePermissions`` applies, without that
-``allPermissionsForAnonymous``.  A Node's list must name every Role that needs
-access; an empty list denies everything.  The local admin Session of the C
-API bypasses all checks.
+``UA_Server_removeRolePermissions`` change one Role's entry, all optionally
+recursive; ``rolePermissionPresets`` preloads shared lists), else the explicit
+namespace default (``UA_Server_setNamespaceDefaultRolePermissions``), else the
+template of the configuration (``namespaceZeroDefaultRolePermissions`` for
+Namespace Zero, ``namespaceDefaultRolePermissions`` for all others).
+``UA_Server_removeNodeRolePermissions`` and
+``UA_Server_removeNamespaceDefaultRolePermissions`` fall back a step.
+
+A Node's list must name every Role that needs access.  An empty Node list is
+no override; to deny all, set ``{Anonymous, 0}`` -- which is also what
+removing a Role or a Node's last entry leaves.  An empty namespace default or
+template denies everything.  The local admin Session of the C API bypasses all
+checks.
 
 Default rights
 --------------
 
-The default configurations (``UA_ServerConfig_setDefault()`` and friends) set
-``allPermissionsForAnonymous = true`` for backwards compatibility: a Node with
-neither own RolePermissions nor a namespace default grants *all* permissions
-to every Session, whatever its Roles.  With ``false`` it grants nothing.
-Explicit lists are enforced either way, also one emptied by
-``UA_Server_removeRole``.
-
-No namespace has a default after startup.  The server only protects its own
-RBAC Nodes with explicit RolePermissions:
+``allPermissionsForAnonymous`` is ``false`` by default, so every Node has a
+default.  The default configurations (``UA_ServerConfig_setDefault()`` and
+friends) fill the templates with
+``UA_ServerConfig_setDefaultNamespacePermissions`` after the suggested
+permissions of Part 3 Table 2.  Each roleId of a template must be a registered
+Role, else startup fails with ``Bad_ConfigurationError``.  Every Session holds
+Anonymous; the other rows list what a Role adds:
 
 .. list-table::
    :header-rows: 1
-   :widths: 46 54
+   :widths: 24 34 42
 
-   * - Nodes
-     - Default RolePermissions
-   * - RoleSet, AddRole, RemoveRole, the RoleType Methods, every Role Object
-       and its Methods
-     - SecurityAdmin: Browse, Read, Call, ReadRolePermissions (Role Objects
-       and their Methods also ReceiveEvents).  Their Properties: Browse,
-       Read, and Write on the two ``*Exclude`` flags.
-   * - ``RoleMappingRuleChangedAuditEventType``
-     - SecurityAdmin: ReceiveEvents
-   * - ``UserManagement``, ``Users``, ``AddUser``, ``ModifyUser``,
-       ``RemoveUser`` (only with a UserManagement provider)
-     - SecurityAdmin: Browse, Read, Call, ReadRolePermissions; Anonymous: Call
-       on ``UserManagement`` and ``ChangePassword``
-   * - All other Nodes
-     - none -- all permissions for every Session
+   * - Role
+     - Namespace Zero
+     - Other namespaces
+   * - Anonymous
+     - Browse, Read, Call, ReceiveEvents
+     - Browse
+   * - AuthenticatedUser, TrustedApplication
+     - --
+     - Read
+   * - Observer
+     - ReadHistory
+     - Read, ReadHistory, ReceiveEvents
+   * - Operator / Supervisor
+     - ReadHistory
+     - as Observer, plus Call (Operator also Write)
+   * - Engineer
+     - ReadHistory
+     - as Operator, plus WriteAttribute, WriteHistorizing
+   * - ConfigureAdmin
+     - Write, WriteAttribute, AddReference, RemoveReference
+     - Read, Write, WriteAttribute, WriteHistorizing, Call, AddReference,
+       RemoveReference, DeleteNode, AddNode
+   * - SecurityAdmin
+     - ReadRolePermissions
+     - Read, ReadRolePermissions
 
-Except for the EventType, these Nodes and ``ChangePassword`` also require
-encryption (see below).  The Methods that change Roles or users check for
-SecurityAdmin over SignAndEncrypt themselves.  Only the three mandatory Roles
-have identity mappings, so no network client holds SecurityAdmin (or Operator,
-Engineer, ...) until one is configured.  To secure a server:
+Nobody adds or deletes Nodes in Namespace Zero; the SecurityKeyServer Roles
+get nothing.  While Namespace Zero has a default, built-in RolePermissions
+restrict the sensitive Nodes that its template would open (Anonymous keeps
+Browse and Read; ``UA_Server_setNodeRolePermissions`` replaces them):
 
-- set ``allPermissionsForAnonymous = false`` before creating the server,
-- give every namespace, including Namespace Zero, a default,
-- map users to Roles, including a SecurityAdmin for remote administration,
-- require encryption with AccessRestrictions where needed.
+- PubSub configuration Methods -- Call for ConfigureAdmin only,
+- Security Key Service Methods -- Call for the SecurityKeyServer Roles only,
+- Condition Methods Enable, Disable, AddComment, Acknowledge, Confirm -- Call
+  for Operator, Engineer and Supervisor only,
+- AuditEventType and its subtypes -- ReceiveEvents for SecurityAdmin only,
+- ``ApplicationsExclude`` / ``EndpointsExclude`` of RoleType -- not writable
+  by ConfigureAdmin,
+- SessionSecurityDiagnosticsArray -- other Sessions only for SecurityAdmin.
 
-AccessRestrictions
-------------------
+Only the three mandatory Roles have identity mappings, so no network client
+holds SecurityAdmin, Operator, ... until one is configured.
+
+**Migration:** ``allPermissionsForAnonymous = true`` (before
+``UA_Server_newWithConfig``, or in the JSON ``rbac`` object) restores the old
+behavior: Nodes without own list and explicit namespace default are
+unrestricted; the templates and the built-in protections above are ignored.
+
+AccessRestrictions and attributes
+---------------------------------
 
 AccessRestrictions (Part 3 §5.2.11) tie a Node to the channel security:
 ``UA_ACCESSRESTRICTIONTYPE_SIGNINGREQUIRED`` and ``ENCRYPTIONREQUIRED``
 (else ``Bad_SecurityModeInsufficient``), ``SESSIONREQUIRED`` (else
-``Bad_UserAccessDenied``).  Read, Write, Call, the history and NodeManagement
-services and Event delivery enforce them, Browse and
-TranslateBrowsePathsToNodeIds only with ``APPLYRESTRICTIONSTOBROWSE``.  Set
-them with ``UA_Server_setNodeAccessRestrictions`` or, for all Nodes without
-own value, ``UA_Server_setNamespaceDefaultAccessRestrictions``.
+``Bad_UserAccessDenied``).  All services and Event delivery enforce them,
+Browse and TranslateBrowsePathsToNodeIds only with
+``APPLYRESTRICTIONSTOBROWSE``.  Set them per Node
+(``UA_Server_setNodeAccessRestrictions``) or per namespace
+(``UA_Server_setNamespaceDefaultAccessRestrictions``);
+``UA_Server_getNodeAccessRestrictions`` returns the effective value.
+
+Clients can read, but not write (``Bad_NotWritable``), the RBAC attributes.
+Reading RolePermissions needs ``READROLEPERMISSIONS``.
+
+.. list-table::
+   :header-rows: 1
+   :widths: 25 23 32 20
+
+   * - Node
+     - RolePermissions
+     - UserRolePermissions
+     - AccessRestrictions
+   * - With own list / value
+     - the list
+     - the list for the Session's Roles
+     - the value
+   * - Inheriting the default
+     - ``[]``
+     - the default for its Roles
+     - ``0``
+   * - Legacy mode, no default
+     - ``Bad_AttributeIdInvalid``
+     - ``Bad_AttributeIdInvalid``
+     - ``0``
+
+Every namespace has a NamespaceMetadata Object under ``Server/Namespaces``
+whose ``DefaultRolePermissions`` (SecurityAdmin only),
+``DefaultUserRolePermissions`` and ``DefaultAccessRestrictions`` show the live
+defaults.
 
 Configuration
 -------------
 
-Map the user ``alice`` to Operator, let authenticated users browse and read
-Namespace Zero and Operator also write one Variable (``config`` comes from
-``UA_ServerConfig_setDefault()``; ``examples/access_control/server_rbac.c``
-shows a complete server):
+Map the user ``alice`` to Engineer and let only Engineer write one Variable
+(``examples/access_control/server_rbac.c`` is a complete server with a
+UserManagement provider and an ``AccessPermissions`` folder of demo Nodes):
 
 .. code-block:: c
 
-   config.allPermissionsForAnonymous = false;
-   UA_Role *op = (UA_Role*)UA_calloc(1, sizeof(UA_Role));
-   UA_Role_init(op);
-   op->roleName = UA_QUALIFIEDNAME_ALLOC(0, "Operator");
-   op->identityMappingRules = UA_IdentityMappingRuleType_new();
-   op->identityMappingRulesSize = 1;
-   op->identityMappingRules[0].criteriaType = UA_IDENTITYCRITERIATYPE_USERNAME;
-   op->identityMappingRules[0].criteria = UA_STRING_ALLOC("alice");
-   config.wellKnownRoleMappings = op; /* freed with the config */
-   config.wellKnownRoleMappingsSize = 1;
    UA_Server *server = UA_Server_newWithConfig(&config);
+   UA_IdentityMappingRuleType rule =
+       {UA_IDENTITYCRITERIATYPE_USERNAME, UA_STRING_STATIC("alice")};
+   UA_Role eng;
+   UA_Role_init(&eng);
+   eng.roleName = UA_QUALIFIEDNAME(0, "Engineer");
+   eng.identityMappingRules = &rule;
+   eng.identityMappingRulesSize = 1;
+   UA_Server_updateRole(server, &eng); /* copies the rules */
 
+   UA_PermissionType br = UA_PERMISSIONTYPE_BROWSE | UA_PERMISSIONTYPE_READ;
    UA_RolePermission rp[2] = {
-       {UA_NODEID_NUMERIC(0, UA_NS0ID_WELLKNOWNROLE_AUTHENTICATEDUSER),
-        UA_PERMISSIONTYPE_BROWSE | UA_PERMISSIONTYPE_READ},
-       {UA_NODEID_NUMERIC(0, UA_NS0ID_WELLKNOWNROLE_OPERATOR),
-        UA_PERMISSIONTYPE_BROWSE | UA_PERMISSIONTYPE_READ |
-        UA_PERMISSIONTYPE_WRITE}};
-   UA_Server_setNamespaceDefaultRolePermissions(server, 0, 1, rp);
+       {UA_NS0ID(WELLKNOWNROLE_AUTHENTICATEDUSER), br},
+       {UA_NS0ID(WELLKNOWNROLE_ENGINEER), br | UA_PERMISSIONTYPE_WRITE}};
    UA_Server_setNodeRolePermissions(server, setpointId, 2, rp, false, NULL);
 
-The ``rbac`` object of a JSON configuration uses the same field names:
-
-.. code-block:: json
-
-   { "rbac": {
-       "allPermissionsForAnonymous": false,
-       "wellKnownRoleMappings": [ { "roleName": "SecurityAdmin",
-         "identityMappingRules": [
-           { "criteriaType": "UserName", "criteria": "admin" } ] } ],
-       "roles": [ { "roleName": "Maintenance",
-         "identityMappingRules": [
-           { "criteriaType": "GroupId", "criteria": "maint" } ] } ] } }
+In a JSON configuration, the ``rbac`` object uses the field names of
+``UA_ServerConfig``; the templates are set with
+``namespaceZeroDefaultRolePermissions`` and ``namespaceDefaultRolePermissions``
+as arrays of ``{"roleId": "i=15680", "permissions": 4193}`` entries.
 
 UserManagement
 --------------
@@ -213,21 +244,22 @@ UserManagement
 The UserManagement Object of Part 18 §5 (under ``ServerConfiguration``) is
 published when the seven callbacks ``getUsers``, ``getPasswordPolicy``,
 ``getUserConfiguration``, ``addUser``, ``modifyUser``, ``removeUser`` and
-``changePassword`` of ``UA_AccessControl`` are set.  The server enforces:
-
-- ``Users``, ``AddUser``, ``ModifyUser``, ``RemoveUser`` -- SecurityAdmin over
-  an encrypted channel.  Disabling or removing a user closes its Sessions.
-- ``ChangePassword`` -- only the Session's own UserName identity, encrypted.
-- A disabled user is refused at ActivateSession like an unknown user.
-- A user with ``MustChangePassword`` gets ``Good_PasswordChangeRequired`` and
-  only the Anonymous Role, which suffices to call ``ChangePassword``.
+``changePassword`` of ``UA_AccessControl`` are set.  ``Users``, ``AddUser``,
+``ModifyUser`` and ``RemoveUser`` require SecurityAdmin over an encrypted
+channel; disabling or removing a user closes its Sessions.  ``ChangePassword``
+changes the password of the Session's own UserName identity, encrypted.  A
+disabled user is refused at ActivateSession like an unknown user.  A user with
+``MustChangePassword`` gets ``Good_PasswordChangeRequired`` and only the
+Anonymous Role, which suffices to call ``ChangePassword``.
 
 Auditing
 --------
 
-With ``UA_ENABLE_AUDITING`` and ``UA_ServerConfig::auditingEnabled``, every
-change of a Role's rules or filters -- through the C API or the RoleSet
-Methods -- emits a ``RoleMappingRuleChangedAuditEventType`` Event with the
-Role Object as SourceNode, which only SecurityAdmin Sessions receive.  Audit
-Events never contain passwords, access tokens, private keys or PubSub
-security keys.
+With ``UA_ENABLE_AUDITING`` and ``UA_ServerConfig::auditingEnabled``, a
+successful call of a Role's mapping Methods emits a
+``RoleMappingRuleChangedAuditEventType`` Event with the Role as SourceNode;
+AddRole, RemoveRole and writes of the ``*Exclude`` flags are audited as
+ordinary calls and writes, C API changes not at all.  The ActivateSession
+audit Event and the SessionDiagnostics (for the Session and SecurityAdmin)
+report the Roles as ``CurrentRoleIds``.  Audit Events go to SecurityAdmin only
+and never contain passwords, access tokens, private keys or PubSub keys.

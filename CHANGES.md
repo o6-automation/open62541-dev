@@ -31,9 +31,10 @@ Servers built with `UA_ENABLE_RBAC` implement the Role model of Part 18:
 - `UA_Role` has the new field `customConfiguration` (Part 18 §4.4.1). A Role
   without Identities is only granted when it is set.
 - The RoleType Methods (AddIdentity ... RemoveEndpoint) are available on every
-  Role Object, and ApplicationsExclude and EndpointsExclude are writable. The
-  RoleSet, the Role Objects and their Methods require SecurityAdmin over an
-  encrypted SecureChannel.
+  Role Object except Anonymous, AuthenticatedUser and TrustedApplication, and
+  ApplicationsExclude and EndpointsExclude are writable. Every Session may
+  browse the RoleSet and the Role Objects; their Methods and the Role
+  Properties require SecurityAdmin over an encrypted SecureChannel.
 - `UA_ServerConfig::wellKnownRoleMappings` configures the identity mapping
   rules of the well-known Roles.
 - AccessRestrictions (Part 3 §5.2.11) are enforced by all services, including
@@ -46,9 +47,10 @@ Servers built with `UA_ENABLE_RBAC` implement the Role model of Part 18:
   `modifyUser`, `removeUser` and `changePassword` of `UA_AccessControl` are
   configured. A disabled user is refused at ActivateSession like an unknown
   user.
-- Changes of the Roles emit RoleMappingRuleChangedAuditEventType events. Audit
-  events no longer contain passwords, access tokens, private keys or PubSub
-  security keys.
+- Calls of the RoleType mapping Methods emit
+  RoleMappingRuleChangedAuditEventType events; changes through the C API are
+  not audited. Audit events no longer contain passwords, access tokens,
+  private keys or PubSub security keys.
 - New `UA_CertificateUtils_getRoleSubjectCriteria` (the X509Subject criteria
   of the subject and the issuer of a Certificate) and
   `UA_CertificateUtils_getApplicationUri`.

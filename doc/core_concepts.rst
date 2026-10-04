@@ -139,7 +139,7 @@ In particular, see the sections on :ref:`access-level-mask`, :ref:`write-mask`,
 
 The RolePermissions, UserRolePermissions and AccessRestrictions Attributes are
 supported when the server is built with ``UA_ENABLE_RBAC`` (Part 3,
-§5.2.9-§5.2.11). They are read-only for clients (``Bad_NotWritable``) and are
+§5.2.9-§5.2.11, see :ref:`security-rbac`). They are read-only for clients (``Bad_NotWritable``) and are
 configured through the server API. The AccessRestrictions Attribute reports the
 Node's own value, ``0`` if the Node uses the default of its namespace. Without
 ``UA_ENABLE_RBAC``, RolePermissions and AccessRestrictions are not supported
