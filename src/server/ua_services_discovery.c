@@ -359,21 +359,24 @@ updateEndpointUserIdentityToken(UA_Server *server, UA_EndpointDescription *ed) {
          * If not set, the SecurityPolicy of the SecureChannel is used. */
         utp = &ed->userIdentityTokens[ed->userIdentityTokensSize - 1];
         UA_String_clear(&utp->securityPolicyUri);
-#ifdef UA_ENABLE_ENCRYPTION
         /* Anonymous tokens don't need encryption. All other tokens require
          * encryption with the exception of Username/Password if also the
          * allowNonePolicyPassword option has been set. The same logic is used
-         * in selectEndpointAndTokenPolicy (ua_services_session.c). */
+         * in selectEndpointAndTokenPolicy (ua_services_session.c), which
+         * rejects the tokens removed here. */
         if(utp->tokenType != UA_USERTOKENTYPE_ANONYMOUS &&
            !(sc->allowNonePolicyPassword && utp->tokenType == UA_USERTOKENTYPE_USERNAME) &&
            UA_String_equal(&ed->securityPolicyUri, &UA_SECURITY_POLICY_NONE_URI)) {
             UA_SecurityPolicy *encSP = getDefaultEncryptedSecurityPolicy(server);
             if(!encSP) {
-                /* No encrypted SecurityPolicy available */
-                UA_LOG_WARNING(sc->logging, UA_LOGCATEGORY_CLIENT,
-                               "Removing a UserTokenPolicy that would allow the "
-                               "password to be transmitted without encryption "
-                               "(Can be enabled via config->allowNonePolicyPassword)");
+                /* No encrypted SecurityPolicy available. An x509 token
+                 * carries no secret and is offered by default with a session
+                 * PKI. So it is removed without a warning. */
+                if(utp->tokenType != UA_USERTOKENTYPE_CERTIFICATE)
+                    UA_LOG_WARNING(sc->logging, UA_LOGCATEGORY_CLIENT,
+                                   "Removing a UserTokenPolicy that would allow the "
+                                   "password to be transmitted without encryption "
+                                   "(Can be enabled via config->allowNonePolicyPassword)");
                 UA_StatusCode res2 =
                     UA_Array_resize((void **)&ed->userIdentityTokens,
                                     &ed->userIdentityTokensSize,
@@ -384,7 +387,6 @@ updateEndpointUserIdentityToken(UA_Server *server, UA_EndpointDescription *ed) {
             }
             res |= UA_String_copy(&encSP->policyUri, &utp->securityPolicyUri);
         }
-#endif
 
         /* Append the SecurityMode and SecurityPolicy postfix to the PolicyId to
          * make it unique */
