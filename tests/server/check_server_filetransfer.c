@@ -3141,6 +3141,37 @@ failingGetInfo(UA_FileTransferFileBackend *b, const UA_String path,
         memGetInfoFn(b, path, outInfo);
 }
 
+/* The storage metadata of the failing path is gone, as for a file deleted
+ * behind the server's back. Its backend handles still work. */
+static UA_StatusCode
+vanishedGetInfo(UA_FileTransferFileBackend *b, const UA_String path,
+                UA_FileTransferFileInfo *outInfo) {
+    return isFailingPath(path) ? UA_STATUSCODE_BADNOTFOUND :
+        memGetInfoFn(b, path, outInfo);
+}
+
+/* An open handle keeps working when its file vanishes from the storage. The
+ * file cannot be opened again. */
+START_TEST(openHandleSurvivesVanishedFile) {
+    UA_FileTransferBackend b = memBackendWithFile("f.bin", "content");
+    memGetInfoFn = b.file.getInfo;
+    b.file.getInfo = vanishedGetInfo;
+    UA_NodeId fileId = addTestFileBackend(b, "VanishingFile", NULL);
+    UA_UInt32 h = callOpen(fileId, UA_OPENFILEMODE_READ | UA_OPENFILEMODE_WRITE,
+                           UA_STATUSCODE_GOOD);
+    strcpy(failingPath, "f.bin");
+    callWrite(fileId, h, "more", UA_STATUSCODE_GOOD);
+    callSetPosition(fileId, h, 0);
+    UA_ByteString data = callRead(fileId, h, 100, UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(data.length, 7);
+    ck_assert_int_eq(memcmp(data.data, "moreent", 7), 0);
+    UA_ByteString_clear(&data);
+    callClose(fileId, h, UA_STATUSCODE_GOOD);
+    callOpen(fileId, UA_OPENFILEMODE_READ, UA_STATUSCODE_BADNOTFOUND);
+    failingPath[0] = 0;
+    UA_NodeId_clear(&fileId);
+} END_TEST
+
 /* CreateFile removes the new file again when it cannot be mirrored. A retry
  * then does not fail on an entry the client cannot see. */
 START_TEST(createFileRemovedOnFailedMirror) {
@@ -5087,6 +5118,7 @@ int main(void) {
     tcase_add_test(tc_file, fileOpenModes);
     tcase_add_test(tc_file, fileLocking);
     tcase_add_test(tc_file, fileReadWrite);
+    tcase_add_test(tc_file, openHandleSurvivesVanishedFile);
     tcase_add_test(tc_file, fileBadHandles);
     tcase_add_test(tc_file, fileReadOnlyMount);
     tcase_add_test(tc_file, fileHandleLimits);

@@ -16,20 +16,26 @@ ZIP_FUNCTIONS(FTHandlesById, FTHandle, idTreeEntry, UA_UInt32, handle, ftHandleO
 ZIP_FUNCTIONS(FTHandlesBySession, FTHandle, sessionTreeEntry,
               UA_NodeId, sessionId, ftNodeIdOrder)
 
+#define UA_FILEACCESS_ALL \
+    (UA_FILEACCESS_READ | UA_FILEACCESS_WRITE | UA_FILEACCESS_TRAVERSE)
+
 /* A NULL Session requests general permissions only. The callbacks operate on
- * the Object, not on its Properties. Unknown permission bits are discarded. */
-UA_StatusCode
-getFTAccessRights(UA_Server *server, const FTEntry *node,
-                const UA_NodeId *sessionId, void *sessionContext,
-                UA_FileAccessRights *outRights) {
+ * the Object, not on its Properties. Unknown permission bits are discarded.
+ * With vanishedOk, an entry without storage metadata (Bad_NotFound) is only
+ * restricted by the configuration and the callbacks. */
+static UA_StatusCode
+accessRights(UA_Server *server, const FTEntry *node,
+             const UA_NodeId *sessionId, void *sessionContext,
+             UA_Boolean vanishedOk, UA_FileAccessRights *outRights) {
     *outRights = 0;
     UA_FileTransferFileInfo info;
     UA_FileTransferFileBackend *b = &node->driver->backend.file;
     UA_StatusCode res = backendGetInfo(b, node->path, &info);
-    if(res != UA_STATUSCODE_GOOD)
+    UA_FileAccessRights rights = UA_FILEACCESS_ALL;
+    if(res == UA_STATUSCODE_GOOD)
+        rights = info.accessRights & UA_FILEACCESS_ALL;
+    else if(!vanishedOk || res != UA_STATUSCODE_BADNOTFOUND)
         return res;
-    UA_FileAccessRights rights = info.accessRights &
-        (UA_FILEACCESS_READ | UA_FILEACCESS_WRITE | UA_FILEACCESS_TRAVERSE);
     const FTConfig *opts = &node->driver->config;
     if(opts->readOnly)
         rights &= (UA_FileAccessRights)~UA_FILEACCESS_WRITE;
@@ -52,28 +58,56 @@ getFTAccessRights(UA_Server *server, const FTEntry *node,
     return UA_STATUSCODE_GOOD;
 }
 
+UA_StatusCode
+getFTAccessRights(UA_Server *server, const FTEntry *node,
+                const UA_NodeId *sessionId, void *sessionContext,
+                UA_FileAccessRights *outRights) {
+    return accessRights(server, node, sessionId, sessionContext, false, outRights);
+}
+
 /* Check the Object and traverse permission on its managed ancestor directories.
  * A standalone file has no managed ancestors; its backend resolves the path. */
-UA_StatusCode
-checkFTAccess(UA_Server *server, const FTEntry *node,
-              const UA_NodeId *sessionId, void *sessionContext,
-              UA_FileAccessRights required,
-              UA_StatusCode deniedStatus) {
+static UA_StatusCode
+checkAccess(UA_Server *server, const FTEntry *node,
+            const UA_NodeId *sessionId, void *sessionContext,
+            UA_FileAccessRights required, UA_StatusCode deniedStatus,
+            UA_Boolean vanishedOk) {
     UA_FileAccessRights rights = 0;
-    UA_StatusCode res =
-        getFTAccessRights(server, node, sessionId, sessionContext, &rights);
+    UA_StatusCode res = accessRights(server, node, sessionId, sessionContext,
+                                     vanishedOk, &rights);
     if(res != UA_STATUSCODE_GOOD)
         return res;
     if((rights & required) != required)
         return deniedStatus;
     for(const FTEntry *parent = node->parent; parent; parent = parent->parent) {
-        res = getFTAccessRights(server, parent, sessionId, sessionContext, &rights);
+        res = accessRights(server, parent, sessionId, sessionContext,
+                           vanishedOk, &rights);
         if(res != UA_STATUSCODE_GOOD)
             return res;
         if(!(rights & UA_FILEACCESS_TRAVERSE))
             return UA_STATUSCODE_BADUSERACCESSDENIED;
     }
     return UA_STATUSCODE_GOOD;
+}
+
+UA_StatusCode
+checkFTAccess(UA_Server *server, const FTEntry *node,
+              const UA_NodeId *sessionId, void *sessionContext,
+              UA_FileAccessRights required,
+              UA_StatusCode deniedStatus) {
+    return checkAccess(server, node, sessionId, sessionContext, required,
+                       deniedStatus, false);
+}
+
+/* Read and Write recheck the permissions of an open handle. Like an unlinked
+ * file, an entry that vanished from the storage keeps its open handles. Then
+ * only the configuration and the access callbacks apply. */
+static UA_StatusCode
+checkHandleAccess(UA_Server *server, const FTHandle *h,
+                  const UA_NodeId *sessionId, void *sessionContext,
+                  UA_FileAccessRights required, UA_StatusCode deniedStatus) {
+    return checkAccess(server, h->file, sessionId, sessionContext, required,
+                       deniedStatus, true);
 }
 
 
@@ -341,9 +375,8 @@ readMethodCallback(UA_Server *server, const UA_NodeId *sessionId,
     if(!(h->mode & UA_OPENFILEMODE_READ))
         return UA_STATUSCODE_BADINVALIDSTATE;
 
-    res = checkFTAccess(server, h->file, sessionId, sessionContext,
-                        UA_FILEACCESS_READ,
-                        UA_STATUSCODE_BADNOTREADABLE);
+    res = checkHandleAccess(server, h, sessionId, sessionContext,
+                            UA_FILEACCESS_READ, UA_STATUSCODE_BADNOTREADABLE);
     if(res != UA_STATUSCODE_GOOD)
         return res;
 
@@ -392,9 +425,8 @@ writeMethodCallback(UA_Server *server, const UA_NodeId *sessionId,
     if(!(h->mode & UA_OPENFILEMODE_WRITE))
         return UA_STATUSCODE_BADINVALIDSTATE;
 
-    res = checkFTAccess(server, h->file, sessionId, sessionContext,
-                        UA_FILEACCESS_WRITE,
-                        UA_STATUSCODE_BADNOTWRITABLE);
+    res = checkHandleAccess(server, h, sessionId, sessionContext,
+                            UA_FILEACCESS_WRITE, UA_STATUSCODE_BADNOTWRITABLE);
     if(res != UA_STATUSCODE_GOOD)
         return res;
 
