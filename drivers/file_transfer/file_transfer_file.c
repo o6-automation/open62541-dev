@@ -401,6 +401,10 @@ readMethodCallback(UA_Server *server, const UA_NodeId *sessionId,
         return res;
     }
 
+    /* An empty ByteString, not a null one, marks the end of the file
+     * (Part 20, 4.2.4) */
+    if(data->length == 0 && !data->data)
+        data->data = (UA_Byte*)UA_EMPTY_ARRAY_SENTINEL;
     UA_Variant_setScalar(&output[0], data, &UA_TYPES[UA_TYPES_BYTESTRING]);
     return UA_STATUSCODE_GOOD;
 }

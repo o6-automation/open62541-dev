@@ -3172,6 +3172,22 @@ START_TEST(openHandleSurvivesVanishedFile) {
     UA_NodeId_clear(&fileId);
 } END_TEST
 
+/* Read at the end of the file returns an empty ByteString, not a null one
+ * (Part 20, 4.2.4) */
+START_TEST(readAtEndReturnsEmptyByteString) {
+    UA_NodeId fileId = addTestFile("EofFile", "abc", NULL);
+    UA_UInt32 h = callOpen(fileId, UA_OPENFILEMODE_READ, UA_STATUSCODE_GOOD);
+    UA_ByteString data = callRead(fileId, h, 10, UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(data.length, 3);
+    UA_ByteString_clear(&data);
+    data = callRead(fileId, h, 10, UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(data.length, 0);
+    ck_assert_ptr_nonnull(data.data);
+    UA_ByteString_clear(&data);
+    callClose(fileId, h, UA_STATUSCODE_GOOD);
+    UA_NodeId_clear(&fileId);
+} END_TEST
+
 /* CreateFile removes the new file again when it cannot be mirrored. A retry
  * then does not fail on an entry the client cannot see. */
 START_TEST(createFileRemovedOnFailedMirror) {
@@ -5119,6 +5135,7 @@ int main(void) {
     tcase_add_test(tc_file, fileLocking);
     tcase_add_test(tc_file, fileReadWrite);
     tcase_add_test(tc_file, openHandleSurvivesVanishedFile);
+    tcase_add_test(tc_file, readAtEndReturnsEmptyByteString);
     tcase_add_test(tc_file, fileBadHandles);
     tcase_add_test(tc_file, fileReadOnlyMount);
     tcase_add_test(tc_file, fileHandleLimits);
