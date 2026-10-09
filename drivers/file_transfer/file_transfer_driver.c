@@ -374,9 +374,10 @@ newDriver(UA_Server *server, const UA_FileTransferBackend *backend,
             return res;
         }
     }
+    /* A directory backend can cast its file backend back to the full struct */
     UA_FileTransferFileInfo info;
-    UA_FileTransferFileBackend fileBackend = backend->file;
-    res = backendGetInfo(&fileBackend, path, &info);
+    UA_FileTransferBackend backendCopy = *backend;
+    res = backendGetInfo(&backendCopy.file, path, &info);
     if(res == UA_STATUSCODE_GOOD && info.isDirectory == standaloneFile)
         res = UA_STATUSCODE_BADINVALIDARGUMENT;
     if(res != UA_STATUSCODE_GOOD) {

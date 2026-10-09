@@ -4439,6 +4439,27 @@ START_TEST(disabledPeriodicRefresh) {
     UA_NodeId_clear(&root);
 } END_TEST
 
+/* The header allows a directory backend to cast its file backend back to the
+ * full struct, also when the driver queries the root at construction */
+static UA_StatusCode
+castingGetInfo(UA_FileTransferFileBackend *b, const UA_String path,
+               UA_FileTransferFileInfo *outInfo) {
+    UA_FileTransferBackend *full = (UA_FileTransferBackend*)b;
+    if(!full->listDirectory)
+        return UA_STATUSCODE_BADINTERNALERROR;
+    return memGetInfo(b, path, outInfo);
+}
+
+START_TEST(directoryBackendCastsFileBackend) {
+    UA_FileTransferBackend backend = memBackendWithTree();
+    backend.file.getInfo = castingGetInfo;
+    UA_NodeId root;
+    UA_Driver *driver = newTestDirectory(server_ft, &backend, &root);
+    registerTestDriver(driver);
+    ck_assert(tryResolveChild(server_ft, root, "readme.txt", NULL));
+    UA_NodeId_clear(&root);
+} END_TEST
+
 START_TEST(defaultNodeDescriptions) {
     UA_FileTransferBackend backend = memBackendWithTree();
     UA_Driver *driver = NULL;
@@ -5042,6 +5063,7 @@ int main(void) {
     tcase_add_test(tc_lifecycle, failedRegistrationRetainsObjects);
     tcase_add_test(tc_lifecycle, directoryLifetimeAndAutomaticRefresh);
     tcase_add_test(tc_lifecycle, disabledPeriodicRefresh);
+    tcase_add_test(tc_lifecycle, directoryBackendCastsFileBackend);
     tcase_add_test(tc_lifecycle, defaultNodeDescriptions);
     tcase_add_test(tc_lifecycle, reuseFileRestoresProperties);
     tcase_add_test(tc_lifecycle, reuseDerivedPropertyDataTypes);
