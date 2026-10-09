@@ -350,7 +350,19 @@ typedef enum {
 typedef struct {
     FTReconcileMode mode;
     UA_UInt32 remaining; /* Shared node budget for this tree walk */
+    UA_Boolean periodic; /* Started by the refresh timer */
 } FTReconcile;
+
+/* The periodic refresh meets the same skipped entries on every pass. They are
+ * reported when the driver starts or refreshes on request; the timer only logs
+ * them at debug level. */
+#define FT_LOG_SKIP(server, scan, ...) do {                                 \
+        const UA_Logger *logger_ = UA_Server_getConfig(server)->logging;    \
+        if((scan)->periodic)                                                \
+            UA_LOG_DEBUG(logger_, UA_LOGCATEGORY_SERVER, __VA_ARGS__);      \
+        else                                                                \
+            UA_LOG_WARNING(logger_, UA_LOGCATEGORY_SERVER, __VA_ARGS__);    \
+    } while(0)
 
 static void *
 resetScanMark(void *context, FTEntry *node) {
@@ -429,9 +441,9 @@ reconcileTree(UA_Server *server, FTEntry *dirNode, UA_UInt32 depth,
             if(scan->mode == FT_RECONCILE_REMOVE_ONLY)
                 continue;
             if(!validEntryName(name)) {
-                UA_LOG_WARNING(UA_Server_getConfig(server)->logging, UA_LOGCATEGORY_SERVER,
-                               "FileTransfer: Skipping the entry \"%S\" with an invalid name",
-                               name);
+                FT_LOG_SKIP(server, scan,
+                            "FileTransfer: Skipping the entry \"%S\" with an invalid name",
+                            name);
                 continue;
             }
             if(scan->remaining == 0)
@@ -441,9 +453,8 @@ reconcileTree(UA_Server *server, FTEntry *dirNode, UA_UInt32 depth,
             if(res != UA_STATUSCODE_GOOD) {
                 if(fatalScanError(res))
                     break;
-                UA_LOG_WARNING(UA_Server_getConfig(server)->logging, UA_LOGCATEGORY_SERVER,
-                               "FileTransfer: Skipping the entry \"%S\": %s",
-                               name, UA_StatusCode_name(res));
+                FT_LOG_SKIP(server, scan, "FileTransfer: Skipping the entry \"%S\": %s",
+                            name, UA_StatusCode_name(res));
                 res = UA_STATUSCODE_GOOD;
                 continue;
             }
@@ -456,9 +467,8 @@ reconcileTree(UA_Server *server, FTEntry *dirNode, UA_UInt32 depth,
             continue;
         if(fatalScanError(res))
             break;
-        UA_LOG_WARNING(UA_Server_getConfig(server)->logging, UA_LOGCATEGORY_SERVER,
-                       "FileTransfer: Cannot list the directory \"%S\": %s",
-                       child->path, UA_StatusCode_name(res));
+        FT_LOG_SKIP(server, scan, "FileTransfer: Cannot list the directory \"%S\": %s",
+                    child->path, UA_StatusCode_name(res));
         res = UA_STATUSCODE_GOOD;
     }
     clearScanList(&entries);
@@ -466,9 +476,10 @@ reconcileTree(UA_Server *server, FTEntry *dirNode, UA_UInt32 depth,
 }
 
 static UA_StatusCode
-reconcileDirectory(UA_Server *server, FTEntry *directory, FTReconcileMode mode) {
+reconcileDirectory(UA_Server *server, FTEntry *directory, FTReconcileMode mode,
+                   UA_Boolean periodic) {
     FileTransferDriver *ftd = directory->driver;
-    FTReconcile scan = {mode, (UA_UInt32)0xffffffffu};
+    FTReconcile scan = {mode, (UA_UInt32)0xffffffffu, periodic};
     UA_UInt32 depth = entryDepth(directory) + 1;
     /* Free the whole subtree's budget before adding anything. Traversal order
      * must not prevent one directory from using space freed in another. */
@@ -485,12 +496,13 @@ reconcileDirectory(UA_Server *server, FTEntry *directory, FTReconcileMode mode) 
 }
 
 UA_StatusCode
-fileTransferRefresh(UA_Driver *drv, const UA_NodeId directoryNodeId) {
+fileTransferRefresh(UA_Driver *drv, const UA_NodeId directoryNodeId,
+                    UA_Boolean periodic) {
     FileTransferDriver *ftd = (FileTransferDriver*)drv;
     FTEntry *directory = findFTEntry(ftd, &directoryNodeId);
     if(!directory || !directory->isDirectory || directory->zombie)
         return UA_STATUSCODE_BADNOTFOUND;
-    return reconcileDirectory(drv->server, directory, FT_RECONCILE_FULL);
+    return reconcileDirectory(drv->server, directory, FT_RECONCILE_FULL, periodic);
 }
 
 /**************************************
@@ -671,7 +683,7 @@ deleteMethodCallback(UA_Server *server, const UA_NodeId *sessionId,
     res = deleteBackendTree(b, target->path, target->isDirectory, &access);
     if(res != UA_STATUSCODE_GOOD) {
         if(target->isDirectory)
-            reconcileDirectory(server, dirNode, FT_RECONCILE_REMOVE_ONLY);
+            reconcileDirectory(server, dirNode, FT_RECONCILE_REMOVE_ONLY, false);
         return res;
     }
 
@@ -828,7 +840,7 @@ moveOrCopyMethodCallback(UA_Server *server, const UA_NodeId *sessionId,
         if(isDir) {
             res = mirrorObject(server, targetDir, name, NULL, &newNode);
             if(res == UA_STATUSCODE_GOOD) {
-                res = reconcileDirectory(server, newNode, FT_RECONCILE_FULL);
+                res = reconcileDirectory(server, newNode, FT_RECONCILE_FULL, false);
                 /* The entry was moved or copied. As in the scan, a directory
                  * whose content cannot be listed stays empty. */
                 if(res != UA_STATUSCODE_GOOD && !fatalScanError(res)) {
@@ -850,7 +862,7 @@ moveOrCopyMethodCallback(UA_Server *server, const UA_NodeId *sessionId,
     /* The Objects of the entries deleted by an incomplete move are removed
      * (without adding entries) */
     if(deleteRes != UA_STATUSCODE_GOOD) {
-        reconcileDirectory(server, dirNode, FT_RECONCILE_REMOVE_ONLY);
+        reconcileDirectory(server, dirNode, FT_RECONCILE_REMOVE_ONLY, false);
         if(res == UA_STATUSCODE_GOOD)
             res = deleteRes;
     }

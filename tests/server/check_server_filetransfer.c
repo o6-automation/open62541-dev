@@ -203,7 +203,7 @@ testAddFile(UA_NodeId requested, UA_NodeId parent, UA_QualifiedName name,
 static UA_StatusCode
 testRefresh(UA_Driver *driver, UA_NodeId root) {
     lockServer(driver->server);
-    UA_StatusCode res = fileTransferRefresh(driver, root);
+    UA_StatusCode res = fileTransferRefresh(driver, root, false);
     unlockServer(driver->server);
     return res;
 }
@@ -4408,6 +4408,37 @@ START_TEST(directoryLifetimeAndAutomaticRefresh) {
     UA_NodeId_clear(&file);
 } END_TEST
 
+/* A negative refresh interval is rejected. 0 disables the periodic refresh;
+ * the application reconciles on demand. */
+START_TEST(disabledPeriodicRefresh) {
+    UA_Server_getConfig(server_ft)->tcpEnabled = false;
+    ck_assert_uint_eq(UA_Server_run_startup(server_ft), UA_STATUSCODE_GOOD);
+    UA_FileTransferBackend backend = memBackendWithTree();
+    UA_NodeId root;
+    UA_Driver *driver = newTestDirectory(server_ft, &backend, &root);
+    UA_Double interval = -1;
+    ck_assert_uint_eq(UA_KeyValueMap_setScalar(&driver->params,
+        UA_QUALIFIEDNAME(0, "refresh-interval"), &interval, &UA_TYPES[UA_TYPES_DOUBLE]), UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(UA_Server_addDriver(server_ft, driver), UA_STATUSCODE_BADINVALIDARGUMENT);
+
+    interval = 0;
+    ck_assert_uint_eq(UA_KeyValueMap_setScalar(&driver->params,
+        UA_QUALIFIEDNAME(0, "refresh-interval"), &interval, &UA_TYPES[UA_TYPES_DOUBLE]), UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(UA_Server_addDriver(server_ft, driver), UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(createEntry(&backend, UA_STRING("new.txt"), false), UA_STATUSCODE_GOOD);
+    UA_fakeSleep(5000);
+    UA_Server_run_iterate(server_ft, false);
+    ck_assert(!tryResolveChild(server_ft, root, "new.txt", NULL));
+    ck_assert_uint_eq(UA_FileTransferDriver_refresh(driver), UA_STATUSCODE_GOOD);
+    ck_assert(tryResolveChild(server_ft, root, "new.txt", NULL));
+
+    driver->stop(driver);
+    ck_assert_uint_eq(UA_FileTransferDriver_refresh(driver), UA_STATUSCODE_BADINVALIDSTATE);
+    ck_assert_uint_eq(UA_FileTransferDriver_refresh(NULL), UA_STATUSCODE_BADINVALIDARGUMENT);
+    ck_assert_uint_eq(UA_Server_run_shutdown(server_ft), UA_STATUSCODE_GOOD);
+    UA_NodeId_clear(&root);
+} END_TEST
+
 START_TEST(defaultNodeDescriptions) {
     UA_FileTransferBackend backend = memBackendWithTree();
     UA_Driver *driver = NULL;
@@ -5010,6 +5041,7 @@ int main(void) {
     tcase_add_test(tc_lifecycle, constructorFailureLeavesBackendAndOutputs);
     tcase_add_test(tc_lifecycle, failedRegistrationRetainsObjects);
     tcase_add_test(tc_lifecycle, directoryLifetimeAndAutomaticRefresh);
+    tcase_add_test(tc_lifecycle, disabledPeriodicRefresh);
     tcase_add_test(tc_lifecycle, defaultNodeDescriptions);
     tcase_add_test(tc_lifecycle, reuseFileRestoresProperties);
     tcase_add_test(tc_lifecycle, reuseDerivedPropertyDataTypes);

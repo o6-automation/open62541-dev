@@ -89,6 +89,7 @@ struct FileTransferDriver {
     FTConfig config;
     FTEntry *root;
     UA_UInt64 refreshCallbackId;
+    UA_StatusCode refreshResult; /* Of the last periodic refresh */
     struct FTEntriesById entriesByNodeId;
     struct FTHandlesById handlesById;
     struct FTHandlesBySession handlesBySession;
@@ -184,9 +185,12 @@ void closeDriverHandles(UA_Server *server, FileTransferDriver *ftd);
 void closeSessionHandles(UA_Server *server, FileTransferDriver *ftd,
                           const UA_NodeId *sessionId);
 
-/* directory.c -- reconcile a managed directory with the server lock held. */
+/* directory.c -- reconcile a managed directory with the server lock held.
+ * periodic is set for the refresh timer, which logs known skips at debug
+ * level only. */
 UA_StatusCode fileTransferRefresh(UA_Driver *driver,
-                                  const UA_NodeId directoryNodeId);
+                                  const UA_NodeId directoryNodeId,
+                                  UA_Boolean periodic);
 
 /* Shared helpers independent of driver state. */
 /* Entry names must not contain path separators or navigate the hierarchy */

@@ -94,13 +94,23 @@ checkMountNamespace(UA_Server *server,
 
 static void FileTransferDriver_stop(UA_Driver *drv);
 
+/* A failing refresh is reported when its result changes, not on every pass */
 static void
 refreshCallback(UA_Server *server, void *context) {
     FileTransferDriver *ftd = (FileTransferDriver*)context;
-    UA_StatusCode res = fileTransferRefresh(&ftd->driver, ftd->root->nodeId);
-    if(res != UA_STATUSCODE_GOOD)
-        UA_LOG_WARNING(UA_Server_getConfig(server)->logging, UA_LOGCATEGORY_SERVER,
-                       "FileTransfer: Refresh failed with %s", UA_StatusCode_name(res));
+    UA_StatusCode res = fileTransferRefresh(&ftd->driver, ftd->root->nodeId, true);
+    if(res != ftd->refreshResult) {
+        const UA_Logger *logger = UA_Server_getConfig(server)->logging;
+        if(res != UA_STATUSCODE_GOOD)
+            UA_LOG_WARNING(logger, UA_LOGCATEGORY_SERVER,
+                           "FileTransfer: Refresh of %N failed with %s",
+                           ftd->root->nodeId, UA_StatusCode_name(res));
+        else
+            UA_LOG_INFO(logger, UA_LOGCATEGORY_SERVER,
+                        "FileTransfer: Refresh of %N succeeds again",
+                        ftd->root->nodeId);
+    }
+    ftd->refreshResult = res;
 }
 
 static UA_StatusCode
@@ -152,7 +162,8 @@ configureDriver(FileTransferDriver *ftd) {
         params, UA_QUALIFIEDNAME(0, "refresh-interval"), &UA_TYPES[UA_TYPES_DOUBLE]);
     if(interval)
         ftd->config.refreshInterval = *interval;
-    if(!(ftd->config.refreshInterval > 0))
+    /* Zero disables the periodic refresh */
+    if(!(ftd->config.refreshInterval >= 0))
         return UA_STATUSCODE_BADINVALIDARGUMENT;
     if(!backendComplete(&ftd->backend, !ftd->root->isDirectory, ftd->config.readOnly))
         return UA_STATUSCODE_BADINVALIDARGUMENT;
@@ -205,10 +216,11 @@ FileTransferDriver_start(UA_Driver *drv) {
     /* Objects survive stop/start. Synchronize the tree using the parameters
      * configured after construction, before accepting Method calls. */
     if(ftd->root->isDirectory) {
-        res = fileTransferRefresh(&ftd->driver, ftd->root->nodeId);
+        res = fileTransferRefresh(&ftd->driver, ftd->root->nodeId, false);
         if(res != UA_STATUSCODE_GOOD)
             return res;
     }
+    ftd->refreshResult = UA_STATUSCODE_GOOD;
     ZIP_ITER(FTEntriesById, &ftd->entriesByNodeId, prepareEntry, &res);
     if(res != UA_STATUSCODE_GOOD)
         return res;
@@ -218,7 +230,8 @@ FileTransferDriver_start(UA_Driver *drv) {
         return res;
     drv->state = UA_LIFECYCLESTATE_STARTED;
     ZIP_ITER(FTEntriesById, &ftd->entriesByNodeId, bindEntryMethods, &res);
-    if(res == UA_STATUSCODE_GOOD && ftd->root->isDirectory)
+    if(res == UA_STATUSCODE_GOOD && ftd->root->isDirectory &&
+       ftd->config.refreshInterval > 0)
         res = UA_Server_addRepeatedCallback(drv->server, refreshCallback, ftd,
                                             ftd->config.refreshInterval, &ftd->refreshCallbackId);
     if(res != UA_STATUSCODE_GOOD)
@@ -449,6 +462,22 @@ UA_FileTransferDriver_newFile(UA_Server *server,
         fullBackend.file = *backend;
     return newDriver(server, backend ? &fullBackend : NULL, true, path,
                      description, outNodeId, outDriver);
+}
+
+UA_StatusCode
+UA_FileTransferDriver_refresh(UA_Driver *driver) {
+    if(!driver || !driver->server || !isFileTransferDriver(driver))
+        return UA_STATUSCODE_BADINVALIDARGUMENT;
+    UA_EventLoop *el = UA_Server_getConfig(driver->server)->eventLoop;
+    el->lock(el);
+    FileTransferDriver *ftd = (FileTransferDriver*)driver;
+    UA_StatusCode res = UA_STATUSCODE_BADINVALIDSTATE;
+    if(driver->state == UA_LIFECYCLESTATE_STARTED)
+        res = ftd->root->isDirectory ?
+            fileTransferRefresh(driver, ftd->root->nodeId, false) :
+            UA_STATUSCODE_BADNOTSUPPORTED;
+    el->unlock(el);
+    return res;
 }
 
 UA_StatusCode
