@@ -4829,7 +4829,7 @@ static UA_StatusCode
 castingGetInfo(UA_FileTransferFileBackend *b, const UA_String path,
                UA_FileTransferFileInfo *outInfo) {
     UA_FileTransferBackend *full = (UA_FileTransferBackend*)b;
-    if(!full->listDirectory)
+    if(full->listDirectory != memListDirectory)
         return UA_STATUSCODE_BADINTERNALERROR;
     return memGetInfo(b, path, outInfo);
 }
