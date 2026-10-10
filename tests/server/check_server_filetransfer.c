@@ -3270,6 +3270,34 @@ START_TEST(openHandleSurvivesVanishedFile) {
     UA_NodeId_clear(&fileId);
 } END_TEST
 
+/* Replacing a parent directory with a file of the same name keeps the handles
+ * below it usable, before and after the refresh turns them into zombies */
+START_TEST(openHandleSurvivesReplacedParent) {
+    UA_FileTransferBackend b;
+    ck_assert_uint_eq(memBackend(&b), UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(createEntry(&b, UA_STRING("d"), true), UA_STATUSCODE_GOOD);
+    writeMemFile(&b, "d/f", "open");
+    UA_NodeId fsId = mountNamedMem(b, "FileSystem", NULL);
+    UA_NodeId dirId = resolveChild(server_ft, fsId, "d");
+    UA_NodeId fId = resolveChild(server_ft, dirId, "f");
+    UA_UInt32 h = callOpen(fId, UA_OPENFILEMODE_READ, UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(b.remove(&b, UA_STRING("d/f")), UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(b.remove(&b, UA_STRING("d")), UA_STATUSCODE_GOOD);
+    writeMemFile(&b, "d", "file");
+
+    UA_ByteString data = callRead(fId, h, 10, UA_STATUSCODE_GOOD);
+    UA_ByteString_clear(&data);
+    ck_assert_uint_eq(testRefresh(driverForRoot(fsId), fsId), UA_STATUSCODE_GOOD);
+    data = callRead(fId, h, 10, UA_STATUSCODE_GOOD);
+    UA_ByteString_clear(&data);
+    callClose(fId, h, UA_STATUSCODE_GOOD);
+
+    ck_assert_uint_eq(testRemove(driverForRoot(fsId), fsId), UA_STATUSCODE_GOOD);
+    UA_NodeId_clear(&dirId);
+    UA_NodeId_clear(&fId);
+    UA_NodeId_clear(&fsId);
+} END_TEST
+
 /* Read at the end of the file returns an empty ByteString, not a null one
  * (Part 20, 4.2.4) */
 START_TEST(readAtEndReturnsEmptyByteString) {
@@ -5371,6 +5399,7 @@ int main(void) {
     tcase_add_test(tc_file, fileLocking);
     tcase_add_test(tc_file, fileReadWrite);
     tcase_add_test(tc_file, openHandleSurvivesVanishedFile);
+    tcase_add_test(tc_file, openHandleSurvivesReplacedParent);
     tcase_add_test(tc_file, readAtEndReturnsEmptyByteString);
     tcase_add_test(tc_file, fileBadHandles);
     tcase_add_test(tc_file, subtypeMethodUsesFileHandle);

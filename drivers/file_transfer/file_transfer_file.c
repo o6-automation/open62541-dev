@@ -21,21 +21,28 @@ ZIP_FUNCTIONS(FTHandlesBySession, FTHandle, sessionTreeEntry,
 
 /* A NULL Session requests general permissions only. The callbacks operate on
  * the Object, not on its Properties. Unknown permission bits are discarded.
- * With vanishedOk, an entry without storage metadata (Bad_NotFound) is only
- * restricted by the configuration and the callbacks. */
+ * With vanishedOk, an entry whose storage is gone (a zombie, Bad_NotFound or
+ * an entry of the other kind at its path) is only restricted by the
+ * configuration and the callbacks. */
 static UA_StatusCode
 accessRights(UA_Server *server, const FTEntry *node,
              const UA_NodeId *sessionId, void *sessionContext,
              UA_Boolean vanishedOk, UA_FileAccessRights *outRights) {
     *outRights = 0;
-    UA_FileTransferFileInfo info;
     UA_FileTransferFileBackend *b = &node->driver->backend.file;
-    UA_StatusCode res = backendGetInfo(b, node->path, &info);
     UA_FileAccessRights rights = UA_FILEACCESS_ALL;
-    if(res == UA_STATUSCODE_GOOD)
-        rights = info.accessRights & UA_FILEACCESS_ALL;
-    else if(!vanishedOk || res != UA_STATUSCODE_BADNOTFOUND)
-        return res;
+    UA_StatusCode res;
+    if(!vanishedOk || !node->zombie) {
+        UA_FileTransferFileInfo info;
+        res = backendGetInfo(b, node->path, &info);
+        UA_Boolean vanished = vanishedOk &&
+            (res == UA_STATUSCODE_BADNOTFOUND ||
+             (res == UA_STATUSCODE_GOOD && info.isDirectory != node->isDirectory));
+        if(res != UA_STATUSCODE_GOOD && !vanished)
+            return res;
+        if(!vanished)
+            rights = info.accessRights & UA_FILEACCESS_ALL;
+    }
     const FTConfig *opts = &node->driver->config;
     if(opts->readOnly)
         rights &= (UA_FileAccessRights)~UA_FILEACCESS_WRITE;
@@ -100,8 +107,9 @@ checkFTAccess(UA_Server *server, const FTEntry *node,
 }
 
 /* Read and Write recheck the permissions of an open handle. Like an unlinked
- * file, an entry that vanished from the storage keeps its open handles. Then
- * only the configuration and the access callbacks apply. */
+ * file, an entry that vanished from the storage keeps its open handles, also
+ * when a parent directory was replaced. Then only the configuration and the
+ * access callbacks apply. */
 static UA_StatusCode
 checkHandleAccess(UA_Server *server, const FTHandle *h,
                   const UA_NodeId *sessionId, void *sessionContext,
