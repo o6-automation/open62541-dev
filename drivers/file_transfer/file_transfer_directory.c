@@ -351,18 +351,22 @@ typedef struct {
     FTReconcileMode mode;
     UA_UInt32 remaining; /* Shared node budget for this tree walk */
     UA_Boolean periodic; /* Started by the refresh timer */
+    UA_UInt32 depthCut;  /* Directories at max-scan-depth, not listed */
+    UA_UInt32 nodesCut;  /* Entries without an Object beyond max-nodes */
 } FTReconcile;
 
 /* The periodic refresh meets the same skipped entries on every pass. They are
  * reported when the driver starts or refreshes on request; the timer only logs
  * them at debug level. */
-#define FT_LOG_SKIP(server, scan, ...) do {                                 \
+#define FT_LOG_SCAN(server, scan, LOGFN, ...) do {                          \
         const UA_Logger *logger_ = UA_Server_getConfig(server)->logging;    \
         if((scan)->periodic)                                                \
             UA_LOG_DEBUG(logger_, UA_LOGCATEGORY_SERVER, __VA_ARGS__);      \
         else                                                                \
-            UA_LOG_WARNING(logger_, UA_LOGCATEGORY_SERVER, __VA_ARGS__);    \
+            LOGFN(logger_, UA_LOGCATEGORY_SERVER, __VA_ARGS__);             \
     } while(0)
+#define FT_LOG_SKIP(server, scan, ...) \
+    FT_LOG_SCAN(server, scan, UA_LOG_WARNING, __VA_ARGS__)
 
 static void *
 resetScanMark(void *context, FTEntry *node) {
@@ -416,8 +420,11 @@ static UA_StatusCode
 reconcileTree(UA_Server *server, FTEntry *dirNode, UA_UInt32 depth,
                FTReconcile *scan) {
     FileTransferDriver *ftd = dirNode->driver;
-    if(ftd->config.maxScanDepth > 0 && depth > ftd->config.maxScanDepth)
+    if(ftd->config.maxScanDepth > 0 && depth > ftd->config.maxScanDepth) {
+        if(scan->mode == FT_RECONCILE_FULL)
+            scan->depthCut++;
         return UA_STATUSCODE_GOOD;
+    }
     ScanList entries;
     UA_StatusCode res = listEntries(&ftd->backend, dirNode->path, &entries);
     if(res != UA_STATUSCODE_GOOD)
@@ -446,8 +453,10 @@ reconcileTree(UA_Server *server, FTEntry *dirNode, UA_UInt32 depth,
                             name);
                 continue;
             }
-            if(scan->remaining == 0)
+            if(scan->remaining == 0) {
+                scan->nodesCut++;
                 continue;
+            }
             res = mirrorObject(server, dirNode, name,
                                info->isDirectory ? NULL : info, &child);
             if(res != UA_STATUSCODE_GOOD) {
@@ -479,7 +488,7 @@ static UA_StatusCode
 reconcileDirectory(UA_Server *server, FTEntry *directory, FTReconcileMode mode,
                    UA_Boolean periodic) {
     FileTransferDriver *ftd = directory->driver;
-    FTReconcile scan = {mode, (UA_UInt32)0xffffffffu, periodic};
+    FTReconcile scan = {mode, (UA_UInt32)0xffffffffu, periodic, 0, 0};
     UA_UInt32 depth = entryDepth(directory) + 1;
     /* Free the whole subtree's budget before adding anything. Traversal order
      * must not prevent one directory from using space freed in another. */
@@ -492,7 +501,20 @@ reconcileDirectory(UA_Server *server, FTEntry *directory, FTReconcileMode mode,
         scan.remaining = ftd->config.maxNodes > current ? ftd->config.maxNodes - current : 0;
         scan.mode = FT_RECONCILE_FULL;
     }
-    return reconcileTree(server, directory, depth, &scan);
+    UA_StatusCode res = reconcileTree(server, directory, depth, &scan);
+
+    /* One message per pass. The depth limit can be intended, entries beyond
+     * the node budget are missing. */
+    if(scan.depthCut > 0)
+        FT_LOG_SCAN(server, &scan, UA_LOG_INFO,
+                    "FileTransfer: %N is mirrored up to max-scan-depth %u "
+                    "(directories not listed: %u)", directory->nodeId,
+                    (unsigned)ftd->config.maxScanDepth, (unsigned)scan.depthCut);
+    if(scan.nodesCut > 0)
+        FT_LOG_SKIP(server, &scan, "FileTransfer: %N reached max-nodes %u "
+                    "(entries not served: %u)", directory->nodeId,
+                    (unsigned)ftd->config.maxNodes, (unsigned)scan.nodesCut);
+    return res;
 }
 
 UA_StatusCode

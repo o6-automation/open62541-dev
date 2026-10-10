@@ -214,7 +214,12 @@ struct UA_FileTransferBackend {
  * 0:max-read-length [UInt32]
  *    Maximum bytes per Read or Write (default, also when zero: 1048576).
  *    Published as MaxByteStringLength. Reads are capped at this length;
- *    larger writes fail with Bad_InvalidArgument. */
+ *    larger writes fail with Bad_InvalidArgument.
+ *
+ * Each refresh lists the complete mirrored tree with the server lock held. For
+ * large or deep trees, set max-scan-depth and max-nodes and consider a longer
+ * refresh-interval, or 0 with UA_FileTransferDriver_refresh(). Trees cut off by
+ * these limits are logged at start and on manual refreshes. */
 
 /* Description of the root Object. Zero-initialized fields select defaults.
  * The description and its contents are borrowed only during construction. */
