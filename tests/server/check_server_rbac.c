@@ -2311,9 +2311,9 @@ START_TEST(sessionRoleNames) {
 END_TEST
 
 /* Adding permissions, removing them (refCount→0), then adding a different
- * permission set must NOT recycle the freed slot: copied nodes (e.g. type
- * children instantiated into objects) can still reference the slot without
- * being counted, so rewriting it would corrupt their permissions.
+ * permission set must NOT recycle the freed slot: indices are handed out
+ * through the API and can be assigned later, so refCount == 0 does not prove
+ * that the slot is unused and rewriting it could corrupt permissions.
  * The freed slot is left untouched and the new set gets a fresh entry. */
 START_TEST(permissionEntry_slotNoUnsafeReuse) {
     UA_NodeId roleId;

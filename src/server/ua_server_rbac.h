@@ -43,13 +43,35 @@ UA_Server_evaluateSessionRoles(UA_Server *server,
                                UA_Boolean trustedApplication,
                                size_t *outRolesSize, UA_NodeId **outRoleIds);
 
+/* Own value or the namespace default. Must be called with the server lock
+ * held. */
+UA_AccessRestrictionType
+getNodeAccessRestrictions(UA_Server *server, const UA_Node *node);
+
+/* forBrowse checks only with ApplyRestrictionsToBrowse.
+ * Must be called with the server lock held. */
+UA_StatusCode
+checkNodeAccessRestrictions(UA_Server *server, const UA_Session *session,
+                            const UA_Node *node, UA_Boolean forBrowse);
+
 /* Decrement the refCount of a role permission entry at the given index.
  * Used during node deletion to keep refcounts consistent. */
 void
 UA_Server_decrementRolePermissionsRefCount(UA_Server *server,
                                            UA_PermissionIndex index);
 
+/* Instance children inherit the AccessRestrictions of their
+ * InstanceDeclaration, not its RolePermissions. Returns a retained entry with
+ * only those AccessRestrictions. Must be called with the server lock held. */
+UA_StatusCode
+retainInstanceAccessRestrictions(UA_Server *server, UA_PermissionIndex declIndex,
+                                 UA_PermissionIndex *outIndex);
+
 /* Low-level permission index functions (internal, used by tests) */
+
+/* Only the RolePermissions are taken from the entry, each node keeps its
+ * AccessRestrictions. A recursive call visits all children and returns the
+ * first error. */
 UA_StatusCode
 UA_Server_setNodePermissionIndex(UA_Server *server, const UA_NodeId nodeId,
                                  UA_PermissionIndex permissionIndex,
@@ -65,10 +87,14 @@ UA_Server_addRolePermissionConfig(UA_Server *server,
                                   const UA_RolePermission *entries,
                                   UA_PermissionIndex *outIndex);
 
+/* NULL if out of range or the entry has only AccessRestrictions */
 const UA_RolePermissionSet *
 UA_Server_getRolePermissionConfig(UA_Server *server,
                                   UA_PermissionIndex index);
 
+/* Also updates the entries that combine the config with the AccessRestrictions
+ * of a node. BADINVALIDSTATE while one of them is referenced, unless the config
+ * is a protected preset. */
 UA_StatusCode
 UA_Server_updateRolePermissionConfig(UA_Server *server,
                                      UA_PermissionIndex index,

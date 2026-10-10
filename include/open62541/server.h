@@ -2680,10 +2680,12 @@ struct UA_ServerConfig {
      *   the same configuration throughout the server's lifetime.
      * - Custom nodestore implementations should be aware of these
      *   index-stability guarantees when managing node permission storage.
+     * - Nodes with AccessRestrictions of their own follow an update of the
+     *   preset as well.
      *
      * Additional role-permission sets can be added at runtime through
-     * the server API (UA_Server_setNodeRolePermissions). Runtime entries
-     * may be garbage-collected when no longer referenced by any node. */
+     * the server API (UA_Server_setNodeRolePermissions). Entries are never
+     * removed or recycled at runtime. */
     size_t rolePermissionPresetsSize;
     UA_RolePermissionSet *rolePermissionPresets;
 
@@ -3061,6 +3063,31 @@ UA_Server_getNamespaceDefaultRolePermissions(UA_Server *server,
                                              UA_UInt16 namespaceIndex,
                                              size_t *entriesSize,
                                              UA_RolePermission **entries);
+
+/**
+ * AccessRestrictions
+ * ~~~~~~~~~~~~~~~~~~
+ * AccessRestrictions (OPC UA Part 3 §5.2.11) make the access to a Node depend
+ * on the SecureChannel, see :ref:`security-rbac`. A Node without own
+ * AccessRestrictions uses the namespace default. */
+
+/* Set the AccessRestrictions of a node. */
+UA_StatusCode UA_EXPORT UA_THREADSAFE
+UA_Server_setNodeAccessRestrictions(UA_Server *server, const UA_NodeId nodeId,
+                                    UA_AccessRestrictionType restrictions);
+
+/* Get the effective AccessRestrictions of a node (its own value, else the
+ * namespace default). */
+UA_StatusCode UA_EXPORT UA_THREADSAFE
+UA_Server_getNodeAccessRestrictions(UA_Server *server, const UA_NodeId nodeId,
+                                    UA_AccessRestrictionType *outRestrictions);
+
+/* Set the default AccessRestrictions applied to nodes of a namespace that have
+ * no explicit AccessRestrictions. */
+UA_StatusCode UA_EXPORT UA_THREADSAFE
+UA_Server_setNamespaceDefaultAccessRestrictions(UA_Server *server,
+                                                UA_UInt16 namespaceIndex,
+                                                UA_AccessRestrictionType restrictions);
 
 #endif /* UA_ENABLE_RBAC */
 

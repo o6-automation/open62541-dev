@@ -317,7 +317,8 @@ struct UA_NodeHead {
     void *context;
     UA_Boolean constructed; /* Constructors were called */
 #ifdef UA_ENABLE_RBAC
-    UA_PermissionIndex permissionIndex; /* Index into server's rolePermissions array.
+    UA_PermissionIndex permissionIndex; /* Index into server's rolePermissions array
+                                         * (RolePermissions and AccessRestrictions).
                                          * UA_PERMISSION_INDEX_INVALID means no specific
                                          * permissions configured (use defaults). */
 #endif
@@ -602,7 +603,8 @@ UA_Node_insertOrUpdateDescription(UA_Node *node,
                                   const UA_LocalizedText *description);
 
 /* Reset the destination node and copy the content of the source. Runtime
- * MonitoredItem associations are not copied. */
+ * MonitoredItem associations are not copied. The permissionIndex is copied
+ * without a reference: the copy replaces the original in the Nodestore. */
 UA_StatusCode UA_EXPORT
 UA_Node_copy(const UA_Node *src, UA_Node *dst);
 
