@@ -147,7 +147,8 @@ START_TEST(api_setGetRead) {
  * node with only AccessRestrictions uses the namespace default. */
 START_TEST(storage_independentOfRolePermissions) {
     UA_NodeId role = rbacAddRole(server, "ArRole", RBAC_NO_RULE, NULL);
-    UA_RolePermission rp = {role, UA_PERMISSIONTYPE_BROWSE | UA_PERMISSIONTYPE_READ};
+    UA_RolePermission rp = {role, UA_PERMISSIONTYPE_BROWSE | UA_PERMISSIONTYPE_READ |
+                                  UA_PERMISSIONTYPE_READROLEPERMISSIONS};
     ck_assert_uint_eq(UA_Server_setNamespaceDefaultRolePermissions(server, 1, 1, &rp),
                       UA_STATUSCODE_GOOD);
 
@@ -157,6 +158,20 @@ START_TEST(storage_independentOfRolePermissions) {
                       UA_STATUSCODE_GOOD);
     ck_assert_uint_eq(ownRolePermissions(x, &role, 0), 0);
     UA_Session *session = rbacSession(server, &channels[1], role);
+    UA_ReadValueId rvi;
+    UA_ReadValueId_init(&rvi);
+    rvi.nodeId = x;
+    rvi.attributeId = UA_ATTRIBUTEID_ROLEPERMISSIONS;
+    UA_DataValue dv;
+    UA_DataValue_init(&dv);
+    lockServer(server);
+    Operation_Read(server, session, UA_TIMESTAMPSTORETURN_NEITHER, &rvi, &dv);
+    unlockServer(server);
+    ck_assert(!dv.hasStatus);
+    ck_assert_uint_eq(dv.value.arrayLength, 1);
+    ck_assert_uint_eq(((UA_RolePermissionType*)dv.value.data)[0].permissions,
+                      rp.permissions);
+    UA_DataValue_clear(&dv);
     ck_assert_uint_eq(readValueAs(session, x), UA_STATUSCODE_GOOD);
 
     /* The RolePermissions after or before the AccessRestrictions */
@@ -272,7 +287,7 @@ START_TEST(storage_inheritedByInstanceChild) {
 } END_TEST
 
 /* Removing a Role purges it from the RolePermissions and keeps the
- * AccessRestrictions */
+ * AccessRestrictions. The emptied list denies everything. */
 START_TEST(storage_survivesPurgeOfRemovedRole) {
     UA_NodeId role = rbacAddRole(server, "PurgedRole", RBAC_NO_RULE, NULL);
     UA_RolePermission rp = {role, UA_PERMISSIONTYPE_BROWSE | UA_PERMISSIONTYPE_READ};
@@ -284,6 +299,9 @@ START_TEST(storage_survivesPurgeOfRemovedRole) {
     ck_assert_uint_eq(UA_Server_removeRole(server, UA_QUALIFIEDNAME(1, "PurgedRole")),
                       UA_STATUSCODE_GOOD);
     ck_assert_uint_eq(nodeAr(x), SIGN);
+    UA_Session *session = rbacSession(server, &channels[2],
+        UA_NODEID_NUMERIC(0, UA_NS0ID_WELLKNOWNROLE_ANONYMOUS));
+    ck_assert_uint_eq(readValueAs(session, x), UA_STATUSCODE_BADUSERACCESSDENIED);
     UA_NodeId_clear(&role);
 } END_TEST
 

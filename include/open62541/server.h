@@ -2885,6 +2885,7 @@ UA_Server_addRole(UA_Server *server, const UA_Role *role,
  *
  * Config-provided and well-known (protected) roles cannot be removed.
  * The Role is also removed from the RolePermissions of Nodes and namespaces.
+ * A list that becomes empty denies everything.
  *
  * @param server The server instance
  * @param roleName The BrowseName (QualifiedName) of the role to remove
@@ -3057,7 +3058,8 @@ UA_Server_removeRolePermissions(UA_Server *server, const UA_NodeId nodeId,
  *  2. Namespace default RolePermissions (set via this API) */
 
 /* Set default role permissions for a namespace.
- * Overwrites any previously set defaults for the given namespace.
+ * Overwrites any previously set defaults for the given namespace. An empty
+ * list denies everything.
  *
  * @param server The server instance
  * @param namespaceIndex The namespace index

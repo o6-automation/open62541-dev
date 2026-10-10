@@ -251,7 +251,7 @@ addObjectAs(UA_Session *session, const char *name, const UA_NodeId parentId,
 START_TEST(addNodes_refusedWithoutParentAddReference) {
     UA_NodeId parent = addObject("Parent", UA_NS0ID(OBJECTSFOLDER),
                                  UA_NS0ID(ORGANIZES), 0);
-    setPermissions(parent, UA_PERMISSIONTYPE_BROWSE | UA_PERMISSIONTYPE_ADDNODE);
+    setPermissions(parent, UA_PERMISSIONTYPE_BROWSE);
     UA_Session *session = rbacSession(server, NULL, CONFIGUREADMIN);
 
     UA_NodeId child = UA_NODEID_STRING(1, "Child");
@@ -265,8 +265,7 @@ START_TEST(addNodes_refusedWithoutParentAddReference) {
 START_TEST(addNodes_grantedWithParentAddReference) {
     UA_NodeId parent = addObject("Parent", UA_NS0ID(OBJECTSFOLDER),
                                  UA_NS0ID(ORGANIZES), 0);
-    setPermissions(parent, UA_PERMISSIONTYPE_BROWSE | UA_PERMISSIONTYPE_ADDNODE |
-                   UA_PERMISSIONTYPE_ADDREFERENCE);
+    setPermissions(parent, UA_PERMISSIONTYPE_BROWSE | UA_PERMISSIONTYPE_ADDREFERENCE);
     UA_Session *session = rbacSession(server, NULL, CONFIGUREADMIN);
 
     UA_NodeId child = UA_NODEID_STRING(1, "Child");
@@ -278,8 +277,8 @@ START_TEST(addNodes_grantedWithParentAddReference) {
 } END_TEST
 
 /* The children of an instantiated type are referenced from the new instance,
- * not from the parent. AddNode and AddReference on the parent are sufficient.
- * The type and its InstanceDeclarations only allow Browse. */
+ * not from the parent. AddReference on the parent is sufficient. The type and
+ * its InstanceDeclarations only allow Browse. */
 START_TEST(addNodes_instantiationNeedsOnlyParentAddReference) {
     UA_ObjectTypeAttributes typeAttr = UA_ObjectTypeAttributes_default;
     typeAttr.displayName = UA_LOCALIZEDTEXT("en-US", "DeviceType");
@@ -320,8 +319,7 @@ START_TEST(addNodes_instantiationNeedsOnlyParentAddReference) {
 
     UA_NodeId parent = addObject("Parent", UA_NS0ID(OBJECTSFOLDER),
                                  UA_NS0ID(ORGANIZES), 0);
-    setPermissions(parent, UA_PERMISSIONTYPE_BROWSE | UA_PERMISSIONTYPE_ADDNODE |
-                   UA_PERMISSIONTYPE_ADDREFERENCE);
+    setPermissions(parent, UA_PERMISSIONTYPE_BROWSE | UA_PERMISSIONTYPE_ADDREFERENCE);
     UA_Session *session = rbacSession(server, NULL, CONFIGUREADMIN);
 
     UA_NodeId device = UA_NODEID_NULL;

@@ -97,7 +97,8 @@ UA_Server_addRolePermissionConfig(UA_Server *server,
                                   const UA_RolePermission *entries,
                                   UA_PermissionIndex *outIndex);
 
-/* NULL if out of range or the entry has only AccessRestrictions */
+/* NULL if out of range or the entry has only AccessRestrictions. An empty set
+ * denies everything. */
 const UA_RolePermissionSet *
 UA_Server_getRolePermissionConfig(UA_Server *server,
                                   UA_PermissionIndex index);
@@ -150,6 +151,12 @@ getEffectivePermissions(UA_Server *server,
                         const UA_Session *session,
                         const UA_NodeId *nodeId,
                         UA_PermissionType *effectivePermissions);
+
+UA_StatusCode
+UA_Server_getEffectiveNamespacePermissions(UA_Server *server,
+                                           const UA_NodeId *sessionId,
+                                           UA_UInt16 namespaceIndex,
+                                           UA_PermissionType *effectivePermissions);
 
 UA_StatusCode
 UA_Server_getUserRolePermissions(UA_Server *server,
