@@ -22,6 +22,7 @@
 #if defined(UA_ENABLE_AUDITING) && UA_MULTITHREADING >= 100
 #include <stdio.h>
 #include "thread_wrapper.h"
+#include "server/ua_server_internal.h"
 #endif
 
 #if defined(UA_ENABLE_AUDITING) && UA_MULTITHREADING >= 100
@@ -412,6 +413,236 @@ START_TEST(ToggleWriteUpdateFlag) {
     ck_assert_int_eq(r, UA_STATUSCODE_GOOD);
 } END_TEST
 
+/* Secrets in audit events. The audit functions are called directly on a
+ * server without a server thread. */
+
+static UA_Variant capturedToken;   /* /UserIdentityToken of ActivateSession */
+static UA_Variant capturedInputs;  /* /InputArguments of a Method call */
+static UA_Variant capturedOutputs; /* /OutputArguments of a Method call */
+
+static void
+capturePayloadValue(const UA_KeyValueMap *payload, const char *key,
+                    UA_Variant *out) {
+    const UA_Variant *v =
+        UA_KeyValueMap_get(payload, UA_QUALIFIEDNAME(0, (char*)(uintptr_t)key));
+    ck_assert_ptr_nonnull(v);
+    UA_Variant_clear(out);
+    ck_assert_uint_eq(UA_Variant_copy(v, out), UA_STATUSCODE_GOOD);
+}
+
+static void
+secretsAuditCb(UA_Server *s, UA_ApplicationNotificationType type,
+               const UA_KeyValueMap payload) {
+    (void)s;
+    if(type == UA_APPLICATIONNOTIFICATIONTYPE_AUDIT_SECURITY_SESSION_ACTIVATE) {
+        capturePayloadValue(&payload, "/UserIdentityToken", &capturedToken);
+    } else if(type == UA_APPLICATIONNOTIFICATIONTYPE_AUDIT_UPDATE_METHOD) {
+        capturePayloadValue(&payload, "/InputArguments", &capturedInputs);
+        capturePayloadValue(&payload, "/OutputArguments", &capturedOutputs);
+    }
+}
+
+static void setupSecrets(void) {
+    server = UA_Server_newForUnitTest();
+    ck_assert_ptr_ne(server, NULL);
+    UA_ServerConfig *cfg = UA_Server_getConfig(server);
+    cfg->tcpEnabled = false;
+    cfg->auditingEnabled = true;
+    cfg->auditMethodUpdateEnabled = true;
+    cfg->auditNotificationCallback = secretsAuditCb;
+    UA_Variant_init(&capturedToken);
+    UA_Variant_init(&capturedInputs);
+    UA_Variant_init(&capturedOutputs);
+    ck_assert_uint_eq(UA_Server_run_startup(server), UA_STATUSCODE_GOOD);
+}
+
+static void teardownSecrets(void) {
+    UA_Server_run_shutdown(server);
+    UA_Server_delete(server);
+    server = NULL;
+    UA_Variant_clear(&capturedToken);
+    UA_Variant_clear(&capturedInputs);
+    UA_Variant_clear(&capturedOutputs);
+}
+
+/* Emit the AuditActivateSessionEvent for an ActivateSession request with the
+ * given (decoded) token */
+static void
+auditActivateWithToken(void *token, const UA_DataType *tokenType) {
+    UA_SecureChannel channel;
+    UA_SecureChannel_init(&channel);
+    channel.securityToken.channelId = 42;
+    UA_ActivateSessionRequest req;
+    UA_ActivateSessionRequest_init(&req);
+    UA_ExtensionObject_setValueNoDelete(&req.userIdentityToken, token, tokenType);
+    UA_ActivateSessionResponse resp;
+    UA_ActivateSessionResponse_init(&resp);
+    UA_Variant_clear(&capturedToken);
+    lockServer(server);
+    auditActivateSessionEvent(server, &channel, NULL, &req, &resp);
+    unlockServer(server);
+}
+
+/* Part 5 §6.4.10: the password is not included in the
+ * AuditActivateSessionEvent. The same holds for the data of an issued token.
+ * The token in the request (decrypted by ActivateSession) is not modified. */
+START_TEST(ActivateSessionAudit_omitsSecrets) {
+    UA_UserNameIdentityToken userName;
+    UA_UserNameIdentityToken_init(&userName);
+    userName.policyId = UA_STRING("username");
+    userName.userName = UA_STRING("alice");
+    userName.password = UA_BYTESTRING("s3cret-password");
+    userName.encryptionAlgorithm =
+        UA_STRING("http://www.w3.org/2001/04/xmlenc#rsa-oaep");
+    auditActivateWithToken(&userName, &UA_TYPES[UA_TYPES_USERNAMEIDENTITYTOKEN]);
+    ck_assert(UA_Variant_hasScalarType(&capturedToken,
+                  &UA_TYPES[UA_TYPES_USERNAMEIDENTITYTOKEN]));
+    const UA_UserNameIdentityToken *publishedUserName =
+        (const UA_UserNameIdentityToken*)capturedToken.data;
+    ck_assert(UA_String_equal(&publishedUserName->policyId, &userName.policyId));
+    ck_assert(UA_String_equal(&publishedUserName->userName, &userName.userName));
+    ck_assert_uint_eq(publishedUserName->password.length, 0);
+    ck_assert_uint_eq(userName.password.length, strlen("s3cret-password"));
+
+    UA_IssuedIdentityToken issued;
+    UA_IssuedIdentityToken_init(&issued);
+    issued.policyId = UA_STRING("jwt");
+    issued.tokenData = UA_BYTESTRING("eyJhbGciOiJSUzI1NiJ9.secret.signature");
+    issued.encryptionAlgorithm =
+        UA_STRING("http://www.w3.org/2001/04/xmlenc#rsa-oaep");
+    auditActivateWithToken(&issued, &UA_TYPES[UA_TYPES_ISSUEDIDENTITYTOKEN]);
+    ck_assert(UA_Variant_hasScalarType(&capturedToken,
+                  &UA_TYPES[UA_TYPES_ISSUEDIDENTITYTOKEN]));
+    const UA_IssuedIdentityToken *publishedIssued =
+        (const UA_IssuedIdentityToken*)capturedToken.data;
+    ck_assert(UA_String_equal(&publishedIssued->policyId, &issued.policyId));
+    ck_assert_uint_eq(publishedIssued->tokenData.length, 0);
+    ck_assert_uint_ne(issued.tokenData.length, 0);
+
+    /* The certificate of an X509 token is not secret and is kept */
+    UA_X509IdentityToken x509;
+    UA_X509IdentityToken_init(&x509);
+    x509.policyId = UA_STRING("certificate");
+    x509.certificateData = UA_BYTESTRING("certificate-bytes");
+    auditActivateWithToken(&x509, &UA_TYPES[UA_TYPES_X509IDENTITYTOKEN]);
+    ck_assert(UA_Variant_hasScalarType(&capturedToken,
+                  &UA_TYPES[UA_TYPES_X509IDENTITYTOKEN]));
+    const UA_X509IdentityToken *publishedX509 =
+        (const UA_X509IdentityToken*)capturedToken.data;
+    ck_assert(UA_ByteString_equal(&publishedX509->certificateData,
+                                  &x509.certificateData));
+} END_TEST
+
+#if defined(UA_GENERATED_NAMESPACE_ZERO_FULL) && defined(UA_ENABLE_METHODCALLS)
+/* The arguments of a Method with default values of the declared types */
+static size_t
+defaultArguments(const UA_NodeId methodId, const char *property, UA_Variant *out) {
+    UA_BrowseDescription bd;
+    UA_BrowseDescription_init(&bd);
+    bd.nodeId = methodId;
+    bd.browseDirection = UA_BROWSEDIRECTION_FORWARD;
+    bd.referenceTypeId = UA_NS0ID(HASPROPERTY);
+    bd.resultMask = UA_BROWSERESULTMASK_BROWSENAME;
+    UA_BrowseResult br = UA_Server_browse(server, 0, &bd);
+    UA_String name = UA_STRING((char*)(uintptr_t)property);
+    UA_Variant v;
+    UA_Variant_init(&v);
+    for(size_t i = 0; i < br.referencesSize; i++) {
+        if(UA_String_equal(&br.references[i].browseName.name, &name))
+            ck_assert_uint_eq(UA_Server_readValue(server,
+                                  br.references[i].nodeId.nodeId, &v),
+                              UA_STATUSCODE_GOOD);
+    }
+    UA_BrowseResult_clear(&br);
+    const UA_Argument *args = (const UA_Argument*)v.data;
+    for(size_t i = 0; i < v.arrayLength; i++) {
+        const UA_DataType *type = UA_findDataType(&args[i].dataType);
+        ck_assert_ptr_nonnull(type);
+        if(args[i].valueRank > 0)
+            UA_Variant_setArray(&out[i], UA_Array_new(1, type), 1, type);
+        else
+            UA_Variant_setScalar(&out[i], UA_new(type), type);
+    }
+    size_t size = v.arrayLength;
+    UA_Variant_clear(&v);
+    return size;
+}
+
+static UA_Variant stubOutputs[8];
+static size_t stubOutputsSize;
+static UA_Boolean stubReceivedAll;
+
+static UA_StatusCode
+methodStub(UA_Server *s, const UA_NodeId *sessionId, void *sessionContext,
+           const UA_NodeId *methodId, void *methodContext,
+           const UA_NodeId *objectId, void *objectContext, size_t inputSize,
+           const UA_Variant *input, size_t outputSize, UA_Variant *output) {
+    stubReceivedAll = true;
+    for(size_t i = 0; i < inputSize; i++)
+        stubReceivedAll &= !UA_Variant_isEmpty(&input[i]);
+    for(size_t i = 0; i < outputSize && i < stubOutputsSize; i++)
+        UA_Variant_copy(&stubOutputs[i], &output[i]);
+    return UA_STATUSCODE_GOOD;
+}
+
+/* Bit i of a mask stands for argument i */
+static const struct {
+    UA_UInt32 objectId;
+    UA_UInt32 methodId;
+    UA_UInt32 secretInputs;
+    UA_UInt32 secretOutputs;
+} secretMethods[] = {
+    {UA_NS0ID_SERVERCONFIGURATION, UA_NS0ID_SERVERCONFIGURATION_UPDATECERTIFICATE,
+     1u << 5, 0}, /* PrivateKey */
+    {UA_NS0ID_SERVER, UA_NS0ID_SERVER_GETMONITOREDITEMS, 0, 0}, /* No secret */
+#ifdef UA_ENABLE_PUBSUB
+    {UA_NS0ID_PUBLISHSUBSCRIBE, UA_NS0ID_PUBLISHSUBSCRIBE_GETSECURITYKEYS,
+     0, 1u << 2}, /* Keys */
+    {UA_NS0ID_PUBLISHSUBSCRIBE, UA_NS0ID_PUBLISHSUBSCRIBE_SETSECURITYKEYS,
+     (1u << 3) | (1u << 4), 0}, /* CurrentKey, FutureKeys */
+#endif
+};
+
+static void
+assertRedacted(const UA_Variant *published, size_t size, UA_UInt32 secrets) {
+    ck_assert(published->type == &UA_TYPES[UA_TYPES_VARIANT]);
+    ck_assert_uint_eq(published->arrayLength, size);
+    for(size_t i = 0; i < size; i++)
+        ck_assert_msg(UA_Variant_isEmpty(&((UA_Variant*)published->data)[i]) ==
+                      ((secrets & (1u << i)) != 0), "argument %u", (unsigned)i);
+}
+
+/* The AuditUpdateMethodEvent omits private keys and security keys, the Method
+ * still receives them. Passwords: see check_server_rbac_usermanagement. */
+START_TEST(MethodAudit_omitsSecrets) {
+    UA_NodeId methodId = UA_NODEID_NUMERIC(0, secretMethods[_i].methodId);
+    ck_assert_uint_eq(UA_Server_setMethodNodeCallback(server, methodId, methodStub),
+                      UA_STATUSCODE_GOOD);
+    UA_Variant in[8];
+    size_t inSize = defaultArguments(methodId, "InputArguments", in);
+    stubOutputsSize = defaultArguments(methodId, "OutputArguments", stubOutputs);
+
+    UA_CallMethodRequest req;
+    UA_CallMethodRequest_init(&req);
+    req.objectId = UA_NODEID_NUMERIC(0, secretMethods[_i].objectId);
+    req.methodId = methodId;
+    req.inputArgumentsSize = inSize;
+    req.inputArguments = in;
+    stubReceivedAll = false;
+    UA_CallMethodResult res = UA_Server_call(server, &req);
+    ck_assert_uint_eq(res.statusCode, UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(res.outputArgumentsSize, stubOutputsSize);
+    UA_CallMethodResult_clear(&res);
+    ck_assert(stubReceivedAll);
+    assertRedacted(&capturedInputs, inSize, secretMethods[_i].secretInputs);
+    assertRedacted(&capturedOutputs, stubOutputsSize, secretMethods[_i].secretOutputs);
+    for(size_t i = 0; i < inSize; i++)
+        UA_Variant_clear(&in[i]);
+    for(size_t i = 0; i < stubOutputsSize; i++)
+        UA_Variant_clear(&stubOutputs[i]);
+} END_TEST
+#endif
+
 static Suite* testSuite(void) {
     Suite *s = suite_create("server auditing");
     TCase *tc = tcase_create("basic");
@@ -424,6 +655,15 @@ static Suite* testSuite(void) {
     tcase_add_test(tc, ActivateSessionAuditOmitsPassword);
     tcase_add_test(tc, ToggleWriteUpdateFlag);
     suite_add_tcase(s, tc);
+
+    TCase *tc_secrets = tcase_create("secrets");
+    tcase_add_checked_fixture(tc_secrets, setupSecrets, teardownSecrets);
+    tcase_add_test(tc_secrets, ActivateSessionAudit_omitsSecrets);
+#if defined(UA_GENERATED_NAMESPACE_ZERO_FULL) && defined(UA_ENABLE_METHODCALLS)
+    tcase_add_loop_test(tc_secrets, MethodAudit_omitsSecrets, 0,
+                        sizeof(secretMethods) / sizeof(secretMethods[0]));
+#endif
+    suite_add_tcase(s, tc_secrets);
     return s;
 }
 
