@@ -182,6 +182,70 @@ Nodes have no RolePermissions (see `Default rights`_).  Only the three
 mandatory Roles have identity mappings, so no network client holds
 SecurityAdmin (or Operator, Engineer, ...) until one is configured.
 
+UserManagement
+--------------
+
+The UserManagement Object of Part 18 §5 (under ``ServerConfiguration``) is
+published when the seven callbacks ``getUsers``, ``getPasswordPolicy``,
+``getUserConfiguration``, ``addUser``, ``modifyUser``, ``removeUser`` and
+``changePassword`` of ``UA_AccessControl`` are set.  The provider stores the
+users and checks the passwords.  The server enforces:
+
+- ``UserManagement``, ``Users``, ``AddUser``, ``ModifyUser``, ``RemoveUser``
+  -- SecurityAdmin over an encrypted channel, protected like the RoleSet.
+- A Session cannot disable or remove its own user
+  (``Bad_InvalidSelfReference``).  Disabling or removing a user closes its
+  Sessions.  UserConfiguration flags need the matching PasswordOptions (else
+  ``Bad_NotSupported``); NoChangeByUser excludes MustChangePassword.
+- ``ChangePassword`` -- callable by Anonymous, but only over an encrypted
+  channel and for the Session's own UserName identity.
+- A disabled user is refused at ActivateSession like an unknown user.
+- A user with ``MustChangePassword`` gets ``Good_PasswordChangeRequired`` and
+  only the Anonymous Role, which suffices to call ``ChangePassword``.
+
+Configuration
+-------------
+
+``UA_ServerConfig::wellKnownRoleMappings`` sets the rules and filters of the
+other well-known Roles.  Map the user ``alice`` to Operator, let authenticated
+users browse and read Namespace Zero and Operator also write one Variable
+(``config`` from ``UA_ServerConfig_setDefault()``; a complete server is in
+``examples/access_control/server_rbac.c``):
+
+.. code-block:: c
+
+   config.allPermissionsForAnonymous = false;
+   UA_Role *op = (UA_Role*)UA_calloc(1, sizeof(UA_Role));
+   UA_Role_init(op);
+   op->roleName = UA_QUALIFIEDNAME_ALLOC(0, "Operator");
+   op->identityMappingRules = UA_IdentityMappingRuleType_new();
+   op->identityMappingRulesSize = 1;
+   op->identityMappingRules[0].criteriaType = UA_IDENTITYCRITERIATYPE_USERNAME;
+   op->identityMappingRules[0].criteria = UA_STRING_ALLOC("alice");
+   config.wellKnownRoleMappings = op; /* freed with the config */
+   config.wellKnownRoleMappingsSize = 1;
+   UA_Server *server = UA_Server_newWithConfig(&config);
+
+   UA_PermissionType br = UA_PERMISSIONTYPE_BROWSE | UA_PERMISSIONTYPE_READ;
+   UA_RolePermission rp[2] = {
+       {UA_NODEID_NUMERIC(0, UA_NS0ID_WELLKNOWNROLE_AUTHENTICATEDUSER), br},
+       {UA_NODEID_NUMERIC(0, UA_NS0ID_WELLKNOWNROLE_OPERATOR),
+        br | UA_PERMISSIONTYPE_WRITE}};
+   UA_Server_setNamespaceDefaultRolePermissions(server, 0, 1, rp);
+   UA_Server_setNodeRolePermissions(server, setpointId, 2, rp, false, NULL);
+
+The ``rbac`` object of a JSON configuration uses the same field names:
+
+.. code-block:: json
+
+   { "rbac": { "allPermissionsForAnonymous": false,
+       "wellKnownRoleMappings": [ { "roleName": "SecurityAdmin",
+         "identityMappingRules": [ { "criteriaType": "UserName",
+                                     "criteria": "admin" } ] } ],
+       "roles": [ { "roleName": "Maintenance",
+         "identityMappingRules": [ { "criteriaType": "GroupId",
+                                     "criteria": "maint" } ] } ] } }
+
 Auditing
 --------
 

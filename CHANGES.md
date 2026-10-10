@@ -66,6 +66,20 @@ changes emit RoleMappingRuleChangedAuditEventType events.
 `UA_Server_removeRole` returns `Bad_RequestNotAllowed` for a protected Role.
 The AddNode permission is checked against the namespace of the new Node.
 
+### RBAC: UserManagement
+
+The UserManagement Object (Part 18 §5) is published when the callbacks
+`getUsers`, `getPasswordPolicy`, `getUserConfiguration`, `addUser`,
+`modifyUser`, `removeUser` and `changePassword` of `UA_AccessControl` are
+configured. A disabled user is refused at ActivateSession like an unknown user.
+
+### RBAC in the JSON configuration
+
+`UA_ServerConfig::wellKnownRoleMappings` configures the identity mapping rules
+of the well-known Roles. The JSON server configuration has a new `rbac` object
+with `roles`, `wellKnownRoleMappings`, `rolePermissionPresets` and
+`allPermissionsForAnonymous`.
+
 ### PubSub message security with OpenSSL and LibreSSL
 
 The PubSub SecurityPolicies `PubSub-Aes128-CTR` and `PubSub-Aes256-CTR`
