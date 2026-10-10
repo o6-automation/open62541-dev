@@ -24,22 +24,8 @@
  * Known limitations (single source of truth for the whole RBAC subsystem;
  * OPC UA Part 18 / Part 3 / Part 5, all v1.05):
  *
- * - RolePermissions and the role Identities cannot be written through the
- *   attribute service (Part 3 §5.2.9). Use the C API, or the AddIdentity /
- *   RemoveIdentity methods for identities.
- *
  * - Part 18 §5 User Management (UserManagementType, AddUser / ModifyUser /
  *   RemoveUser / ChangePassword) is not implemented.
- *
- * - Roles added or removed at runtime - through the C API
- *   (UA_Server_addRole / UA_Server_removeRole) or the RoleSet AddRole /
- *   RemoveRole Methods - are mirrored as Role Objects under
- *   Server/ServerCapabilities/RoleSet, so they are visible to browsing
- *   clients (Part 18 §4.2.2, §4.2.3, §4.3). The well-known roles created
- *   during NS0 setup are left untouched.
- *
- * - RBAC-related audit events (e.g. RoleMappingRuleChangedAuditEventType)
- *   are not emitted.
  */
 
 /*********************************/
@@ -116,6 +102,7 @@ UA_Role_init(UA_Role *role) {
     role->endpointsExclude = true;
     role->endpointsSize = 0;
     role->endpoints = NULL;
+    role->customConfiguration = false;
 }
 
 void UA_EXPORT
@@ -125,23 +112,13 @@ UA_Role_clear(UA_Role *role) {
     UA_NodeId_clear(&role->roleId);
     UA_QualifiedName_clear(&role->roleName);
 
-    if(role->identityMappingRules) {
-        for(size_t i = 0; i < role->identityMappingRulesSize; i++)
-            UA_IdentityMappingRuleType_clear(&role->identityMappingRules[i]);
-        UA_free(role->identityMappingRules);
-    }
-
-    if(role->applications) {
-        for(size_t i = 0; i < role->applicationsSize; i++)
-            UA_String_clear(&role->applications[i]);
-        UA_free(role->applications);
-    }
-
-    if(role->endpoints) {
-        for(size_t i = 0; i < role->endpointsSize; i++)
-            UA_EndpointType_clear(&role->endpoints[i]);
-        UA_free(role->endpoints);
-    }
+    /* Not UA_free: UA_Array_copy returns the empty-array sentinel for size 0 */
+    UA_Array_delete(role->identityMappingRules, role->identityMappingRulesSize,
+                    &UA_TYPES[UA_TYPES_IDENTITYMAPPINGRULETYPE]);
+    UA_Array_delete(role->applications, role->applicationsSize,
+                    &UA_TYPES[UA_TYPES_STRING]);
+    UA_Array_delete(role->endpoints, role->endpointsSize,
+                    &UA_TYPES[UA_TYPES_ENDPOINTTYPE]);
     UA_Role_init(role);
 }
 
@@ -215,6 +192,8 @@ UA_Role_copy(const UA_Role *src, UA_Role *dst) {
         }
     }
 
+    dst->customConfiguration = src->customConfiguration;
+
     return UA_STATUSCODE_GOOD;
 }
 
@@ -249,6 +228,8 @@ UA_Role_equal(const UA_Role *r1, const UA_Role *r2) {
         if(!UA_EndpointType_equal(&r1->endpoints[i], &r2->endpoints[i]))
             return false;
     }
+    if(r1->customConfiguration != r2->customConfiguration)
+        return false;
     return true;
 }
 
@@ -487,6 +468,10 @@ incrementRefCount(UA_Server *server, UA_PermissionIndex index) {
 /* RBAC Init/Cleanup  */
 /**********************/
 
+static UA_StatusCode
+addRole(UA_Server *server, const UA_Role *role, UA_NodeId *outRoleNodeId,
+        UA_Boolean wellKnown);
+
 /* Initialize well-known roles per specification */
 static UA_StatusCode
 initializeStandardRoles(UA_Server *server) {
@@ -551,7 +536,7 @@ initializeStandardRoles(UA_Server *server) {
         }
 
         UA_NodeId outId;
-        UA_StatusCode res = UA_Server_addRole(server, &role, &outId);
+        UA_StatusCode res = addRole(server, &role, &outId, true);
         /* Clean up allocated identity array since addRole copies */
         UA_free(role.identityMappingRules);
         if(res != UA_STATUSCODE_GOOD)
@@ -888,6 +873,14 @@ validateRole(UA_Server *server, const UA_Role *role) {
 /* Warn about Roles that cannot be granted as configured */
 static void
 warnUnsupportedRoleFeatures(UA_Server *server, const UA_Role *role) {
+    if(role->identityMappingRulesSize == 0 && !role->customConfiguration) {
+        UA_LOG_WARNING(server->config.logging, UA_LOGCATEGORY_SERVER,
+                       "RBAC: Role '%.*s' has no identity mapping rules and "
+                       "CustomConfiguration is false - it cannot be granted to "
+                       "any Session (Part 18 §4.4.1)",
+                       (int)role->roleName.name.length, role->roleName.name.data);
+    }
+
     if(server->config.accessControl.getUserGroups != NULL)
         return;
     for(size_t k = 0; k < role->identityMappingRulesSize; k++) {
@@ -905,9 +898,10 @@ warnUnsupportedRoleFeatures(UA_Server *server, const UA_Role *role) {
 /* Public API: Role Management      */
 /************************************/
 
-UA_StatusCode
-UA_Server_addRole(UA_Server *server, const UA_Role *role,
-                  UA_NodeId *outRoleNodeId) {
+/* The well-known Roles are added at startup without warnings */
+static UA_StatusCode
+addRole(UA_Server *server, const UA_Role *role, UA_NodeId *outRoleNodeId,
+        UA_Boolean wellKnown) {
     if(!server || !role || role->roleName.name.length == 0)
         return UA_STATUSCODE_BADINVALIDARGUMENT;
     UA_StatusCode validation = validateRole(server, role);
@@ -929,10 +923,10 @@ UA_Server_addRole(UA_Server *server, const UA_Role *role,
         return UA_STATUSCODE_BADALREADYEXISTS;
     }
 
-    /* Enforce the registry quota to bound memory use (DoS mitigation) */
+    /* Bound the memory use (Bad_NotSupported per Part 18 §4.2.2) */
     if(server->rolesSize >= UA_RBAC_MAX_ROLES) {
         unlockServer(server);
-        return UA_STATUSCODE_BADTOOMANYOPERATIONS;
+        return UA_STATUSCODE_BADNOTSUPPORTED;
     }
 
     /* Grow the arrays */
@@ -962,35 +956,49 @@ UA_Server_addRole(UA_Server *server, const UA_Role *role,
         return res;
     }
 
-    /* Auto-assign a numeric roleId if the caller passed a null NodeId */
-    if(UA_NodeId_isNull(&newRole->roleId))
-        newRole->roleId = UA_NODEID_NUMERIC(0, UA_UInt32_random());
+    /* Auto-assign a numeric roleId if the caller passed a null NodeId. Skip
+     * NodeIds used in the registry or the AddressSpace. */
+    if(UA_NodeId_isNull(&newRole->roleId)) {
+        for(size_t attempt = 0; attempt < 32; attempt++) {
+            newRole->roleId = UA_NODEID_NUMERIC(0, UA_UInt32_random());
+            if(findRoleById(server, &newRole->roleId))
+                continue;
+            if(checkRoleRepresentation(server, &newRole->roleId) ==
+               UA_STATUSCODE_BADNODEIDUNKNOWN)
+                break;
+        }
+    }
 
     server->rolesProtected[server->rolesSize] = false;
     server->rolesSize++;
 
-    warnUnsupportedRoleFeatures(server, role);
+    if(!wellKnown)
+        warnUnsupportedRoleFeatures(server, role);
 
     /* Mirror the role under Server/ServerCapabilities/RoleSet so it is
-     * browseable. Skipped when the NS0 RBAC information model is unavailable
-     * or the Role Object already exists (well-known roles). On failure the
-     * appended registry entry is rolled back. */
+     * browseable. An existing Role Object (e.g. from a nodeset) is adopted, any
+     * other Node is not: removeRole would delete it. On failure the appended
+     * registry entry is rolled back. */
     UA_NodeId roleSetId =
         UA_NODEID_NUMERIC(0, UA_NS0ID_SERVER_SERVERCAPABILITIES_ROLESET);
     UA_QualifiedName probe;
     if(UA_Server_readBrowseName(server, roleSetId, &probe) == UA_STATUSCODE_GOOD) {
         UA_QualifiedName_clear(&probe);
-        if(UA_Server_readBrowseName(server, newRole->roleId, &probe) ==
-           UA_STATUSCODE_GOOD) {
-            UA_QualifiedName_clear(&probe); /* node already exists -> keep it */
-        } else {
+        UA_StatusCode existing = checkRoleRepresentation(server, &newRole->roleId);
+        if(existing == UA_STATUSCODE_BADNODEIDUNKNOWN) {
             res = addRoleRepresentation(server, newRole);
-            if(res != UA_STATUSCODE_GOOD) {
-                UA_Role_clear(newRole);
-                server->rolesSize--;
-                unlockServer(server);
-                return res;
-            }
+        } else if(existing == UA_STATUSCODE_GOOD) {
+            /* initNS0RBAC has bound the well-known Role Objects */
+            res = (wellKnown) ? UA_STATUSCODE_GOOD :
+                bindRoleRepresentation(server, &newRole->roleId, true);
+        } else {
+            res = existing;
+        }
+        if(res != UA_STATUSCODE_GOOD) {
+            UA_Role_clear(newRole);
+            server->rolesSize--;
+            unlockServer(server);
+            return res;
         }
     }
 
@@ -1012,6 +1020,12 @@ UA_Server_addRole(UA_Server *server, const UA_Role *role,
 
     unlockServer(server);
     return UA_STATUSCODE_GOOD;
+}
+
+UA_StatusCode
+UA_Server_addRole(UA_Server *server, const UA_Role *role,
+                  UA_NodeId *outRoleNodeId) {
+    return addRole(server, role, outRoleNodeId, false);
 }
 
 /* Remove every UA_RolePermission entry that references roleId from a
@@ -1074,10 +1088,11 @@ UA_Server_removeRole(UA_Server *server,
 
     size_t roleIndex = (size_t)(role - server->roles);
 
-    /* Protected roles (from config) cannot be removed */
+    /* Protected roles (well-known or from config) cannot be removed
+     * (Part 18 §4.2.3) */
     if(server->rolesProtected[roleIndex]) {
         unlockServer(server);
-        return UA_STATUSCODE_BADUSERACCESSDENIED;
+        return UA_STATUSCODE_BADREQUESTNOTALLOWED;
     }
 
     /* Remove the published Role Object from the AddressSpace before dropping the
@@ -1085,7 +1100,11 @@ UA_Server_removeRole(UA_Server *server,
      * information model has no node; a missing node is ignored, any other
      * deletion failure aborts the removal. */
     UA_NodeId removedRoleId = UA_NODEID_NULL;
-    UA_NodeId_copy(&role->roleId, &removedRoleId);
+    UA_StatusCode copyRes = UA_NodeId_copy(&role->roleId, &removedRoleId);
+    if(copyRes != UA_STATUSCODE_GOOD) {
+        unlockServer(server);
+        return copyRes;
+    }
     UA_StatusCode repRes = removeRoleRepresentation(server, &removedRoleId);
     if(repRes != UA_STATUSCODE_GOOD && repRes != UA_STATUSCODE_BADNODEIDUNKNOWN) {
         UA_NodeId_clear(&removedRoleId);
@@ -1504,6 +1523,7 @@ UA_Server_updateRole(UA_Server *server, const UA_Role *role) {
     existing->endpointsExclude = copy.endpointsExclude;
     existing->endpointsSize = copy.endpointsSize;
     existing->endpoints = copy.endpoints;
+    existing->customConfiguration = copy.customConfiguration;
 
     /* Null out moved fields before clearing the rest */
     copy.identityMappingRulesSize = 0;
@@ -1793,8 +1813,9 @@ UA_Server_evaluateSessionRoles(UA_Server *server,
     if(!matchedRoles)
         return UA_STATUSCODE_BADOUTOFMEMORY;
 
-    /* A Role without identity mapping rules is never granted here (Part 18
-     * §4.4.1). Use the "roles" Session attribute instead. */
+    /* A Role without identity mapping rules is never granted here, also with
+     * customConfiguration (Part 18 §4.4.1). Use the "roles" Session attribute
+     * instead. */
     size_t matchCount = 0;
     for(size_t i = 0; i < server->rolesSize; i++) {
         UA_Role *role = &server->roles[i];

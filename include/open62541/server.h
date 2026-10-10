@@ -2229,6 +2229,11 @@ typedef struct {
     UA_Boolean endpointsExclude;
     size_t endpointsSize;
     UA_EndpointType *endpoints;
+
+    /* The assignment of the Role is vendor-specific (Part 18 §4.4.1). A Role
+     * without identityMappingRules is never granted automatically, also with
+     * customConfiguration. Assign it with the "roles" Session attribute. */
+    UA_Boolean customConfiguration;
 } UA_Role;
 
 /**
@@ -2878,12 +2883,13 @@ UA_Server_addRole(UA_Server *server, const UA_Role *role,
 
 /* Remove a role from the server's role registry.
  *
- * Config-provided (protected) roles cannot be removed.
+ * Config-provided and well-known (protected) roles cannot be removed.
+ * The Role is also removed from the RolePermissions of Nodes and namespaces.
  *
  * @param server The server instance
  * @param roleName The BrowseName (QualifiedName) of the role to remove
  * @return UA_STATUSCODE_GOOD on success,
- *         UA_STATUSCODE_BADUSERACCESSDENIED if the role is protected,
+ *         UA_STATUSCODE_BADREQUESTNOTALLOWED if the role is protected,
  *         UA_STATUSCODE_BADNOTFOUND if the role does not exist */
 UA_StatusCode UA_EXPORT UA_THREADSAFE
 UA_Server_removeRole(UA_Server *server,
@@ -2932,8 +2938,8 @@ UA_Server_getRoles(UA_Server *server, size_t *rolesSize,
  * from the provided role. The roleId and roleName of the stored role
  * are not changed.
  *
- * Anonymous and AuthenticatedUser are well-known roles defined by the
- * OPC UA specification and cannot be modified.
+ * Anonymous, AuthenticatedUser and TrustedApplication are mandatory
+ * well-known roles defined by the OPC UA specification and cannot be modified.
  *
  * @param server The server instance
  * @param role The role with updated fields
@@ -2942,7 +2948,7 @@ UA_Server_getRoles(UA_Server *server, size_t *rolesSize,
  *         roleName is set,
  *         UA_STATUSCODE_BADNOTFOUND if no matching role exists,
  *         UA_STATUSCODE_BADUSERACCESSDENIED if the matched role is
- *         Anonymous or AuthenticatedUser */
+ *         Anonymous, AuthenticatedUser or TrustedApplication */
 UA_StatusCode UA_EXPORT UA_THREADSAFE
 UA_Server_updateRole(UA_Server *server, const UA_Role *role);
 

@@ -65,6 +65,7 @@ START_TEST(Role_initClearCopy) {
     /* Set up a role with data */
     r.roleId = UA_NODEID_NUMERIC(0, 42);
     r.roleName = UA_QUALIFIEDNAME_ALLOC(0, "TestRole");
+    r.customConfiguration = true;
 
     UA_Role copy;
     UA_StatusCode res = UA_Role_copy(&r, &copy);
@@ -73,6 +74,8 @@ START_TEST(Role_initClearCopy) {
     ck_assert(UA_QualifiedName_equal(&r.roleName, &copy.roleName));
 
     ck_assert(UA_Role_equal(&r, &copy));
+    copy.customConfiguration = false;
+    ck_assert(!UA_Role_equal(&r, &copy));
 
     UA_Role_clear(&r);
     UA_Role_clear(&copy);
@@ -333,12 +336,13 @@ static void setupWithConfigRoles(void) {
     sc.roles = (UA_Role*)UA_calloc(2, sizeof(UA_Role));
     ck_assert_ptr_nonnull(sc.roles);
 
+    /* ns=0;i=15001 and i=15002 are standard Properties, not Role Objects */
     UA_Role_init(&sc.roles[0]);
-    sc.roles[0].roleId = UA_NODEID_NUMERIC(0, 15001);
+    sc.roles[0].roleId = UA_NODEID_NUMERIC(1, 15001);
     sc.roles[0].roleName = UA_QUALIFIEDNAME_ALLOC(0, "ConfigOperator");
 
     UA_Role_init(&sc.roles[1]);
-    sc.roles[1].roleId = UA_NODEID_NUMERIC(0, 15002);
+    sc.roles[1].roleId = UA_NODEID_NUMERIC(1, 15002);
     sc.roles[1].roleName = UA_QUALIFIEDNAME_ALLOC(0, "ConfigEngineer");
 
     serverWithConfigRoles = UA_Server_newWithConfig(&sc);
@@ -375,7 +379,8 @@ START_TEST(configRoles_cannotBeRemoved) {
     UA_QualifiedName configRoleName = UA_QUALIFIEDNAME(0, "ConfigOperator");
     UA_StatusCode res = UA_Server_removeRole(serverWithConfigRoles,
                                              configRoleName);
-    ck_assert_uint_eq(res, UA_STATUSCODE_BADUSERACCESSDENIED);
+    /* Part 18 §4.2.3: a Role that cannot be removed */
+    ck_assert_uint_eq(res, UA_STATUSCODE_BADREQUESTNOTALLOWED);
 
     /* Still accessible */
     UA_Role out;
@@ -577,9 +582,9 @@ START_TEST(protectMandatoryRoles) {
     ck_assert_uint_eq(res, UA_STATUSCODE_BADUSERACCESSDENIED);
     UA_Role_clear(&role);
 
-    /* Cannot remove Anonymous role */
+    /* Cannot remove Anonymous role (Part 18 §4.2.3) */
     res = UA_Server_removeRole(server, UA_QUALIFIEDNAME(0, "Anonymous"));
-    ck_assert_uint_eq(res, UA_STATUSCODE_BADUSERACCESSDENIED);
+    ck_assert_uint_eq(res, UA_STATUSCODE_BADREQUESTNOTALLOWED);
 
     /* Cannot update AuthenticatedUser */
     UA_NodeId authUserRoleId =
@@ -591,7 +596,7 @@ START_TEST(protectMandatoryRoles) {
     UA_Role_clear(&role);
 
     res = UA_Server_removeRole(server, UA_QUALIFIEDNAME(0, "AuthenticatedUser"));
-    ck_assert_uint_eq(res, UA_STATUSCODE_BADUSERACCESSDENIED);
+    ck_assert_uint_eq(res, UA_STATUSCODE_BADREQUESTNOTALLOWED);
 }
 END_TEST
 
@@ -866,9 +871,9 @@ START_TEST(trustedApplication_roleRegistered) {
     ck_assert(hasTA);
     UA_Role_clear(&role);
 
-    /* Per spec the role must not be removable */
+    /* Per spec the role must not be removable (Part 18 §4.2.3) */
     res = UA_Server_removeRole(server, UA_QUALIFIEDNAME(0, "TrustedApplication"));
-    ck_assert_uint_eq(res, UA_STATUSCODE_BADUSERACCESSDENIED);
+    ck_assert_uint_eq(res, UA_STATUSCODE_BADREQUESTNOTALLOWED);
 }
 END_TEST
 
@@ -2439,7 +2444,8 @@ START_TEST(addRole_quotaEnforced) {
         if(res != UA_STATUSCODE_GOOD)
             break;
     }
-    ck_assert_uint_eq(res, UA_STATUSCODE_BADTOOMANYOPERATIONS);
+    /* Part 18 §4.2.2: the Server does not allow more Roles to be added */
+    ck_assert_uint_eq(res, UA_STATUSCODE_BADNOTSUPPORTED);
 
     size_t rolesSize = 0;
     UA_QualifiedName *names = NULL;
