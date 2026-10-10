@@ -60,7 +60,8 @@ UserWriteMask and UserExecutable never exceed the Node's own attributes.
      - AddNodes, checked on the parent Node.
 
 MonitoredItems are sampled with the rights of the subscribing Session, also
-when a write of another Session triggers the sample.
+when a write of another Session triggers the sample.  Samples of a detached
+Subscription are denied.
 
 Default rights
 --------------
@@ -75,6 +76,64 @@ way.  No namespace has a default after startup.  To secure a server:
 - give every namespace, including Namespace Zero, a default,
 - map users to Roles, including a SecurityAdmin for remote administration,
 - require encryption with AccessRestrictions where needed.
+
+Roles
+-----
+
+The server registers the well-known Roles of Part 18: Anonymous,
+AuthenticatedUser, TrustedApplication, Observer, Operator, Engineer,
+Supervisor, ConfigureAdmin, SecurityAdmin and the three SecurityKeyServer
+Roles.  They cannot be removed and carry no permissions by themselves.
+Custom Roles come from ``UA_ServerConfig::roles`` and ``UA_Server_addRole``.
+Configured Roles are protected; Roles added at runtime can be removed with
+``UA_Server_removeRole``, which also removes them from all RolePermissions.
+
+Every Session gets Anonymous.  AuthenticatedUser is added for any
+non-anonymous identity token, TrustedApplication for a validated client
+certificate on a signed SecureChannel with a SecurityPolicy other than None.
+These three mappings are fixed.  Any other Role is granted when one of its
+identity mapping rules matches.  The rule types ``Anonymous``,
+``AuthenticatedUser`` and ``TrustedApplication`` (empty criteria) match as
+just described, the others when the criteria equals:
+
+- ``UserName`` -- the user name of the UserNameIdentityToken,
+- ``Thumbprint`` -- the SHA-1 thumbprint of the user certificate (40
+  upper-case hex digits),
+- ``X509Subject`` -- the subject or issuer of the user certificate (below),
+- ``Application`` -- the ApplicationUri of the validated client certificate
+  (its only SubjectAltName URI), never the one of CreateSession,
+- ``GroupId`` / ``Role`` -- a group / a Role claim of an IssuedIdentityToken
+  from the AccessControl callback ``getUserGroups`` / ``getUserTokenRoles``.
+
+A Role without rules is never granted automatically.  A matching rule grants
+the Role only if the Session also passes the Role's Application and Endpoint
+filters.  With ``applicationsExclude`` / ``endpointsExclude`` set (the
+``UA_Role_init`` default) the list excludes; with the flag cleared it
+includes, and an empty include list grants nothing.  A non-empty Application
+list requires a validated client certificate.  An Endpoint entry with an
+EndpointUrl or TransportProfileUri fails closed for now: it never matches an
+include list but always matches an exclude list.  ``UA_Server_addRole`` and
+``UA_Server_updateRole`` reject malformed criteria with
+``Bad_InvalidArgument`` and log the rule.
+
+An ``X509Subject`` criteria lists ``NAME="value"`` pairs separated by ``/``
+with the names of Part 18 Table 10 in table order (CN, O, OU, DC, L, S, C,
+dnQualifier, serialNumber), e.g. ``CN="Jörg Müller"/O="Müller GmbH"/C="DE"``.
+Values are non-empty UTF-8 without quotes and control characters, compared
+byte-wise (write them in the normalization of the certificate, normally NFC).
+``UA_CertificateUtils_getRoleSubjectCriteria`` derives the criteria of a
+certificate; a name with a value that cannot be written this way matches no
+rule.
+
+Changes of the RoleSet re-evaluate all active Sessions immediately;
+notifications sampled with the former Roles are dropped.  The Session
+attribute ``UA_QUALIFIEDNAME(0, "roles")`` (a NodeId array, set with
+``UA_Server_setSessionAttribute``) pins the Roles of a Session; only removed
+Roles are dropped.  Deleting the attribute or a new ActivateSession returns
+to the rules.
+TransferSubscriptions requires the same user (``allowTransferSubscription``)
+and the same Roles, SecureChannel SecurityMode, client application and
+Endpoint as the Session the Subscription comes from.
 
 AccessRestrictions
 ------------------

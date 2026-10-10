@@ -45,6 +45,17 @@ New API: `UA_Server_setNodeAccessRestrictions`,
 `UA_Server_getNodeAccessRestrictions` and
 `UA_Server_setNamespaceDefaultAccessRestrictions`.
 
+### RBAC: Part 18 identity mapping
+
+The identity mapping rules are evaluated for all criteria of Part 18 §4.4.2,
+GroupId and Role with the new optional callbacks
+`UA_AccessControl::getUserGroups` and `getUserTokenRoles`. The Application and
+Endpoint filters are enforced; an empty include list grants nothing, an
+Endpoint entry with a URL or transport profile fails closed for now. A Role
+without identity mapping rules is never granted automatically. Changes of the
+RoleSet take effect for active Sessions immediately, unless their Roles are
+pinned with the `roles` Session attribute.
+
 ### PubSub message security with OpenSSL and LibreSSL
 
 The PubSub SecurityPolicies `PubSub-Aes128-CTR` and `PubSub-Aes256-CTR`
