@@ -29,6 +29,13 @@ _UA_BEGIN_DECLS
 typedef struct FileTransferDriver FileTransferDriver;
 typedef struct FTEntry FTEntry;
 
+/* What a reconcile pass could not mirror */
+typedef struct {
+    UA_UInt32 skipped;  /* Entries and directories that failed to mirror or list */
+    UA_UInt32 depthCut; /* Directories at max-scan-depth, not listed */
+    UA_UInt32 nodesCut; /* Listed entries without an Object beyond max-nodes */
+} FTScanSummary;
+
 /* One entry per fileHandle returned by the Open Method. Handles are bound to
  * the Session that created them. */
 typedef struct FTHandle {
@@ -90,6 +97,8 @@ struct FileTransferDriver {
     FTEntry *root;
     UA_UInt64 refreshCallbackId;
     UA_StatusCode refreshResult; /* Of the last periodic refresh */
+    UA_Boolean scanReported;     /* lastScan is set; reset on start */
+    FTScanSummary lastScan;      /* Of the last refresh of the root */
     struct FTEntriesById entriesByNodeId;
     struct FTHandlesById handlesById;
     struct FTHandlesBySession handlesBySession;
@@ -186,11 +195,10 @@ void closeSessionHandles(UA_Server *server, FileTransferDriver *ftd,
                           const UA_NodeId *sessionId);
 
 /* directory.c -- reconcile a managed directory with the server lock held.
- * periodic is set for the refresh timer, which logs known skips at debug
- * level only. */
+ * Skipped entries are logged on the first refresh after start and when the
+ * summary changes, otherwise at debug level only. */
 UA_StatusCode fileTransferRefresh(UA_Driver *driver,
-                                  const UA_NodeId directoryNodeId,
-                                  UA_Boolean periodic);
+                                  const UA_NodeId directoryNodeId);
 
 /* Shared helpers independent of driver state. */
 /* Entry names must not contain path separators or navigate the hierarchy */

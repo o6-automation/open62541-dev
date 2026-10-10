@@ -98,7 +98,7 @@ static void FileTransferDriver_stop(UA_Driver *drv);
 static void
 refreshCallback(UA_Server *server, void *context) {
     FileTransferDriver *ftd = (FileTransferDriver*)context;
-    UA_StatusCode res = fileTransferRefresh(&ftd->driver, ftd->root->nodeId, true);
+    UA_StatusCode res = fileTransferRefresh(&ftd->driver, ftd->root->nodeId);
     if(res != ftd->refreshResult) {
         const UA_Logger *logger = UA_Server_getConfig(server)->logging;
         if(res != UA_STATUSCODE_GOOD)
@@ -217,7 +217,8 @@ startDriver(UA_Driver *drv) {
     /* Objects survive stop/start. Synchronize the tree using the parameters
      * configured after construction, before accepting Method calls. */
     if(ftd->root->isDirectory) {
-        res = fileTransferRefresh(&ftd->driver, ftd->root->nodeId, false);
+        ftd->scanReported = false;
+        res = fileTransferRefresh(&ftd->driver, ftd->root->nodeId);
         if(res != UA_STATUSCODE_GOOD)
             return res;
     }
@@ -490,7 +491,7 @@ UA_FileTransferDriver_refresh(UA_Driver *driver) {
     UA_StatusCode res = UA_STATUSCODE_BADINVALIDSTATE;
     if(driver->state == UA_LIFECYCLESTATE_STARTED)
         res = ftd->root->isDirectory ?
-            fileTransferRefresh(driver, ftd->root->nodeId, false) :
+            fileTransferRefresh(driver, ftd->root->nodeId) :
             UA_STATUSCODE_BADNOTSUPPORTED;
     el->unlock(el);
     return res;

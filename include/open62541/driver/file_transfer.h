@@ -217,10 +217,12 @@ struct UA_FileTransferBackend {
  *    Published as MaxByteStringLength. Reads are capped at this length;
  *    larger writes fail with Bad_InvalidArgument.
  *
- * Each refresh lists the complete mirrored tree with the server lock held. For
- * large or deep trees, set max-scan-depth and max-nodes and consider a longer
- * refresh-interval, or 0 with UA_FileTransferDriver_refresh(). Trees cut off by
- * these limits are logged at start and on manual refreshes. */
+ * Each refresh lists every mirrored directory with the server lock held, with
+ * max-nodes twice (removals first). For large or deep trees, set
+ * max-scan-depth and max-nodes and consider a longer refresh-interval, or 0
+ * with UA_FileTransferDriver_refresh(). Skipped entries and trees cut off by
+ * these limits are logged at start and when their numbers change; unchanged
+ * results only at debug level. */
 
 /* Description of the root Object. Zero-initialized fields select defaults.
  * The description and its contents are borrowed only during construction. */
@@ -262,7 +264,8 @@ typedef struct {
  * Registration is separate. Before successful UA_Server_addDriver(), the
  * caller must free the driver before deleting the server; afterwards the
  * server owns it. To free explicitly, stop and remove the driver first.
- * Start mirrors directory entries and enables periodic reconciliation.
+ * Start mirrors directory entries and the periodic refresh (unless
+ * refresh-interval is 0) keeps them in sync.
  * Stop closes handles but preserves nodes and backend for restart. */
 UA_EXPORT UA_THREADSAFE UA_StatusCode
 UA_FileTransferDriver_newFile(UA_Server *server,

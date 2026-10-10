@@ -212,7 +212,7 @@ testAddFile(UA_NodeId requested, UA_NodeId parent, UA_QualifiedName name,
 static UA_StatusCode
 testRefresh(UA_Driver *driver, UA_NodeId root) {
     lockServer(driver->server);
-    UA_StatusCode res = fileTransferRefresh(driver, root, false);
+    UA_StatusCode res = fileTransferRefresh(driver, root);
     unlockServer(driver->server);
     return res;
 }
@@ -2964,6 +2964,67 @@ START_TEST(mountSkipsUnreadableEntries) {
     UA_NodeId_clear(&fsId);
 } END_TEST
 
+/* Counts the log messages above debug level whose format contains a marker */
+static const char *logMarker;
+static size_t logMarkerCount;
+
+static void
+countMarkerLog(void *context, UA_LogLevel level, UA_LogCategory category,
+               const char *msg, va_list args) {
+    if(level > UA_LOGLEVEL_DEBUG && logMarker && strstr(msg, logMarker))
+        logMarkerCount++;
+}
+
+static UA_Logger markerLogger = {countMarkerLog, NULL, NULL};
+
+/* Skipped entries and the limits are logged on the first refresh after start
+ * and when they change. Unchanged repeats stay at debug level. */
+START_TEST(scanSummaryLoggedOnChange) {
+    UA_ServerConfig *config = UA_Server_getConfig(server_ft);
+    UA_Logger *serverLogger = config->logging;
+    config->logging = &markerLogger;
+
+    logMarker = "cannot be mirrored or listed";
+    logMarkerCount = 0;
+    UA_NodeId fsId = UA_NODEID_NULL;
+    ck_assert_uint_eq(testAddDirectory(UA_NODEID_NULL, UA_NS0ID(OBJECTSFOLDER),
+                          UA_QUALIFIEDNAME(0, "FileSystem"),
+                          backendArg(memBackendWithUnlistableSubdir("locked")),
+                          NULL, &fsId), UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(logMarkerCount, 1);
+    UA_Driver *driver = driverForRoot(fsId);
+    ck_assert_uint_eq(testRefresh(driver, fsId), UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(UA_FileTransferDriver_refresh(driver), UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(logMarkerCount, 1);
+    driver->stop(driver);
+    ck_assert_uint_eq(driver->start(driver), UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(logMarkerCount, 2);
+    ck_assert_uint_eq(testRemove(driver, fsId), UA_STATUSCODE_GOOD);
+    UA_NodeId_clear(&fsId);
+
+    logMarker = "max-scan-depth";
+    logMarkerCount = 0;
+    FTConfig options;
+    memset(&options, 0, sizeof(options));
+    options.maxScanDepth = 1;
+    UA_FileTransferBackend b = memBackendWithTree();
+    fsId = mountNamedMem(b, "Limited", &options);
+    driver = driverForRoot(fsId);
+    ck_assert_uint_eq(logMarkerCount, 1);
+    ck_assert_uint_eq(testRefresh(driver, fsId), UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(logMarkerCount, 1);
+    ck_assert_uint_eq(createEntry(&b, UA_STRING("more"), true), UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(testRefresh(driver, fsId), UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(logMarkerCount, 2);
+    ck_assert_uint_eq(testRefresh(driver, fsId), UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(logMarkerCount, 2);
+    ck_assert_uint_eq(testRemove(driver, fsId), UA_STATUSCODE_GOOD);
+    UA_NodeId_clear(&fsId);
+
+    logMarker = NULL;
+    config->logging = serverLogger;
+} END_TEST
+
 /* rename(2) replaces an existing target silently. An entry created behind the
  * driver's back must not be destroyed by a MoveOrCopy onto its name. */
 START_TEST(moveOrCopyKeepsUnmirroredTarget) {
@@ -5459,6 +5520,7 @@ int main(void) {
     tcase_add_test(tc_dir, mirroredNamesUseMountNamespace);
     tcase_add_test(tc_dir, mountRejectsUnknownNamespace);
     tcase_add_test(tc_dir, mountSkipsUnreadableEntries);
+    tcase_add_test(tc_dir, scanSummaryLoggedOnChange);
     tcase_add_test(tc_dir, removalReleasesValueSources);
     tcase_add_test(tc_dir, copyFailsOnDestinationClose);
     tcase_add_test(tc_dir, maxNodesCountsRoot);
