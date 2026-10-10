@@ -618,6 +618,110 @@ START_TEST(certificate_generation_pem) {
 }
 END_TEST
 
+/* A self-signed certificate with the subject and the subjectAltName */
+static void
+createCertificate(const char *const *subject, const char *const *san,
+                  UA_ByteString *cert) {
+    UA_String subjectStrings[4], sanStrings[3];
+    size_t subjectSize = 0, sanSize = 0;
+    for(; subjectSize < 4 && subject[subjectSize]; subjectSize++)
+        subjectStrings[subjectSize] = UA_STRING((char*)(uintptr_t)subject[subjectSize]);
+    for(; sanSize < 3 && san[sanSize]; sanSize++)
+        sanStrings[sanSize] = UA_STRING((char*)(uintptr_t)san[sanSize]);
+    UA_KeyValueMap *kvm = UA_KeyValueMap_new();
+    UA_UInt16 keyLength = 2048;
+    UA_KeyValueMap_setScalar(kvm, UA_QUALIFIEDNAME(0, "key-size-bits"),
+                             (void *)&keyLength, &UA_TYPES[UA_TYPES_UINT16]);
+    UA_ByteString privKey = UA_BYTESTRING_NULL;
+    UA_StatusCode retval = UA_CreateCertificate(
+        UA_Log_Stdout, subjectStrings, subjectSize, sanStrings, sanSize,
+        UA_CERTIFICATEFORMAT_DER, kvm, &privKey, cert);
+    UA_KeyValueMap_delete(kvm);
+    UA_ByteString_clear(&privKey);
+    ck_assert_uint_eq(retval, UA_STATUSCODE_GOOD);
+}
+
+/* The subjectAltName of an Application Instance Certificate shall have exactly
+ * one URI, which is the ApplicationUri (Part 6 6.2.2) */
+START_TEST(application_uri_exactly_one) {
+    static const struct {
+        const char *san[3];
+        const char *uri; /* NULL: Bad_CertificateUriInvalid */
+    } cases[] = {
+        {{"DNS:localhost", "URI:urn:test.single"}, "urn:test.single"},
+        {{"URI:urn:test.first", "DNS:localhost", "URI:urn:test.second"}, NULL},
+        {{"DNS:localhost"}, NULL}
+    };
+    const char *subject[] = {"O=TestOrganization", "CN=TestClient@localhost", NULL};
+    for(size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        UA_ByteString cert = UA_BYTESTRING_NULL;
+        createCertificate(subject, cases[i].san, &cert);
+        UA_String uri = UA_STRING("stale");
+        UA_StatusCode retval = UA_CertificateUtils_getApplicationUri(&cert, &uri);
+        UA_String expected = UA_STRING((char*)(uintptr_t)cases[i].uri);
+        ck_assert_uint_eq(retval, cases[i].uri ? UA_STATUSCODE_GOOD :
+                          UA_STATUSCODE_BADCERTIFICATEURIINVALID);
+        ck_assert(UA_String_equal(&uri, &expected));
+        UA_String_clear(&uri);
+        UA_ByteString_clear(&cert);
+    }
+
+    /* PEM input */
+    UA_ByteString pem = {CERT_PEM_LENGTH, CERT_PEM_DATA};
+    UA_String uri = UA_STRING_NULL;
+    ck_assert_uint_eq(UA_CertificateUtils_getApplicationUri(&pem, &uri),
+                      UA_STATUSCODE_GOOD);
+    UA_String expected = UA_STRING("urn:unconfigured:application");
+    ck_assert(UA_String_equal(&uri, &expected));
+    UA_String_clear(&uri);
+}
+END_TEST
+
+/* X509Subject criteria (Part 18 4.4.3): Table 10 names in table order, values
+ * quoted. An unrepresentable value gives empty criteria that never match. */
+static const struct {
+    const char *subject[4];
+    const char *criteria;
+} subjectCases[] = {
+    {{"C=DE", "O=M\xC3\xBCller GmbH", "CN=J\xC3\xB6rg Test"},
+     "CN=\"J\xC3\xB6rg Test\"/O=\"M\xC3\xBCller GmbH\"/C=\"DE\""},
+    {{"C=DE", "O=M\xC3\xBCller GmbH", "CN=J\xC3\xB6rg \"J\" Test"}, ""},
+    {{"CN=alice", "title=The \"Boss\"", "emailAddress=alice@example.com", "O=Acme"},
+     "CN=\"alice\"/O=\"Acme\""},
+    {{"CN=alice", "OU=Dev", "O=Acme", "C=DE"},
+     "CN=\"alice\"/O=\"Acme\"/OU=\"Dev\"/C=\"DE\""},
+#ifdef UA_ENABLE_ENCRYPTION_MBEDTLS
+    /* DER hexstrings (RFC 4514) to choose the string type */
+    {{"O=Acme", "CN=#0C034AFF67"}, ""},   /* UTF8String with an invalid byte */
+    {{"O=Acme", "CN=#0C044AC0AF67"}, ""}, /* UTF8String overlong encoding */
+    {{"O=Acme", "CN=#0C04EDA08041"}, ""}, /* UTF8String encoded surrogate */
+    {{"O=Acme", "CN=#130341E942"}, ""},   /* PrintableString byte >= 0x80 */
+    {{"O=Acme", "CN=#160341E942"}, ""},   /* IA5String byte >= 0x80 */
+    {{"O=Acme", "CN=#0C044AC3B667"}, "CN=\"J\xC3\xB6g\"/O=\"Acme\""},
+    {{"O=Acme", "CN=#1303414242"}, "CN=\"ABB\"/O=\"Acme\""},
+#endif
+};
+
+START_TEST(role_subject_criteria) {
+    const char *san[] = {"URI:urn:test.subject", NULL};
+    UA_ByteString cert = UA_BYTESTRING_NULL;
+    createCertificate(subjectCases[_i].subject, san, &cert);
+    UA_String subjectCriteria = UA_STRING_NULL;
+    UA_String issuerCriteria = UA_STRING_NULL;
+    ck_assert_uint_eq(UA_CertificateUtils_getRoleSubjectCriteria(&cert, &subjectCriteria,
+                                                                 &issuerCriteria),
+                      UA_STATUSCODE_GOOD);
+    UA_String expected = UA_STRING((char*)(uintptr_t)subjectCases[_i].criteria);
+    ck_assert_msg(subjectCriteria.length == expected.length &&
+                  (expected.length == 0 || UA_String_equal(&subjectCriteria, &expected)),
+                  "criteria \"%.*s\"", (int)subjectCriteria.length, subjectCriteria.data);
+    ck_assert_uint_eq(issuerCriteria.length, expected.length); /* Self-signed */
+    UA_String_clear(&subjectCriteria);
+    UA_String_clear(&issuerCriteria);
+    UA_ByteString_clear(&cert);
+}
+END_TEST
+
 START_TEST(certificate_generation_ip_san) {
     UA_ByteString derPrivKey = UA_BYTESTRING_NULL;
     UA_ByteString derCert = UA_BYTESTRING_NULL;
@@ -1092,6 +1196,9 @@ static Suite *testSuite_crypto_coverage(void) {
     tcase_add_test(tc_certgen, certificate_generation_pem);
     tcase_add_test(tc_certgen, certificate_generation_ip_san);
     tcase_add_test(tc_certgen, certificate_generation_pem_ip_san);
+    tcase_add_test(tc_certgen, application_uri_exactly_one);
+    tcase_add_loop_test(tc_certgen, role_subject_criteria, 0,
+                        sizeof(subjectCases) / sizeof(subjectCases[0]));
 #endif
     suite_add_tcase(s, tc_certgen);
 

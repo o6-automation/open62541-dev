@@ -30,6 +30,12 @@ The AuditUpdateMethodEvents of AddUser, ModifyUser, ChangePassword,
 UpdateCertificate and the PubSub security key Methods no longer contain
 passwords, private keys or security keys.
 
+### Certificate utilities for RBAC
+
+New `UA_CertificateUtils_getApplicationUri` (the only URI in the
+subjectAltName) and `UA_CertificateUtils_getRoleSubjectCriteria` (the Part 18
+X509Subject criteria of the subject and the issuer of a Certificate).
+
 ### PubSub message security with OpenSSL and LibreSSL
 
 The PubSub SecurityPolicies `PubSub-Aes128-CTR` and `PubSub-Aes256-CTR`

@@ -77,6 +77,13 @@ UA_EXPORT UA_StatusCode
 UA_CertificateUtils_verifyApplicationUri(const UA_ByteString *certificate,
                                          const UA_String *applicationUri);
 
+/* The ApplicationUri in the subjectAltName of the certificate. Returns
+ * UA_STATUSCODE_BADCERTIFICATEURIINVALID if there is not exactly one URI
+ * (Part 6 §6.2.2). The output string is newly allocated. */
+UA_EXPORT UA_StatusCode
+UA_CertificateUtils_getApplicationUri(const UA_ByteString *certificate,
+                                      UA_String *applicationUri);
+
 /* Get the expire date from certificate */
 UA_EXPORT UA_StatusCode
 UA_CertificateUtils_getExpirationDate(UA_ByteString *certificate,
@@ -85,6 +92,16 @@ UA_CertificateUtils_getExpirationDate(UA_ByteString *certificate,
 UA_EXPORT UA_StatusCode
 UA_CertificateUtils_getSubjectName(UA_ByteString *certificate,
                                    UA_String *subjectName);
+
+/* The X509Subject identity mapping criteria (Part 18 §4.4.3) of the subject
+ * and the issuer of the certificate, for example
+ * CN="Jörg Müller"/O="Müller GmbH"/C="DE" (details in the RBAC documentation).
+ * A string is empty if a value of the name cannot be represented. Both output
+ * strings are newly allocated. */
+UA_EXPORT UA_StatusCode
+UA_CertificateUtils_getRoleSubjectCriteria(const UA_ByteString *certificate,
+                                           UA_String *subjectCriteria,
+                                           UA_String *issuerCriteria);
 
 UA_EXPORT UA_StatusCode
 UA_CertificateUtils_getThumbprint(UA_ByteString *certificate,
