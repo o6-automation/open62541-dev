@@ -144,7 +144,9 @@ readRolePermissions(UA_Server *server, UA_Session *session,
     if(retval != UA_STATUSCODE_GOOD)
         return retval;
 
-    if(!(effectivePerms & UA_PERMISSIONTYPE_READROLEPERMISSIONS))
+    /* The local admin user has all rights */
+    if(session != &server->adminSession &&
+       !(effectivePerms & UA_PERMISSIONTYPE_READROLEPERMISSIONS))
         return UA_STATUSCODE_BADUSERACCESSDENIED;
 
     /* Check if node has a valid permission index */

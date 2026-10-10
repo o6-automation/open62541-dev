@@ -452,6 +452,26 @@ START_TEST(userAttributes_cappedByNodeAttributes) {
     }
 } END_TEST
 
+/***********************/
+/* Local admin Session */
+/***********************/
+
+/* The local admin Session bypasses all checks, also for the RolePermissions of
+ * a Node whose list does not grant ReadRolePermissions */
+START_TEST(adminSession_readsRolePermissions) {
+    UA_NodeId nodeId = addObject("Protected", UA_NS0ID(OBJECTSFOLDER),
+                                 UA_NS0ID(ORGANIZES), 0);
+    UA_RolePermission rp = {OBSERVER, UA_PERMISSIONTYPE_BROWSE};
+    ck_assert_uint_eq(UA_Server_setNodeRolePermissions(server, nodeId, 1, &rp,
+                                                       false, NULL),
+                      UA_STATUSCODE_GOOD);
+    UA_Variant v;
+    ck_assert_uint_eq(UA_Server_readRolePermissions(server, nodeId, &v),
+                      UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(v.arrayLength, 1);
+    UA_Variant_clear(&v);
+} END_TEST
+
 static Suite *testSuite_rbacServices(void) {
     Suite *s = suite_create("RBAC Services");
 
@@ -482,6 +502,11 @@ static Suite *testSuite_rbacServices(void) {
     tcase_add_checked_fixture(tc_attr, setup, teardown);
     tcase_add_test(tc_attr, userAttributes_cappedByNodeAttributes);
     suite_add_tcase(s, tc_attr);
+
+    TCase *tc_admin = tcase_create("Local admin Session");
+    tcase_add_checked_fixture(tc_admin, setup, teardown);
+    tcase_add_test(tc_admin, adminSession_readsRolePermissions);
+    suite_add_tcase(s, tc_admin);
 
     return s;
 }
