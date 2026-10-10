@@ -518,6 +518,14 @@ nodeBudgetExhausted(FileTransferDriver *ftd) {
         ftd->entryCount >= ftd->config.maxNodes;
 }
 
+/* The scan does not list entries below max-scan-depth. The Methods must not
+ * create them either, the refresh would never see them again. */
+static UA_Boolean
+childBeyondScanDepth(const FTEntry *directory) {
+    UA_UInt32 maxDepth = directory->driver->config.maxScanDepth;
+    return maxDepth > 0 && entryDepth(directory) + 1 > maxDepth;
+}
+
 /* Create the backend entry and its Object together. Roll back the backend
  * entry if reading metadata or binding the Object fails. */
 static UA_StatusCode
@@ -526,7 +534,7 @@ createChild(UA_Server *server, FTEntry *directory, const UA_String name,
     FileTransferDriver *ftd = directory->driver;
     if(!validEntryName(name))
         return UA_STATUSCODE_BADINVALIDARGUMENT;
-    if(nodeBudgetExhausted(ftd))
+    if(nodeBudgetExhausted(ftd) || childBeyondScanDepth(directory))
         return UA_STATUSCODE_BADRESOURCEUNAVAILABLE;
 
     UA_String path = UA_STRING_NULL;
@@ -800,9 +808,9 @@ moveOrCopyMethodCallback(UA_Server *server, const UA_NodeId *sessionId,
     }
 
     /* A copy (also for a move to another mount) creates Objects in the target
-     * mount */
-    if((createCopy || !sameDriver) &&
-       nodeBudgetExhausted(dstDriver)) {
+     * mount. Every target has to be within the target's scan depth. */
+    if(((createCopy || !sameDriver) && nodeBudgetExhausted(dstDriver)) ||
+       childBeyondScanDepth(targetDir)) {
         res = UA_STATUSCODE_BADRESOURCEUNAVAILABLE;
         goto cleanup;
     }

@@ -191,7 +191,11 @@ struct UA_FileTransferBackend {
  * 0:read-only [Boolean]
  *    Disable writes and directory mutations (default: false).
  * 0:max-scan-depth [UInt32]
- *    Maximum directory scan depth; 0 means unlimited (default).
+ *    Maximum depth of mirrored entries; the root's entries have depth 1 and
+ *    directories at the limit appear empty. 0 means unlimited (default).
+ *    CreateFile, CreateDirectory and MoveOrCopy return Bad_ResourceUnavailable
+ *    for targets beyond the limit. Lowering the limit keeps deeper Objects,
+ *    but they are no longer refreshed.
  * 0:max-nodes [UInt32]
  *    Maximum mirrored Objects, including the root; 0 means unlimited
  *    (default). Lowering the limit does not remove existing Objects.
