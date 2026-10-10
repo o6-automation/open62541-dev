@@ -204,6 +204,15 @@ configureDriver(FileTransferDriver *ftd) {
     if(!validInterval(ftd->config.refreshInterval) ||
        !validInterval(ftd->config.clientProcessingTimeout))
         return UA_STATUSCODE_BADINVALIDARGUMENT;
+    const UA_Boolean *exclusiveReads = (const UA_Boolean*)UA_KeyValueMap_getScalar(
+        params, UA_QUALIFIEDNAME(0, "exclusive-reads"), &UA_TYPES[UA_TYPES_BOOLEAN]);
+    if(exclusiveReads)
+        ftd->config.exclusiveReads = *exclusiveReads;
+    ftd->config.maxTransferSize = UA_FILETRANSFER_MAXTRANSFERSIZE_DEFAULT;
+    const UA_UInt64 *maxTransferSize = (const UA_UInt64*)UA_KeyValueMap_getScalar(
+        params, UA_QUALIFIEDNAME(0, "max-transfer-size"), &UA_TYPES[UA_TYPES_UINT64]);
+    if(maxTransferSize)
+        ftd->config.maxTransferSize = *maxTransferSize;
     UA_Boolean complete = (ftd->root->kind == FT_ENTRY_TEMPORARY) ?
         storeComplete(&ftd->backend) :
         backendComplete(&ftd->backend, !ftd->root->isDirectory, ftd->config.readOnly);

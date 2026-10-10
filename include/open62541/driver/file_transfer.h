@@ -211,13 +211,21 @@ struct UA_FileTransferBackend {
  *    Open-handle limit per Session in this driver (default: 64).
  * 0:max-open-handles-per-file [UInt16]
  *    Open-handle limit per file (default: 16). Either handle limit makes
- *    Open return Bad_ResourceUnavailable when reached.
+ *    Open return Bad_ResourceUnavailable when reached. Temporary drivers count
+ *    their concurrent transfers against it.
  * 0:client-processing-timeout [Double]
  *    Temporary drivers: maximum time in milliseconds between the Method calls
  *    of a transfer (default: 60000), published as ClientProcessingTimeout. An
  *    idle transfer is cancelled and its file removed within twice the timeout.
  *    0 disables it (closing the Session still ends the transfers); otherwise
  *    at least 0.0001.
+ * 0:exclusive-reads [Boolean]
+ *    Temporary drivers: one read transfer at a time (default: false). A write
+ *    transfer is always exclusive.
+ * 0:max-transfer-size [UInt64]
+ *    Temporary drivers: maximum size of a transfer file in bytes (default:
+ *    16777216, 0 is unlimited). Larger writes and prepared files fail with
+ *    Bad_ResourceUnavailable.
  * 0:max-read-length [UInt32]
  *    Maximum bytes per Read or Write (default, also when zero: 1048576).
  *    Published as MaxByteStringLength. Reads are capped at this length;
@@ -392,7 +400,7 @@ typedef struct {
  * UA_FileTransferDriver_newFile() apply to the root Object and the store; the
  * default type is TemporaryFileTransferType, the default BrowseName
  * 1:TemporaryFileTransfer. The parameters namespace-index (for the transfer
- * files, default: the namespace of the root NodeId), max-open-handles-per-session,
+ * files, default: the namespace of the root NodeId), the handle limits,
  * max-read-length and read-only (rejects GenerateFileForWrite) apply.
  * UA_FileTransferDriver_refresh() returns Bad_NotSupported. */
 UA_EXPORT UA_THREADSAFE UA_StatusCode
