@@ -64,7 +64,10 @@ activateSession(UA_Server *s, UA_AccessControl *ac,
                                   sessionContext);
 }
 
-static void setup(void) {
+/* The server is created from the configuration, so that the configured
+ * wellKnownRoleMappings apply */
+static void
+setupWithMappings(UA_Role *mappings, size_t mappingsSize) {
     tokenRolesCalls = 0;
     UA_ServerConfig config;
     memset(&config, 0, sizeof(config));
@@ -72,6 +75,8 @@ static void setup(void) {
     ck_assert_uint_eq(UA_ServerConfig_setMinimal(&config, 0, NULL), UA_STATUSCODE_GOOD);
     config.tcpEnabled = false;
     config.allowNonePolicyPassword = true;
+    config.wellKnownRoleMappings = mappings;
+    config.wellKnownRoleMappingsSize = mappingsSize;
     ck_assert_uint_eq(UA_AccessControl_default(&config, true, NULL, 2, logins),
                       UA_STATUSCODE_GOOD);
     UA_UserTokenPolicy issued;
@@ -92,6 +97,22 @@ static void setup(void) {
     ck_assert_uint_eq(UA_Server_run_startup(server), UA_STATUSCODE_GOOD);
     rbacChannelInit(server, &plain, UA_MESSAGESECURITYMODE_NONE);
     rbacChannelInit(server, &secure, UA_MESSAGESECURITYMODE_SIGNANDENCRYPT);
+}
+
+static void setup(void) {
+    setupWithMappings(NULL, 0);
+}
+
+/* The C example of rbac.rst: the user alice is mapped to Operator */
+static void setupOperatorMapping(void) {
+    UA_Role *op = (UA_Role*)UA_calloc(1, sizeof(UA_Role));
+    UA_Role_init(op);
+    op->roleName = UA_QUALIFIEDNAME_ALLOC(0, "Operator");
+    op->identityMappingRules = UA_IdentityMappingRuleType_new();
+    op->identityMappingRulesSize = 1;
+    op->identityMappingRules[0].criteriaType = UA_IDENTITYCRITERIATYPE_USERNAME;
+    op->identityMappingRules[0].criteria = UA_STRING_ALLOC("alice");
+    setupWithMappings(op, 1); /* freed with the config */
 }
 
 static void teardown(void) {
@@ -465,6 +486,16 @@ START_TEST(updateRole_identifiedByEitherKey) {
                       UA_STATUSCODE_BADINVALIDARGUMENT);
 } END_TEST
 
+/* wellKnownRoleMappings set the rules of the well-known Roles */
+START_TEST(wellKnownRoleMappings_evaluated) {
+    UA_NodeId operatorRole = UA_NODEID_NUMERIC(0, UA_NS0ID_WELLKNOWNROLE_OPERATOR);
+    UA_NodeId aliceSession, anonymousSession;
+    ck_assert_uint_eq(login(LOGIN_ALICE, "alice-pw", &aliceSession), UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(login(LOGIN_EMPTY, NULL, &anonymousSession), UA_STATUSCODE_GOOD);
+    ck_assert(rbacHasRole(server, &aliceSession, operatorRole));
+    ck_assert(!rbacHasRole(server, &anonymousSession, operatorRole));
+} END_TEST
+
 static Suite *testSuite_rbacIdentity(void) {
     Suite *s = suite_create("RBAC Session identity");
     TCase *tc = tcase_create("Identity mapping");
@@ -481,6 +512,11 @@ static Suite *testSuite_rbacIdentity(void) {
     tcase_add_test(tc, pinnedRoles_surviveRoleSetChange);
     tcase_add_test(tc, updateRole_identifiedByEitherKey);
     suite_add_tcase(s, tc);
+
+    TCase *tc_mappings = tcase_create("Well-known Role mappings");
+    tcase_add_checked_fixture(tc_mappings, setupOperatorMapping, teardown);
+    tcase_add_test(tc_mappings, wellKnownRoleMappings_evaluated);
+    suite_add_tcase(s, tc_mappings);
     return s;
 }
 

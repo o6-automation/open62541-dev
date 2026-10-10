@@ -2721,6 +2721,12 @@ struct UA_ServerConfig {
     size_t rolesSize;
     UA_Role *roles;
 
+    /* Identity mapping rules and filters of the well-known Roles, identified
+     * by roleId or roleName. Anonymous, AuthenticatedUser and
+     * TrustedApplication cannot be changed. */
+    size_t wellKnownRoleMappingsSize;
+    UA_Role *wellKnownRoleMappings;
+
     /* If true, nodes without own or namespace-default RolePermissions grant
      * all permissions regardless of roles. Defaults to true for backwards
      * compatibility.

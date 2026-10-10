@@ -223,6 +223,61 @@
   //   }
   // ],
 
+  // Role-Based Access Control (UA_ENABLE_RBAC). Roles defined here cannot be
+  // removed at runtime.
+  // rbac: {
+  //   // If true, Nodes without own or namespace-default RolePermissions grant
+  //   // all permissions.
+  //   allPermissionsForAnonymous: false,
+  //   // Identity mappings of the well-known Roles, here SecurityAdmin for
+  //   // the user "admin".
+  //   wellKnownRoleMappings: [
+  //     {
+  //       roleId: "i=15704",
+  //       roleName: "SecurityAdmin",
+  //       identityMappingRules: [
+  //         { criteriaType: "UserName", criteria: "admin" }
+  //       ]
+  //     }
+  //   ],
+  //   roles: [
+  //     {
+  //       // Optional; a NodeId is assigned automatically when omitted.
+  //       roleId: "ns=1;i=5000",
+  //       roleName: "Operator",
+  //       roleNameNamespaceIndex: 1,
+  //       // criteriaType: UserName | Thumbprint | Role | GroupId | Anonymous |
+  //       //               AuthenticatedUser | Application | X509Subject |
+  //       //               TrustedApplication
+  //       identityMappingRules: [
+  //         { criteriaType: "UserName", criteria: "alice" },
+  //         { criteriaType: "GroupId", criteria: "operators" },
+  //         // Matches the subject or the issuer of the user certificate
+  //         { criteriaType: "X509Subject",
+  //           criteria: "CN=\"Jörg Müller\"/O=\"Müller GmbH\"/C=\"DE\"" }
+  //       ],
+  //       // Exclude=false: an include list (an empty one matches nothing)
+  //       applicationsExclude: false,
+  //       applications: ["urn:open62541.client.application"],
+  //       endpointsExclude: true,
+  //       endpoints: [],
+  //       // Assignment is vendor-specific (Part 18 4.4.1). A Role without
+  //       // identityMappingRules is only granted via the "roles" attribute.
+  //       customConfiguration: false
+  //     }
+  //   ],
+  //   // RolePermission sets for nodes. "permissions" is the PermissionType
+  //   // bitmask of Part 3.
+  //   rolePermissionPresets: [
+  //     {
+  //       rolePermissions: [
+  //         { roleId: "ns=1;i=5000", permissions: 3 },
+  //         { roleId: "i=15644", permissions: 7 }
+  //       ]
+  //     }
+  //   ]
+  // },
+
   // PKI store folder used by the default certificate verification plugin.
   // pkiFolder: "./pki",
 }
