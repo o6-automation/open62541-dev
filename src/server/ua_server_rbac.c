@@ -898,7 +898,7 @@ warnUnsupportedRoleFeatures(UA_Server *server, const UA_Role *role) {
 /* Public API: Role Management      */
 /************************************/
 
-/* The well-known Roles are added at startup without warnings */
+/* The well-known Roles are added at startup without warnings and audit event */
 static UA_StatusCode
 addRole(UA_Server *server, const UA_Role *role, UA_NodeId *outRoleNodeId,
         UA_Boolean wellKnown) {
@@ -1018,6 +1018,16 @@ addRole(UA_Server *server, const UA_Role *role, UA_NodeId *outRoleNodeId,
     /* Part 18 §4.4.1: re-evaluate the active Sessions */
     UA_Server_reevaluateSessionRoles(server);
 
+#ifdef UA_ENABLE_AUDITING
+    if(!wellKnown) {
+        const UA_NodeId method = UA_NODEID_NUMERIC(
+            0, UA_NS0ID_SERVER_SERVERCAPABILITIES_ROLESET_ADDROLE);
+        auditRoleMappingRuleChangedEvent(server, NULL, NULL, true,
+                                         &newRole->roleId, &method,
+                                         UA_STATUSCODE_GOOD, 0, NULL);
+    }
+#endif
+
     unlockServer(server);
     return UA_STATUSCODE_GOOD;
 }
@@ -1114,7 +1124,6 @@ UA_Server_removeRole(UA_Server *server,
 
     /* Drop any RolePermission entries that still reference the removed role */
     purgeRoleFromPermissions(server, &removedRoleId);
-    UA_NodeId_clear(&removedRoleId);
 
     UA_Role_clear(&server->roles[roleIndex]);
 
@@ -1149,6 +1158,16 @@ UA_Server_removeRole(UA_Server *server,
     }
 
     UA_Server_reevaluateSessionRoles(server);
+
+#ifdef UA_ENABLE_AUDITING
+    const UA_NodeId method = UA_NODEID_NUMERIC(
+        0, UA_NS0ID_SERVER_SERVERCAPABILITIES_ROLESET_REMOVEROLE);
+    auditRoleMappingRuleChangedEvent(server, NULL, NULL, true,
+                                     &removedRoleId, &method,
+                                     UA_STATUSCODE_GOOD, 0, NULL);
+#endif
+
+    UA_NodeId_clear(&removedRoleId);
 
     unlockServer(server);
     return UA_STATUSCODE_GOOD;
@@ -1455,6 +1474,17 @@ UA_Server_getRoleById(UA_Server *server, UA_NodeId roleId,
 /* Public API: Role Update          */
 /************************************/
 
+#ifdef UA_ENABLE_AUDITING
+typedef struct {
+    const UA_NodeId *sessionId;
+    const UA_NodeId *methodId;
+    size_t inputSize;
+    const UA_Variant *input;
+} RoleMethodAuditContext;
+
+UA_STATIC_THREAD_LOCAL RoleMethodAuditContext roleMethodAuditContext;
+#endif
+
 UA_StatusCode UA_EXPORT
 UA_Server_updateRole(UA_Server *server, const UA_Role *role) {
     if(!server || !role)
@@ -1539,8 +1569,51 @@ UA_Server_updateRole(UA_Server *server, const UA_Role *role) {
     /* Part 18 §4.4.1: re-evaluate the active Sessions */
     UA_Server_reevaluateSessionRoles(server);
 
+#ifdef UA_ENABLE_AUDITING
+    UA_Session *auditSession = NULL;
+    UA_SecureChannel *auditChannel = NULL;
+    UA_NodeId localOperation = UA_NODEID_NULL;
+    const UA_NodeId *method = &localOperation;
+    size_t auditInputSize = 0;
+    UA_Variant *auditInput = NULL;
+    if(roleMethodAuditContext.methodId) {
+        method = roleMethodAuditContext.methodId;
+        auditInputSize = roleMethodAuditContext.inputSize;
+        auditInput = (UA_Variant*)(uintptr_t)roleMethodAuditContext.input;
+        if(roleMethodAuditContext.sessionId) {
+            auditSession = getSessionById(server,
+                                          roleMethodAuditContext.sessionId);
+            if(auditSession)
+                auditChannel = auditSession->channel;
+        }
+    }
+    auditRoleMappingRuleChangedEvent(server, auditChannel, auditSession, true,
+                                     &existing->roleId, method,
+                                     UA_STATUSCODE_GOOD, auditInputSize,
+                                     auditInput);
+#endif
+
     unlockServer(server);
     return UA_STATUSCODE_GOOD;
+}
+
+UA_StatusCode
+UA_Server_updateRoleFromMethod(UA_Server *server, const UA_Role *role,
+                               const UA_NodeId *sessionId,
+                               const UA_NodeId *methodId,
+                               size_t inputSize, const UA_Variant *input) {
+#ifdef UA_ENABLE_AUDITING
+    RoleMethodAuditContext previous = roleMethodAuditContext;
+    roleMethodAuditContext.sessionId = sessionId;
+    roleMethodAuditContext.methodId = methodId;
+    roleMethodAuditContext.inputSize = inputSize;
+    roleMethodAuditContext.input = input;
+#endif
+    UA_StatusCode res = UA_Server_updateRole(server, role);
+#ifdef UA_ENABLE_AUDITING
+    roleMethodAuditContext = previous;
+#endif
+    return res;
 }
 
 /************************************/

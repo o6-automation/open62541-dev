@@ -649,7 +649,8 @@ addIdentityMethodCallback(UA_Server *server,
     }
     role.identityMappingRulesSize++;
 
-    res = UA_Server_updateRole(server, &role);
+    res = UA_Server_updateRoleFromMethod(server, &role, sessionId, methodId,
+                                         inputSize, input);
     UA_Role_clear(&role);
     return res;
 }
@@ -702,7 +703,8 @@ removeIdentityMethodCallback(UA_Server *server,
                 sizeof(UA_IdentityMappingRuleType));
     role.identityMappingRulesSize--;
 
-    res = UA_Server_updateRole(server, &role);
+    res = UA_Server_updateRoleFromMethod(server, &role, sessionId, methodId,
+                                         inputSize, input);
     UA_Role_clear(&role);
     return res;
 }
@@ -741,7 +743,8 @@ addApplicationMethodCallback(UA_Server *server,
     }
     role.applicationsSize++;
 
-    res = UA_Server_updateRole(server, &role);
+    res = UA_Server_updateRoleFromMethod(server, &role, sessionId, methodId,
+                                         inputSize, input);
     UA_Role_clear(&role);
     return res;
 }
@@ -784,7 +787,8 @@ removeApplicationMethodCallback(UA_Server *server,
                 (role.applicationsSize - idx - 1) * sizeof(UA_String));
     role.applicationsSize--;
 
-    res = UA_Server_updateRole(server, &role);
+    res = UA_Server_updateRoleFromMethod(server, &role, sessionId, methodId,
+                                         inputSize, input);
     UA_Role_clear(&role);
     return res;
 }
@@ -828,7 +832,8 @@ addEndpointMethodCallback(UA_Server *server,
     }
     role.endpointsSize++;
 
-    res = UA_Server_updateRole(server, &role);
+    res = UA_Server_updateRoleFromMethod(server, &role, sessionId, methodId,
+                                         inputSize, input);
     UA_Role_clear(&role);
     return res;
 }
@@ -876,7 +881,8 @@ removeEndpointMethodCallback(UA_Server *server,
                 (role.endpointsSize - idx - 1) * sizeof(UA_EndpointType));
     role.endpointsSize--;
 
-    res = UA_Server_updateRole(server, &role);
+    res = UA_Server_updateRoleFromMethod(server, &role, sessionId, methodId,
+                                         inputSize, input);
     UA_Role_clear(&role);
     return res;
 }
@@ -890,6 +896,7 @@ addRoleManagementPermissions(UA_Server *server, const UA_NodeId *nodeId) {
                                      UA_PERMISSIONTYPE_BROWSE |
                                      UA_PERMISSIONTYPE_READ |
                                      UA_PERMISSIONTYPE_CALL |
+                                     UA_PERMISSIONTYPE_RECEIVEEVENTS |
                                      UA_PERMISSIONTYPE_READROLEPERMISSIONS,
                                      false, false);
     if(retval != UA_STATUSCODE_GOOD && retval != UA_STATUSCODE_BADNODEIDUNKNOWN)
@@ -1076,6 +1083,18 @@ initRoleSetRolePermissions(UA_Server *server) {
                                           false, false);
     if(retval != UA_STATUSCODE_GOOD && retval != UA_STATUSCODE_BADNODEIDUNKNOWN)
         return retval;
+
+#ifdef UA_NS0ID_ROLEMAPPINGRULECHANGEDAUDITEVENTTYPE
+    /* ReceiveEvents is also checked on the EventType, not only on the Role
+     * Object that is the SourceNode */
+    UA_NodeId roleAuditEventType = UA_NODEID_NUMERIC(
+        0, UA_NS0ID_ROLEMAPPINGRULECHANGEDAUDITEVENTTYPE);
+    retval = UA_Server_addRolePermissions(server, roleAuditEventType, secAdmin,
+                                          UA_PERMISSIONTYPE_RECEIVEEVENTS,
+                                          false, false);
+    if(retval != UA_STATUSCODE_GOOD && retval != UA_STATUSCODE_BADNODEIDUNKNOWN)
+        return retval;
+#endif
 
     for(size_t i = 0; i < sizeof(callNodes) / sizeof(callNodes[0]); i++) {
         UA_NodeId nodeId = UA_NODEID_NUMERIC(0, callNodes[i]);
