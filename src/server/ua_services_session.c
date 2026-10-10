@@ -983,11 +983,12 @@ selectEndpointAndTokenPolicy(UA_Server *server, UA_SecureChannel *channel,
                             &channel->securityPolicy->policyUri))
             continue;
 
-        /* Select the UserTokenPolicy from the Endpoint */
+        /* Select the UserTokenPolicy from the Endpoint. Take the first match.
+         * Endpoints that differ only in the URL or TransportProfileUri are
+         * equivalent here. */
         *utp = selectTokenPolicy(server, channel, session,
                                  identityToken, desc, tokenSp);
         if(*utp) {
-            /* Match found */
             *ed = desc;
             return;
         }
@@ -1411,12 +1412,17 @@ Service_ActivateSession_inner(UA_Server *server, UA_SecureChannel *channel,
                                    "will not match this Session",
                                    UA_StatusCode_name(uriRes));
     }
-    /* The SecurityMode and SecurityPolicy of the SecureChannel for the
-     * Endpoint filters */
+    /* Take the URL and the transport profile from the accepting listener. The
+     * URLs in the HEL message and in CreateSession are client-controlled. */
     if(ctxRes == UA_STATUSCODE_GOOD && ed) {
+        ctxRes = UA_String_copy(&channel->listenerUrl, &ctx.endpointUrl);
         ctx.endpointSecurityMode = channel->securityMode;
-        ctxRes = UA_String_copy(&channel->securityPolicy->policyUri,
-                                &ctx.securityPolicyUri);
+        if(ctxRes == UA_STATUSCODE_GOOD)
+            ctxRes = UA_String_copy(&channel->securityPolicy->policyUri,
+                                    &ctx.securityPolicyUri);
+        if(ctxRes == UA_STATUSCODE_GOOD)
+            ctxRes = UA_String_copy(getChannelTransportProfileUri(channel),
+                                    &ctx.transportProfileUri);
     }
     if(ctxRes == UA_STATUSCODE_GOOD &&
        server->config.accessControl.getUserGroups) {

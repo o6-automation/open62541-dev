@@ -2223,9 +2223,9 @@ typedef struct {
     UA_String *applications;
 
     /* Endpoint filter with the same semantics. Empty fields of an entry are
-     * not compared. An entry with an EndpointUrl or TransportProfileUri cannot
-     * be compared yet: it never matches an include list but always matches
-     * an exclude list. */
+     * not compared. The EndpointUrl is compared with the ServerUrl of the
+     * listener that accepted the SecureChannel (details in the RBAC
+     * documentation). */
     UA_Boolean endpointsExclude;
     size_t endpointsSize;
     UA_EndpointType *endpoints;

@@ -1782,7 +1782,9 @@ UA_SessionIdentityContext_clear(UA_SessionIdentityContext *ctx) {
     UA_String_clear(&ctx->userSubject);
     UA_String_clear(&ctx->userIssuer);
     UA_String_clear(&ctx->applicationUri);
+    UA_String_clear(&ctx->endpointUrl);
     UA_String_clear(&ctx->securityPolicyUri);
+    UA_String_clear(&ctx->transportProfileUri);
     UA_Array_delete(ctx->groups, ctx->groupsSize, &UA_TYPES[UA_TYPES_STRING]);
     UA_Array_delete(ctx->tokenRoles, ctx->tokenRolesSize,
                     &UA_TYPES[UA_TYPES_STRING]);
@@ -1852,13 +1854,120 @@ typedef enum {
     ENDPOINTMATCH_UNKNOWN
 } EndpointMatch;
 
-/* Fields left empty in the filter are not compared. The EndpointUrl and the
- * TransportProfileUri of the Session are not known yet. */
+/* The default ports of the server transports */
+static const struct {
+    UA_String scheme;
+    UA_UInt16 defaultPort;
+} endpointUrlSchemes[] = {
+    {UA_STRING_STATIC("opc.tcp"), 4840},
+    {UA_STRING_STATIC("opc.ws"), 4840},
+    {UA_STRING_STATIC("opc.wss"), 443},
+    {UA_STRING_STATIC("opc.http"), 80},
+    {UA_STRING_STATIC("opc.https"), 443}
+};
+
+#define ENDPOINTURLSCHEMES_SIZE \
+    (sizeof(endpointUrlSchemes) / sizeof(endpointUrlSchemes[0]))
+
+/* The strings point into the parsed URL or into the buffer */
+typedef struct {
+    size_t scheme;      /* Index in endpointUrlSchemes */
+    UA_String hostname; /* Empty for all interfaces */
+    UA_UInt16 port;     /* The default port of the scheme if not given */
+    UA_String path;     /* Without leading and trailing '/' */
+    UA_String buffer;   /* Copy with a lower-case scheme (if required) */
+} EndpointUrlParts;
+
+static UA_StatusCode
+parseEndpointUrlParts(const UA_String *url, EndpointUrlParts *parts) {
+    memset(parts, 0, sizeof(EndpointUrlParts));
+
+    size_t schemeLen = 0;
+    while(schemeLen < url->length && url->data[schemeLen] != ':')
+        schemeLen++;
+    UA_String scheme = {schemeLen, url->data};
+    for(; parts->scheme < ENDPOINTURLSCHEMES_SIZE; parts->scheme++) {
+        if(stringEqualIgnoreCase(&scheme,
+                                 &endpointUrlSchemes[parts->scheme].scheme))
+            break;
+    }
+    if(parts->scheme == ENDPOINTURLSCHEMES_SIZE)
+        return UA_STATUSCODE_BADTCPENDPOINTURLINVALID;
+
+    /* UA_parseEndpointUrl expects the scheme in lower case */
+    const UA_String *lowerUrl = url;
+    const UA_String *lowerScheme = &endpointUrlSchemes[parts->scheme].scheme;
+    if(memcmp(url->data, lowerScheme->data, schemeLen) != 0) {
+        UA_StatusCode res = UA_String_copy(url, &parts->buffer);
+        if(res != UA_STATUSCODE_GOOD)
+            return res;
+        memcpy(parts->buffer.data, lowerScheme->data, schemeLen);
+        lowerUrl = &parts->buffer;
+    }
+
+    parts->port = endpointUrlSchemes[parts->scheme].defaultPort;
+    UA_StatusCode res = UA_parseEndpointUrl(lowerUrl, &parts->hostname,
+                                            &parts->port, &parts->path);
+    if(res != UA_STATUSCODE_GOOD) {
+        UA_String_clear(&parts->buffer);
+        return res;
+    }
+
+    while(parts->path.length > 0 && parts->path.data[0] == '/') {
+        parts->path.data++;
+        parts->path.length--;
+    }
+    while(parts->path.length > 0 &&
+          parts->path.data[parts->path.length - 1] == '/')
+        parts->path.length--;
+    return UA_STATUSCODE_GOOD;
+}
+
+/* Compare with the ServerUrl of the listener that accepted the SecureChannel.
+ * A hostname is only compared if both URLs have one. */
+static EndpointMatch
+endpointUrlMatches(const UA_String *filterUrl, const UA_String *listenerUrl) {
+    EndpointUrlParts listener;
+    if(listenerUrl->length == 0 ||
+       parseEndpointUrlParts(listenerUrl, &listener) != UA_STATUSCODE_GOOD)
+        return ENDPOINTMATCH_UNKNOWN;
+
+    EndpointUrlParts filter;
+    UA_StatusCode res = parseEndpointUrlParts(filterUrl, &filter);
+    if(res != UA_STATUSCODE_GOOD) {
+        UA_String_clear(&listener.buffer);
+        return (res == UA_STATUSCODE_BADOUTOFMEMORY) ?
+            ENDPOINTMATCH_UNKNOWN : ENDPOINTMATCH_NOMATCH;
+    }
+
+    EndpointMatch match = ENDPOINTMATCH_MATCH;
+    if(listener.scheme != filter.scheme ||
+       !UA_String_equal(&listener.path, &filter.path) ||
+       (listener.hostname.length > 0 && filter.hostname.length > 0 &&
+        !stringEqualIgnoreCase(&listener.hostname, &filter.hostname)))
+        match = ENDPOINTMATCH_NOMATCH;
+    else if(listener.port == 0)
+        match = ENDPOINTMATCH_UNKNOWN; /* Dynamically assigned port */
+    else if(listener.port != filter.port)
+        match = ENDPOINTMATCH_NOMATCH;
+
+    UA_String_clear(&listener.buffer);
+    UA_String_clear(&filter.buffer);
+    return match;
+}
+
+/* Fields left empty in the filter are not compared */
 static EndpointMatch
 endpointFilterMatches(const UA_EndpointType *ep,
                       const UA_SessionIdentityContext *ctx) {
-    UA_Boolean unknown = (ep->endpointUrl.length > 0 ||
-                          ep->transportProfileUri.length > 0);
+    UA_Boolean unknown = false;
+    if(ep->endpointUrl.length > 0) {
+        EndpointMatch match =
+            endpointUrlMatches(&ep->endpointUrl, &ctx->endpointUrl);
+        if(match == ENDPOINTMATCH_NOMATCH)
+            return ENDPOINTMATCH_NOMATCH;
+        unknown |= (match == ENDPOINTMATCH_UNKNOWN);
+    }
     if(ep->securityMode != UA_MESSAGESECURITYMODE_INVALID) {
         if(ctx->endpointSecurityMode == UA_MESSAGESECURITYMODE_INVALID)
             unknown = true;
@@ -1870,6 +1979,13 @@ endpointFilterMatches(const UA_EndpointType *ep,
             unknown = true;
         else if(!UA_String_equal(&ep->securityPolicyUri,
                                  &ctx->securityPolicyUri))
+            return ENDPOINTMATCH_NOMATCH;
+    }
+    if(ep->transportProfileUri.length > 0) {
+        if(ctx->transportProfileUri.length == 0)
+            unknown = true;
+        else if(!UA_String_equal(&ep->transportProfileUri,
+                                 &ctx->transportProfileUri))
             return ENDPOINTMATCH_NOMATCH;
     }
     return unknown ? ENDPOINTMATCH_UNKNOWN : ENDPOINTMATCH_MATCH;

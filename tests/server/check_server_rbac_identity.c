@@ -95,8 +95,8 @@ setupWithMappings(UA_Role *mappings, size_t mappingsSize) {
     server = UA_Server_newWithConfig(&config);
     ck_assert_ptr_nonnull(server);
     ck_assert_uint_eq(UA_Server_run_startup(server), UA_STATUSCODE_GOOD);
-    rbacChannelInit(server, &plain, UA_MESSAGESECURITYMODE_NONE);
-    rbacChannelInit(server, &secure, UA_MESSAGESECURITYMODE_SIGNANDENCRYPT);
+    rbacChannelInit(server, &plain, UA_MESSAGESECURITYMODE_NONE, NULL);
+    rbacChannelInit(server, &secure, UA_MESSAGESECURITYMODE_SIGNANDENCRYPT, NULL);
 }
 
 static void setup(void) {

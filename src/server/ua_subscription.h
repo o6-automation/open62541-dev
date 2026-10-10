@@ -275,7 +275,9 @@ typedef struct {
     size_t rolesSize;
     UA_NodeId *roles;
     UA_String applicationUri;
+    UA_String endpointUrl;
     UA_String securityPolicyUri;
+    UA_String transportProfileUri;
 } UA_SubscriptionRbacContext;
 
 /* Sets known=false if the copy fails */

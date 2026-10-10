@@ -295,14 +295,18 @@ rbacContextView(UA_SubscriptionRbacContext *ctx, const UA_Session *session) {
     ctx->trustedApplication = ic->trustedApplication;
     ctx->endpointSecurityMode = ic->endpointSecurityMode;
     ctx->applicationUri = ic->applicationUri;
+    ctx->endpointUrl = ic->endpointUrl;
     ctx->securityPolicyUri = ic->securityPolicyUri;
+    ctx->transportProfileUri = ic->transportProfileUri;
 }
 
 void
 UA_SubscriptionRbacContext_clear(UA_SubscriptionRbacContext *ctx) {
     UA_Array_delete(ctx->roles, ctx->rolesSize, &UA_TYPES[UA_TYPES_NODEID]);
     UA_String_clear(&ctx->applicationUri);
+    UA_String_clear(&ctx->endpointUrl);
     UA_String_clear(&ctx->securityPolicyUri);
+    UA_String_clear(&ctx->transportProfileUri);
     memset(ctx, 0, sizeof(UA_SubscriptionRbacContext));
 }
 
@@ -331,7 +335,9 @@ UA_SubscriptionRbacContext_copyFromSession(UA_SubscriptionRbacContext *ctx,
     if(res == UA_STATUSCODE_GOOD)
         ctx->rolesSize = view.rolesSize;
     res |= UA_String_copy(&view.applicationUri, &ctx->applicationUri);
+    res |= UA_String_copy(&view.endpointUrl, &ctx->endpointUrl);
     res |= UA_String_copy(&view.securityPolicyUri, &ctx->securityPolicyUri);
+    res |= UA_String_copy(&view.transportProfileUri, &ctx->transportProfileUri);
     if(res != UA_STATUSCODE_GOOD) {
         UA_SubscriptionRbacContext_clear(ctx);
         return;
@@ -379,7 +385,9 @@ UA_SubscriptionRbacContext_matchesSession(const UA_SubscriptionRbacContext *ctx,
     return ctx->trustedApplication == b.trustedApplication &&
         ctx->endpointSecurityMode == b.endpointSecurityMode &&
         UA_String_equal(&ctx->applicationUri, &b.applicationUri) &&
-        UA_String_equal(&ctx->securityPolicyUri, &b.securityPolicyUri);
+        UA_String_equal(&ctx->endpointUrl, &b.endpointUrl) &&
+        UA_String_equal(&ctx->securityPolicyUri, &b.securityPolicyUri) &&
+        UA_String_equal(&ctx->transportProfileUri, &b.transportProfileUri);
 }
 #endif
 

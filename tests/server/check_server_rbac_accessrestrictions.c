@@ -47,7 +47,8 @@ static void setup(void) {
     ck_assert_uint_eq(UA_Server_run_startup(server), UA_STATUSCODE_GOOD);
     for(int i = 0; i < 3; i++)
         rbacChannelInit(server, &channels[i],
-                        (UA_MessageSecurityMode)(UA_MESSAGESECURITYMODE_NONE + i));
+                        (UA_MessageSecurityMode)(UA_MESSAGESECURITYMODE_NONE + i),
+                        NULL);
 }
 
 static void teardown(void) {

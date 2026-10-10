@@ -31,10 +31,11 @@ rbacService(UA_Server *server, UA_Session *session, RbacService service,
     unlockServer(server);
 }
 
-/* Clear the channel only after the server was deleted */
+/* Clear the channel only after the server was deleted. The listenerUrl is the
+ * configured ServerUrl of the accepting listener (may be NULL). */
 static UA_INLINE void
 rbacChannelInit(UA_Server *server, UA_SecureChannel *channel,
-                UA_MessageSecurityMode mode) {
+                UA_MessageSecurityMode mode, const char *listenerUrl) {
     UA_SecureChannel_init(channel);
     UA_ServerConfig *config = UA_Server_getConfig(server);
     for(size_t i = 0; i < config->securityPoliciesSize; i++) {
@@ -44,6 +45,8 @@ rbacChannelInit(UA_Server *server, UA_SecureChannel *channel,
     ck_assert_ptr_nonnull(channel->securityPolicy);
     channel->securityMode = mode;
     channel->state = UA_SECURECHANNELSTATE_OPEN;
+    if(listenerUrl)
+        channel->listenerUrl = UA_STRING_ALLOC(listenerUrl);
 }
 
 /* Offer the None SecurityPolicy also with Sign and SignAndEncrypt, so that

@@ -51,8 +51,10 @@ typedef struct {
     UA_String userSubject;           /* Part 18 X509Subject criteria */
     UA_String userIssuer;
     UA_String applicationUri;        /* From the client certificate */
+    UA_String endpointUrl;           /* ServerUrl of the listener */
     UA_MessageSecurityMode endpointSecurityMode;
     UA_String securityPolicyUri;
+    UA_String transportProfileUri;
     size_t groupsSize;               /* From AccessControl.getUserGroups */
     UA_String *groups;
     size_t tokenRolesSize;           /* From AccessControl.getUserTokenRoles */
