@@ -28,6 +28,10 @@
 #define UA_NS0_SERVERCONFIGURATION
 #endif
 
+#ifdef UA_ENABLE_RBAC
+#include "ua_server_rbac.h"
+#endif
+
 static UA_StatusCode
 ns0_addNode_raw(UA_Server *server, UA_NodeClass nodeClass,
             UA_UInt32 nodeId, char *name, void *attributes,
@@ -1289,7 +1293,11 @@ configureNS0(UA_Server *server) {
     deleteNode(server, UA_NS0ID(LLDP), true);
 #endif
     deleteNode(server, UA_NS0ID(PROVISIONABLEDEVICE), true);
-    deleteNode(server, UA_NS0ID(USERMANAGEMENT), true);
+#ifdef UA_ENABLE_RBAC
+    /* Keep the UserManagement Object when a provider is configured */
+    if(!UA_Server_hasUserManagementProvider(&server->config.accessControl))
+#endif
+        deleteNode(server, UA_NS0ID(USERMANAGEMENT), true);
 #ifdef UA_ENABLE_DRIVER_GDS_RECEIVER
     /* Parts of the ServerConfiguration that the GDS receiver does not support */
     deleteNode(server, UA_NS0ID(SERVERCONFIGURATION_CERTIFICATEGROUPS_DEFAULTHTTPSGROUP), true);

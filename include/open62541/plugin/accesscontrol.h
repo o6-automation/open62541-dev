@@ -135,6 +135,43 @@ struct UA_AccessControl {
                                        void *sessionContext,
                                        UA_String **roleClaims,
                                        size_t *roleClaimsSize);
+
+    /* Optional UserManagement provider (Part 18 §5). The UserManagement Object
+     * is published only if all seven callbacks are set. The server checks the
+     * access rights and the UserConfiguration flags, the provider does the
+     * password policy, hashing, persistence and rate limiting.
+     * getUserConfiguration is also called at ActivateSession of a UserName
+     * token. The caller takes ownership of returned arrays. */
+    UA_StatusCode (*getUsers)(UA_Server *server, UA_AccessControl *ac,
+                              UA_UserManagementDataType **users,
+                              size_t *usersSize);
+    UA_StatusCode (*getPasswordPolicy)(UA_Server *server, UA_AccessControl *ac,
+                                       UA_Range *passwordLength,
+                                       UA_PasswordOptionsMask *passwordOptions,
+                                       UA_LocalizedText *passwordRestrictions);
+    UA_StatusCode (*getUserConfiguration)(UA_Server *server,
+                                          UA_AccessControl *ac,
+                                          const UA_String *userName,
+                                          UA_UserConfigurationMask *configuration);
+    UA_StatusCode (*addUser)(UA_Server *server, UA_AccessControl *ac,
+                             const UA_String *userName,
+                             const UA_String *password,
+                             UA_UserConfigurationMask configuration,
+                             const UA_String *description);
+    UA_StatusCode (*modifyUser)(UA_Server *server, UA_AccessControl *ac,
+                                const UA_String *userName,
+                                UA_Boolean modifyPassword,
+                                const UA_String *password,
+                                UA_Boolean modifyConfiguration,
+                                UA_UserConfigurationMask configuration,
+                                UA_Boolean modifyDescription,
+                                const UA_String *description);
+    UA_StatusCode (*removeUser)(UA_Server *server, UA_AccessControl *ac,
+                                const UA_String *userName);
+    UA_StatusCode (*changePassword)(UA_Server *server, UA_AccessControl *ac,
+                                    const UA_String *userName,
+                                    const UA_String *oldPassword,
+                                    const UA_String *newPassword);
 #endif
 
 #ifdef UA_ENABLE_SUBSCRIPTIONS
