@@ -525,6 +525,28 @@ START_TEST(mustChangePassword_onlyAnonymous) {
     UA_NodeId_clear(&carolRole);
 } END_TEST
 
+/* Deleting the pinned Roles of such a Session restores exactly Anonymous */
+START_TEST(mustChangePassword_unpinRestoresAnonymous) {
+    UA_NodeId sessionId;
+    ck_assert_uint_eq(loginUser(&secure, "carol", "password", &sessionId),
+                      UA_STATUSCODE_GOODPASSWORDCHANGEREQUIRED);
+    const UA_NodeId pinned = SECURITYADMIN;
+    rbacSetRoles(server, &sessionId, 1, &pinned);
+    ck_assert(!rbacHasRole(server, &sessionId, ANONYMOUS));
+    ck_assert_uint_eq(UA_Server_deleteSessionAttribute(server, &sessionId,
+                                                       UA_QUALIFIEDNAME(0, "roles")),
+                      UA_STATUSCODE_GOOD);
+    UA_Variant roles;
+    ck_assert_uint_eq(UA_Server_getSessionAttributeCopy(server, &sessionId,
+                                                        UA_QUALIFIEDNAME(0, "roles"),
+                                                        &roles),
+                      UA_STATUSCODE_GOOD);
+    const UA_NodeId anonymous = ANONYMOUS;
+    ck_assert_uint_eq(roles.arrayLength, 1);
+    ck_assert(UA_NodeId_equal((const UA_NodeId*)roles.data, &anonymous));
+    UA_Variant_clear(&roles);
+} END_TEST
+
 #ifdef UA_ENABLE_AUDITING
 static UA_Variant auditInputs;
 
@@ -601,6 +623,7 @@ static Suite *testSuite_rbacUserManagement(void) {
     tcase_add_test(tc, disableOrRemove_closesSessions);
     tcase_add_test(tc, disabledUser_refusedLikeUnknown);
     tcase_add_test(tc, mustChangePassword_onlyAnonymous);
+    tcase_add_test(tc, mustChangePassword_unpinRestoresAnonymous);
 #ifdef UA_ENABLE_AUDITING
     tcase_add_test(tc, audit_omitsPasswords);
 #endif
