@@ -50,8 +50,7 @@ New API: `UA_Server_setNodeAccessRestrictions`,
 The identity mapping rules are evaluated for all criteria of Part 18 §4.4.2,
 GroupId and Role with the new optional callbacks
 `UA_AccessControl::getUserGroups` and `getUserTokenRoles`. The Application and
-Endpoint filters are enforced; an empty include list grants nothing, an
-Endpoint entry with a URL or transport profile fails closed for now. A Role
+Endpoint filters are enforced; an empty include list grants nothing. A Role
 without identity mapping rules is never granted automatically. Changes of the
 RoleSet take effect for active Sessions immediately, unless their Roles are
 pinned with the `roles` Session attribute.
@@ -79,6 +78,11 @@ configured. A disabled user is refused at ActivateSession like an unknown user.
 of the well-known Roles. The JSON server configuration has a new `rbac` object
 with `roles`, `wellKnownRoleMappings`, `rolePermissionPresets` and
 `allPermissionsForAnonymous`.
+
+### RBAC: Endpoint filters use the listener URL
+
+The Endpoint filters of a Role are compared with the configured ServerUrl of
+the listener that accepted the SecureChannel, not with the URL the client sent.
 
 ### PubSub message security with OpenSSL and LibreSSL
 

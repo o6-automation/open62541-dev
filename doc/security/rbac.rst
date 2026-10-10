@@ -113,9 +113,7 @@ also passes the Role's Application and Endpoint filters.  With
 ``applicationsExclude`` / ``endpointsExclude`` set (the ``UA_Role_init``
 default) the list excludes; with the flag cleared it includes, and an empty
 include list grants nothing.  A non-empty Application list requires a
-validated client certificate.  An Endpoint entry with an EndpointUrl or
-TransportProfileUri fails closed for now: it never matches an include list but
-always matches an exclude list.  ``UA_Server_addRole`` and
+validated client certificate.  ``UA_Server_addRole`` and
 ``UA_Server_updateRole`` reject malformed criteria with
 ``Bad_InvalidArgument`` and log the rule.
 
@@ -137,6 +135,21 @@ attribute or a new ActivateSession returns to the rules.
 TransferSubscriptions requires the same user (``allowTransferSubscription``)
 and the same Roles, SecureChannel SecurityMode, client application and
 Endpoint as the Session the Subscription comes from.
+
+Endpoint filters
+----------------
+
+An entry of ``UA_Role::endpoints`` compares only its non-empty fields with
+the SecurityMode, SecurityPolicyUri and transport profile of the SecureChannel
+and with the configured ServerUrl of the listener that accepted it (for
+reverse connect, the announced EndpointUrl), never with URLs from the client.
+The URLs match when scheme, hostname, port and path are equal.  Scheme and
+hostname are case-insensitive, a missing port is the default port of the
+scheme and leading or trailing ``/`` of the path are ignored.  The hostname is only compared if both URLs have one; a listener
+such as ``opc.tcp://:4840`` listens on all interfaces.  A filter URL that
+cannot be parsed matches nothing.  If a field cannot be compared (e.g. on a
+dynamically assigned port), the entry never matches an include list but
+always matches an exclude list.
 
 AccessRestrictions
 ------------------
