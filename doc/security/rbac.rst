@@ -26,8 +26,9 @@ removing its last entry.  ``rolePermissionPresets`` preloads lists that Nodes
 share.  Without a list the namespace default of
 ``UA_Server_setNamespaceDefaultRolePermissions`` applies, without that
 ``allPermissionsForAnonymous``.  A list must name every Role that needs
-access.  Clients cannot write the RolePermissions attribute.  The local admin
-Session of the C API bypasses all checks.
+access; an empty list denies everything.  Clients cannot write the
+RolePermissions attribute.  The local admin Session of the C API bypasses all
+checks.
 
 The services and the default AccessControl plugin check the PermissionType
 bits (``UA_PERMISSIONTYPE_*``) as follows.  The derived UserAccessLevel,
@@ -74,7 +75,8 @@ The default configurations (``UA_ServerConfig_setDefault()`` and friends) set
 ``allPermissionsForAnonymous = true`` for backwards compatibility: a Node with
 neither own RolePermissions nor a namespace default grants *all* permissions
 to every Session, whatever its Roles.  Explicit lists are enforced either
-way.  No namespace has a default after startup.  To secure a server:
+way, also one emptied by ``UA_Server_removeRole``.  No namespace has a default
+after startup.  To secure a server:
 
 - set ``allPermissionsForAnonymous = false`` before startup (every check
   reads it),
@@ -110,14 +112,15 @@ just described, the others when the criteria equals:
 - ``GroupId`` / ``Role`` -- a group / a Role claim of an IssuedIdentityToken
   from the AccessControl callback ``getUserGroups`` / ``getUserTokenRoles``.
 
-A Role without rules is never granted automatically.  A matching rule grants
-the Role only if the Session also passes the Role's Application and Endpoint
-filters.  With ``applicationsExclude`` / ``endpointsExclude`` set (the
-``UA_Role_init`` default) the list excludes; with the flag cleared it
-includes, and an empty include list grants nothing.  A non-empty Application
-list requires a validated client certificate.  An Endpoint entry with an
-EndpointUrl or TransportProfileUri fails closed for now: it never matches an
-include list but always matches an exclude list.  ``UA_Server_addRole`` and
+A Role without rules is never granted automatically, also with
+``customConfiguration``.  A matching rule grants the Role only if the Session
+also passes the Role's Application and Endpoint filters.  With
+``applicationsExclude`` / ``endpointsExclude`` set (the ``UA_Role_init``
+default) the list excludes; with the flag cleared it includes, and an empty
+include list grants nothing.  A non-empty Application list requires a
+validated client certificate.  An Endpoint entry with an EndpointUrl or
+TransportProfileUri fails closed for now: it never matches an include list but
+always matches an exclude list.  ``UA_Server_addRole`` and
 ``UA_Server_updateRole`` reject malformed criteria with
 ``Bad_InvalidArgument`` and log the rule.
 
@@ -133,9 +136,9 @@ rule.
 Changes of the RoleSet re-evaluate all active Sessions immediately;
 notifications sampled with the former Roles are dropped.  The Session
 attribute ``UA_QUALIFIEDNAME(0, "roles")`` (a NodeId array, set with
-``UA_Server_setSessionAttribute``) pins the Roles of a Session; only removed
-Roles are dropped.  Deleting the attribute or a new ActivateSession returns
-to the rules.
+``UA_Server_setSessionAttribute``) pins the Roles of a Session, e.g. for Roles
+with ``customConfiguration``; only removed Roles are dropped.  Deleting the
+attribute or a new ActivateSession returns to the rules.
 TransferSubscriptions requires the same user (``allowTransferSubscription``)
 and the same Roles, SecureChannel SecurityMode, client application and
 Endpoint as the Session the Subscription comes from.
@@ -166,6 +169,31 @@ reads the effective value and cannot be written by clients.  The child Nodes
 of a new instance inherit the AccessRestrictions of their
 InstanceDeclarations, but not their RolePermissions.
 
+The RoleSet
+-----------
+
+Every Role appears as a RoleType Object under
+``Server/ServerCapabilities/RoleSet``.  ``AddRole``, ``RemoveRole`` and the
+RoleType Methods ``AddIdentity`` ... ``RemoveEndpoint`` change the registry;
+of the Properties only ``ApplicationsExclude`` and ``EndpointsExclude`` are
+writable.  ``RemoveRole`` of a protected Role returns
+``Bad_RequestNotAllowed``, ``AddRole`` beyond 1024 Roles ``Bad_NotSupported``.
+An existing RoleType Object with the requested NodeId (e.g. from a nodeset)
+becomes the Role Object, any other Node fails with ``Bad_NodeIdExists``.
+
+The server protects these Nodes with explicit RolePermissions: the RoleSet,
+its Methods, every Role Object and its Methods grant Browse, Read, Call and
+ReadRolePermissions (Role Objects and their Methods also ReceiveEvents) to
+SecurityAdmin only; their Properties Browse and Read, and Write on the two
+``*Exclude`` flags.  ``RoleMappingRuleChangedAuditEventType`` grants
+ReceiveEvents to SecurityAdmin.  Except for the EventType, the Nodes also
+require encryption and are hidden from Browse without it
+(``ENCRYPTIONREQUIRED | APPLYRESTRICTIONSTOBROWSE``), and the Methods check for
+SecurityAdmin over SignAndEncrypt themselves.  All other
+Nodes have no RolePermissions (see `Default rights`_).  Only the three
+mandatory Roles have identity mappings, so no network client holds
+SecurityAdmin (or Operator, Engineer, ...) until one is configured.
+
 Auditing
 --------
 
@@ -176,3 +204,8 @@ ModifyUser, ChangePassword, GetSecurityKeys and SetSecurityKeys omit their
 secret arguments.  The redaction is keyed on the Namespace Zero NodeIds of
 these Methods and of their ObjectType declarations.  Method copies made with
 ``copyMethodsOnInstances`` have other NodeIds and are not covered.
+
+Adding or removing a Role and every change of its rules or filters -- through
+the C API or the RoleSet Methods -- emits a
+``RoleMappingRuleChangedAuditEventType`` Event with the Role Object as
+SourceNode, which only SecurityAdmin Sessions receive.
