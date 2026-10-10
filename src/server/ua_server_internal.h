@@ -840,6 +840,18 @@ setCurrentEndpointsArray(UA_Server *server, const UA_String endpointUrl,
                          UA_String *profileUris, size_t profileUrisSize,
                          UA_EndpointDescription **arr, size_t *arrSize);
 
+#ifdef UA_ENABLE_JSON_ENCODING
+/* JSON uses the /json child of the configured (binary) URL */
+UA_StatusCode
+httpProfileEndpointUrl(const UA_String *url, const UA_String *profileUri,
+                       UA_String *profileUrl);
+#endif
+
+/* Derived from the transport and listenerUrl, never from client input. Empty
+ * if unknown. */
+const UA_String *
+getChannelTransportProfileUri(const UA_SecureChannel *channel);
+
 UA_BrowsePathResult
 browseSimplifiedBrowsePath(UA_Server *server, const UA_NodeId origin,
                            size_t browsePathSize, const UA_QualifiedName *browsePath);
@@ -889,6 +901,10 @@ typedef struct {
     UA_ConnectionState state;
     uintptr_t connectionId;
     UA_ConnectionManager *connectionManager;
+
+    /* Points into the listenUrls of the BinaryProtocolManager. NULL if
+     * unknown. */
+    const UA_String *serverUrl;
 } UA_ServerConnection;
 
 typedef struct UA_BinaryProtocolManager UA_BinaryProtocolManager;
@@ -910,6 +926,11 @@ struct UA_BinaryProtocolManager {
     UA_ServerConnection serverConnections[UA_MAXSERVERCONNECTIONS];
     size_t serverConnectionsSize;
 
+    /* Configured ServerUrls of the listeners. The address of an entry is the
+     * context of its listen sockets. */
+    UA_String listenUrls[UA_MAXSERVERCONNECTIONS];
+    size_t listenUrlsSize;
+
     /* SecureChannels */
     TAILQ_HEAD(, UA_SecureChannel) channels;
 
@@ -929,6 +950,11 @@ void
 UA_BinaryConnectionConfig_set(UA_ConnectionConfig *connectionConfig,
                               UA_UInt32 bufSize, UA_UInt32 maxMsgSize,
                               UA_UInt32 maxChunks);
+
+/* Returns the context for the listen sockets of the ServerUrl */
+const UA_String *
+UA_BinaryProtocolManager_addListenUrl(UA_BinaryProtocolManager *bpm,
+                                      const UA_String *serverUrl);
 
 UA_Driver * UA_BinaryProtocolManager_new(void);
 
@@ -956,11 +982,13 @@ processSecureChannelMessage(UA_Server *server, UA_SecureChannel *channel,
                             UA_MessageType messagetype, UA_UInt32 requestId,
                             UA_ByteString *message);
 
+/* The listenerUrl (NULL if unknown) is copied to the SecureChannel */
 UA_StatusCode
 createServerSecureChannel(UA_Server *server,
                           const UA_ConnectionConfig *connectionConfig,
                           UA_ConnectionManager *cm,
                           uintptr_t connectionId, const UA_KeyValueMap *params,
+                          const UA_String *listenerUrl,
                           UA_SecureChannel **outChannel);
 
 void
