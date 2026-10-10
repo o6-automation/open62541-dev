@@ -203,9 +203,10 @@ struct UA_FileTransferBackend {
  *    Namespace for new entry BrowseNames and NodeIds (default: 0).
  *    Standard Properties and Methods remain in namespace 0.
  * 0:refresh-interval [Double]
- *    Directory refresh interval in milliseconds (default: 1000). 0 disables
- *    the periodic refresh, see UA_FileTransferDriver_refresh(). Vanished files
- *    with open handles remain until closed.
+ *    Directory refresh interval in milliseconds (default: 1000), at least
+ *    0.0001. 0 disables the periodic refresh, see
+ *    UA_FileTransferDriver_refresh(). Vanished files with open handles remain
+ *    until closed.
  * 0:max-open-handles-per-session [UInt16]
  *    Open-handle limit per Session in this driver (default: 64).
  * 0:max-open-handles-per-file [UInt16]

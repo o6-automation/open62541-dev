@@ -4727,10 +4727,16 @@ START_TEST(disabledPeriodicRefresh) {
     UA_FileTransferBackend backend = memBackendWithTree();
     UA_NodeId root;
     UA_Driver *driver = newTestDirectory(server_ft, &backend, &root);
-    UA_Double interval = -1;
-    ck_assert_uint_eq(UA_KeyValueMap_setScalar(&driver->params,
-        UA_QUALIFIEDNAME(0, "refresh-interval"), &interval, &UA_TYPES[UA_TYPES_DOUBLE]), UA_STATUSCODE_GOOD);
-    ck_assert_uint_eq(UA_Server_addDriver(server_ft, driver), UA_STATUSCODE_BADINVALIDARGUMENT);
+    /* Negative, NaN, infinite and sub-tick intervals are rejected */
+    UA_Double zero = 0.0;
+    UA_Double invalid[4] = {-1, zero / zero, 1.0 / zero, 0.00001};
+    UA_Double interval;
+    for(size_t i = 0; i < 4; i++) {
+        ck_assert_uint_eq(UA_KeyValueMap_setScalar(&driver->params,
+            UA_QUALIFIEDNAME(0, "refresh-interval"), &invalid[i], &UA_TYPES[UA_TYPES_DOUBLE]),
+            UA_STATUSCODE_GOOD);
+        ck_assert_uint_eq(UA_Server_addDriver(server_ft, driver), UA_STATUSCODE_BADINVALIDARGUMENT);
+    }
 
     interval = 0;
     ck_assert_uint_eq(UA_KeyValueMap_setScalar(&driver->params,
@@ -4746,6 +4752,12 @@ START_TEST(disabledPeriodicRefresh) {
     driver->stop(driver);
     ck_assert_uint_eq(UA_FileTransferDriver_refresh(driver), UA_STATUSCODE_BADINVALIDSTATE);
     ck_assert_uint_eq(UA_FileTransferDriver_refresh(NULL), UA_STATUSCODE_BADINVALIDARGUMENT);
+
+    /* A file driver has no tree to refresh */
+    UA_FileTransferBackend fileBackend = memBackendWithFile("f.bin", "data");
+    UA_Driver *fileDriver = newTestFile(server_ft, &fileBackend.file, "RefreshFile", NULL);
+    ck_assert_uint_eq(UA_Server_addDriver(server_ft, fileDriver), UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(UA_FileTransferDriver_refresh(fileDriver), UA_STATUSCODE_BADNOTSUPPORTED);
     ck_assert_uint_eq(UA_Server_run_shutdown(server_ft), UA_STATUSCODE_GOOD);
     UA_NodeId_clear(&root);
 } END_TEST

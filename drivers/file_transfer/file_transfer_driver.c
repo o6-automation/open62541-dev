@@ -162,8 +162,11 @@ configureDriver(FileTransferDriver *ftd) {
         params, UA_QUALIFIEDNAME(0, "refresh-interval"), &UA_TYPES[UA_TYPES_DOUBLE]);
     if(interval)
         ftd->config.refreshInterval = *interval;
-    /* Zero disables the periodic refresh */
-    if(!(ftd->config.refreshInterval >= 0))
+    /* Zero disables the periodic refresh. Otherwise the timer needs at least
+     * one DateTime tick and an Int64 tick count (rejects NaN and infinity). */
+    UA_Double ri = ftd->config.refreshInterval;
+    if(ri != 0.0 && !(ri * UA_DATETIME_MSEC >= 1.0 &&
+                      ri <= (UA_Double)UA_INT64_MAX / UA_DATETIME_MSEC))
         return UA_STATUSCODE_BADINVALIDARGUMENT;
     if(!backendComplete(&ftd->backend, !ftd->root->isDirectory, ftd->config.readOnly))
         return UA_STATUSCODE_BADINVALIDARGUMENT;
