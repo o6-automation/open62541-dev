@@ -678,6 +678,18 @@ browseReferencTargetCallback(void *context, UA_ReferenceTarget *t) {
                                           refs, direction);
     if(!target)
         return NULL;
+
+#ifdef UA_ENABLE_RBAC
+    /* The Browse permission also hides the target of a reference */
+    if(bc->session != &bc->server->adminSession &&
+       !bc->server->config.accessControl.allowBrowseNode(
+           bc->server, &bc->server->config.accessControl,
+           &bc->session->sessionId, bc->session->context,
+           &target->head.nodeId, target->head.context)) {
+        UA_NODESTORE_RELEASE(bc->server, target);
+        return NULL;
+    }
+#endif
     
     /* The node class has to match */
     if(!matchClassMask(target, bd->nodeClassMask)) {
