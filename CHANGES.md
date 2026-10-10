@@ -56,6 +56,16 @@ without identity mapping rules is never granted automatically. Changes of the
 RoleSet take effect for active Sessions immediately, unless their Roles are
 pinned with the `roles` Session attribute.
 
+### RBAC: Role Objects and protected RBAC Nodes
+
+`UA_Role` has the new field `customConfiguration`. Every Role Object has the
+RoleType Methods (AddIdentity ... RemoveEndpoint) and writable
+ApplicationsExclude and EndpointsExclude. The RoleSet, the Role Objects and
+their Methods require SecurityAdmin over an encrypted SecureChannel. Role
+changes emit RoleMappingRuleChangedAuditEventType events.
+`UA_Server_removeRole` returns `Bad_RequestNotAllowed` for a protected Role.
+The AddNode permission is checked against the namespace of the new Node.
+
 ### PubSub message security with OpenSSL and LibreSSL
 
 The PubSub SecurityPolicies `PubSub-Aes128-CTR` and `PubSub-Aes256-CTR`
