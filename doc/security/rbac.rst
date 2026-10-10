@@ -73,7 +73,27 @@ way.  No namespace has a default after startup.  To secure a server:
 
 - set ``allPermissionsForAnonymous = false`` before creating the server,
 - give every namespace, including Namespace Zero, a default,
-- map users to Roles, including a SecurityAdmin for remote administration.
+- map users to Roles, including a SecurityAdmin for remote administration,
+- require encryption with AccessRestrictions where needed.
+
+AccessRestrictions
+------------------
+
+AccessRestrictions (Part 3 §5.2.11) tie a Node to the channel security:
+``UA_ACCESSRESTRICTIONTYPE_SIGNINGREQUIRED`` and ``ENCRYPTIONREQUIRED``
+(else ``Bad_SecurityModeInsufficient``), ``SESSIONREQUIRED`` (else
+``Bad_UserAccessDenied``).  Read and MonitoredItem sampling, Write, Call
+(Object and Method), HistoryRead, HistoryUpdate, the NodeManagement services
+(the new Node, both ends of a reference, every deleted Node) and Event
+delivery (EventType and SourceNode) enforce them, Browse and
+TranslateBrowsePathsToNodeIds only with ``APPLYRESTRICTIONSTOBROWSE`` (Browse
+then also hides restricted targets).  The local admin Session is exempt.
+
+Set them with ``UA_Server_setNodeAccessRestrictions`` or, for all Nodes
+without own value, ``UA_Server_setNamespaceDefaultAccessRestrictions``.  The
+AccessRestrictions attribute reads the effective value and cannot be written
+by clients.  The child Nodes of a new instance inherit the AccessRestrictions
+of their InstanceDeclarations, but not their RolePermissions.
 
 Auditing
 --------

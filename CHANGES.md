@@ -36,6 +36,15 @@ New `UA_CertificateUtils_getApplicationUri` (the only URI in the
 subjectAltName) and `UA_CertificateUtils_getRoleSubjectCriteria` (the Part 18
 X509Subject criteria of the subject and the issuer of a Certificate).
 
+### RBAC: AccessRestrictions
+
+AccessRestrictions (Part 3 §5.2.11) are enforced by Read, Write, Call, the
+history and NodeManagement services, MonitoredItems and Event delivery, and by
+Browse and TranslateBrowsePathsToNodeIds only with `ApplyRestrictionsToBrowse`.
+New API: `UA_Server_setNodeAccessRestrictions`,
+`UA_Server_getNodeAccessRestrictions` and
+`UA_Server_setNamespaceDefaultAccessRestrictions`.
+
 ### PubSub message security with OpenSSL and LibreSSL
 
 The PubSub SecurityPolicies `PubSub-Aes128-CTR` and `PubSub-Aes256-CTR`

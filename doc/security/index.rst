@@ -32,8 +32,8 @@ This section documents the parts you actually configure and operate:
   and the ``UA_CreateCertificate`` helper.
 - :doc:`ecc` -- ECC specifics: supported curves, certificate requirements,
   generation, and the related examples.
-- :doc:`rbac` -- Role-Based Access Control: RolePermissions and the default
-  rights.
+- :doc:`rbac` -- Role-Based Access Control: RolePermissions, the default
+  rights and AccessRestrictions.
 
 For the protocol-level overview (SecureChannel, SecurityMode, Endpoint
 discovery) -- see :doc:`../core_concepts`.  This section focuses on the
