@@ -14,7 +14,11 @@
 #include <open62541/plugin/certificategroup_default.h>
 #include <open62541/plugin/accesscontrol_default.h>
 #include <open62541/plugin/securitypolicy_default.h>
+#include <open62541/plugin/create_certificate.h>
+#include <open62541/plugin/log_stdout.h>
 #include <open62541/server.h>
+
+#include <ctype.h>
 
 #include "client/ua_client_internal.h"
 #include "ua_server_internal.h"
@@ -64,7 +68,7 @@ static void setup(void) {
     UA_ByteString *revocationList = NULL;
     size_t revocationListSize = 0;
 
-    server = UA_Server_newForUnitTestWithSecurityPolicies(4840, &certificate, &privateKey,
+    server = UA_Server_newForUnitTestWithSecurityPolicies(4864, &certificate, &privateKey,
                                                           trustList, trustListSize,
                                                           issuerList, issuerListSize,
                                                           revocationList, revocationListSize);
@@ -134,7 +138,7 @@ START_TEST(Client_connect_certificate) {
     UA_ClientConfig_setDefaultEncryption(cc, certificate, privateKey, NULL, 0, NULL, 0);
     UA_CertificateGroup_AcceptAll(&cc->certificateVerification);
 
-    UA_StatusCode retval = UA_Client_connect(client, "opc.tcp://localhost:4840");
+    UA_StatusCode retval = UA_Client_connect(client, "opc.tcp://localhost:4864");
 
     ck_assert_uint_eq(retval, UA_STATUSCODE_GOOD);
 
@@ -176,7 +180,7 @@ START_TEST(Client_connect_invalid_certificate) {
 
     /* Overrides the authentication SecurityPolicies */
     UA_ClientConfig_setAuthenticationCert(cc, certificateAuth, privateKeyAuth);
-    UA_StatusCode retval = UA_Client_connect(client, "opc.tcp://localhost:4840");
+    UA_StatusCode retval = UA_Client_connect(client, "opc.tcp://localhost:4864");
 
     /* openssl v.3 returns a different exit code than other versions. */
     //ck_assert_uint_eq(retval, UA_STATUSCODE_BADCERTIFICATEUNTRUSTED);
@@ -232,7 +236,7 @@ START_TEST(client_connect_none_username_basic256Sha256) {
         UA_SecurityPolicy_None(&cc->authSecurityPolicies[0], certificate, cc->logging);
         UA_SecurityPolicy_Basic256Sha256(&cc->authSecurityPolicies[1], certificate, privateKey, cc->logging);
 
-        UA_StatusCode retval = UA_Client_connectUsername(client, "opc.tcp://localhost:4840", "admin", "admin");
+        UA_StatusCode retval = UA_Client_connectUsername(client, "opc.tcp://localhost:4864", "admin", "admin");
 
         ck_assert_uint_eq(retval, UA_STATUSCODE_GOOD);
 
@@ -313,7 +317,7 @@ START_TEST(client_connect_none_username_eccpnist256) {
     cc->securityPoliciesSize = 1;
     UA_SecurityPolicy_None(&cc->securityPolicies[0], certificate, cc->logging);
 
-    UA_StatusCode retval = UA_Client_connectUsername(client, "opc.tcp://localhost:4840", "admin", "admin");
+    UA_StatusCode retval = UA_Client_connectUsername(client, "opc.tcp://localhost:4864", "admin", "admin");
 
     /* ECC (and RSA-DH) policies must NOT be used to secure a UserIdentityToken
      * over a #None SecureChannel: they rely on ephemeral key agreement that
@@ -402,7 +406,7 @@ START_TEST(client_connect_ecc_username_eccpnist256) {
                                   UA_APPLICATIONTYPE_CLIENT,
                                   certificate, privateKey, cc->logging);
 
-    UA_StatusCode retval = UA_Client_connectUsername(client, "opc.tcp://localhost:4840", "admin", "admin");
+    UA_StatusCode retval = UA_Client_connectUsername(client, "opc.tcp://localhost:4864", "admin", "admin");
 
     ck_assert_uint_eq(retval, UA_STATUSCODE_GOOD);
 
@@ -456,7 +460,7 @@ START_TEST(client_connect_basic256Sha256_anonymous) {
     cc->authSecurityPoliciesSize = 1;
     UA_SecurityPolicy_Basic256Sha256(&cc->authSecurityPolicies[0], certificate, privateKey, cc->logging);
 
-    UA_StatusCode retval = UA_Client_connect(client, "opc.tcp://localhost:4840");
+    UA_StatusCode retval = UA_Client_connect(client, "opc.tcp://localhost:4864");
 
     ck_assert_uint_eq(retval, UA_STATUSCODE_GOOD);
 
@@ -499,7 +503,7 @@ START_TEST(client_authenticate_with_certificate) {
     /* Set the authentication certificate */
     UA_ClientConfig_setAuthenticationCert(cc, certificateAuth, privateKeyAuth);
 
-    UA_StatusCode retval = UA_Client_connect(client, "opc.tcp://localhost:4840");
+    UA_StatusCode retval = UA_Client_connect(client, "opc.tcp://localhost:4864");
 
     ck_assert_uint_eq(retval, UA_STATUSCODE_GOOD);
     assertCertificateUserId(client);
@@ -508,6 +512,96 @@ START_TEST(client_authenticate_with_certificate) {
     UA_Client_delete(client);
 }
 END_TEST
+
+#ifdef UA_ENABLE_RBAC
+/* X509Subject (not plain ASCII) and Thumbprint criteria from a real user
+ * certificate (Part 18 §4.4.3). The Session also gets AuthenticatedUser. */
+START_TEST(client_authenticate_certificate_roles) {
+    UA_String subject[3] = {UA_STRING_STATIC("C=DE"),
+                            UA_STRING_STATIC("O=M\xC3\xBCller GmbH"),
+                            UA_STRING_STATIC("CN=J\xC3\xB6rg Test")};
+    UA_String subjectAltName[2] = {UA_STRING_STATIC("DNS:localhost"),
+                                   UA_STRING_STATIC("URI:urn:open62541.client.utf8")};
+    UA_KeyValueMap *kvm = UA_KeyValueMap_new();
+    UA_UInt16 keyLength = 2048;
+    UA_KeyValueMap_setScalar(kvm, UA_QUALIFIEDNAME(0, "key-size-bits"),
+                             (void *)&keyLength, &UA_TYPES[UA_TYPES_UINT16]);
+    UA_ByteString certificateAuth = UA_BYTESTRING_NULL;
+    UA_ByteString privateKeyAuth = UA_BYTESTRING_NULL;
+    ck_assert_uint_eq(UA_CreateCertificate(UA_Log_Stdout, subject, 3, subjectAltName, 2,
+                                           UA_CERTIFICATEFORMAT_DER, kvm,
+                                           &privateKeyAuth, &certificateAuth),
+                      UA_STATUSCODE_GOOD);
+    UA_KeyValueMap_delete(kvm);
+    UA_String thumbprint;
+    ck_assert_uint_eq(UA_ByteString_allocBuffer(&thumbprint, 40), UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(UA_CertificateUtils_getThumbprint(&certificateAuth, &thumbprint),
+                      UA_STATUSCODE_GOOD);
+    for(size_t i = 0; i < thumbprint.length; i++)
+        thumbprint.data[i] = (UA_Byte)toupper(thumbprint.data[i]);
+
+    /* The server thread is paused while the test changes the server */
+    UA_atomic_store(&running, false);
+    THREAD_JOIN(server_thread);
+    const char *names[2] = {"SubjectRole", "ThumbprintRole"};
+    UA_IdentityMappingRuleType rule;
+    UA_IdentityMappingRuleType_init(&rule);
+    for(size_t i = 0; i < 2; i++) {
+        rule.criteriaType = (i == 0) ? UA_IDENTITYCRITERIATYPE_X509SUBJECT :
+            UA_IDENTITYCRITERIATYPE_THUMBPRINT;
+        rule.criteria = (i == 0) ?
+            UA_STRING("CN=\"J\xC3\xB6rg Test\"/O=\"M\xC3\xBCller GmbH\"/C=\"DE\"") :
+            thumbprint;
+        UA_Role role;
+        UA_Role_init(&role);
+        role.roleName = UA_QUALIFIEDNAME(1, (char*)(uintptr_t)names[i]);
+        role.identityMappingRules = &rule;
+        role.identityMappingRulesSize = 1;
+        ck_assert_uint_eq(UA_Server_addRole(server, &role, NULL), UA_STATUSCODE_GOOD);
+    }
+    UA_String_clear(&thumbprint);
+    UA_atomic_store(&running, true);
+    THREAD_CREATE(server_thread, serverloop);
+
+    UA_ByteString certificate = {CLIENT_CERT_DER_LENGTH, CLIENT_CERT_DER_DATA};
+    UA_ByteString privateKey = {CLIENT_KEY_DER_LENGTH, CLIENT_KEY_DER_DATA};
+    UA_Client *client = UA_Client_newForUnitTest();
+    UA_ClientConfig *cc = UA_Client_getConfig(client);
+    cc->securityMode = UA_MESSAGESECURITYMODE_SIGNANDENCRYPT;
+    cc->securityPolicyUri = UA_String_fromChars(
+        "http://opcfoundation.org/UA/SecurityPolicy#Aes128_Sha256_RsaOaep");
+    UA_String_clear(&cc->clientDescription.applicationUri);
+    cc->clientDescription.applicationUri =
+        UA_STRING_ALLOC("urn:open62541.server.application");
+    UA_ClientConfig_setDefaultEncryption(cc, certificate, privateKey, NULL, 0, NULL, 0);
+    UA_CertificateGroup_AcceptAll(&cc->certificateVerification);
+    ck_assert_uint_eq(UA_ClientConfig_setAuthenticationCert(cc, certificateAuth,
+                                                            privateKeyAuth),
+                      UA_STATUSCODE_GOOD);
+    UA_ByteString_clear(&certificateAuth);
+    UA_ByteString_clear(&privateKeyAuth);
+    ck_assert_uint_eq(UA_Client_connect(client, "opc.tcp://localhost:4864"),
+                      UA_STATUSCODE_GOOD);
+
+    size_t namesSize = 0;
+    UA_QualifiedName *roleNames = NULL;
+    ck_assert_uint_eq(UA_Server_getSessionRoleNames(server, client->sessionId,
+                                                    &namesSize, &roleNames),
+                      UA_STATUSCODE_GOOD);
+    const UA_QualifiedName expected[3] = {UA_QUALIFIEDNAME(1, "SubjectRole"),
+        UA_QUALIFIEDNAME(1, "ThumbprintRole"), UA_QUALIFIEDNAME(0, "AuthenticatedUser")};
+    for(size_t e = 0; e < 3; e++) {
+        UA_Boolean found = false;
+        for(size_t i = 0; i < namesSize; i++)
+            found |= UA_QualifiedName_equal(&roleNames[i], &expected[e]);
+        ck_assert_msg(found, "Role %u not assigned", (unsigned)e);
+    }
+    UA_Array_delete(roleNames, namesSize, &UA_TYPES[UA_TYPES_QUALIFIEDNAME]);
+    UA_Client_disconnect(client);
+    UA_Client_delete(client);
+}
+END_TEST
+#endif /* UA_ENABLE_RBAC */
 
 START_TEST(client_authenticate_none_with_certificate) {
     /* Load client certificate and private key for the SecureChannel */
@@ -543,7 +637,7 @@ START_TEST(client_authenticate_none_with_certificate) {
     /* Set the authentication certificate */
     UA_ClientConfig_setAuthenticationCert(cc, certificateAuth, privateKeyAuth);
 
-    UA_StatusCode retval = UA_Client_connect(client, "opc.tcp://localhost:4840");
+    UA_StatusCode retval = UA_Client_connect(client, "opc.tcp://localhost:4864");
 
     ck_assert_uint_eq(retval, UA_STATUSCODE_GOOD);
     assertCertificateUserId(client);
@@ -567,6 +661,9 @@ static Suite* testSuite_Client(void) {
     tcase_add_test(tc_client, client_connect_basic256Sha256_anonymous);
     tcase_add_test(tc_client, client_authenticate_with_certificate);
     tcase_add_test(tc_client, client_authenticate_none_with_certificate);
+#ifdef UA_ENABLE_RBAC
+    tcase_add_test(tc_client, client_authenticate_certificate_roles);
+#endif
     suite_add_tcase(s,tc_client);
     return s;
 }

@@ -1347,34 +1347,130 @@ Service_ActivateSession_inner(UA_Server *server, UA_SecureChannel *channel,
     }
 
 #ifdef UA_ENABLE_RBAC
-    /* Evaluate identity mapping rules and assign matching roles to the session.
-     * The client application counts as trusted when its application instance
-     * certificate was validated during OpenSecureChannel, i.e. on a signed or
-     * encrypted SecureChannel (Part 18 §4.4.3 TrustedApplication). */
-    UA_Boolean trustedApp = (channel->securityPolicy != NULL &&
-        channel->securityPolicy->policyType != UA_SECURITYPOLICYTYPE_NONE &&
-        channel->remoteCertificate.length > 0);
+    /* Capture the identity criteria of the Session. They are kept to
+     * re-evaluate the Roles when the RoleSet changes. */
+    UA_SessionIdentityContext ctx;
+    memset(&ctx, 0, sizeof(ctx));
+    /* An empty token is anonymous (Part 4 §5.7.3), so use the policy */
+    const UA_ExtensionObject *rbacToken = &req->userIdentityToken;
+    const UA_DataType *rbacTokenType =
+        (rbacToken->encoding == UA_EXTENSIONOBJECT_DECODED ||
+         rbacToken->encoding == UA_EXTENSIONOBJECT_DECODED_NODELETE) ?
+        rbacToken->content.decoded.type : NULL;
+    ctx.isAnonymous = (utp->tokenType == UA_USERTOKENTYPE_ANONYMOUS);
+    /* Part 18 §4.4.3: a validated client certificate on a signed
+     * SecureChannel. HTTPS with SecurityPolicy None does not qualify, its
+     * certificate from CreateSession is not validated. */
+    ctx.trustedApplication = (UA_SecureChannel_hasApplicationSecurity(channel) &&
+                              channel->remoteCertificate.length > 0);
+    UA_StatusCode ctxRes = UA_STATUSCODE_GOOD;
+    if(rbacTokenType == &UA_TYPES[UA_TYPES_USERNAMEIDENTITYTOKEN]) {
+        const UA_UserNameIdentityToken *ut = (const UA_UserNameIdentityToken*)
+            req->userIdentityToken.content.decoded.data;
+        ctxRes = UA_String_copy(&ut->userName, &ctx.userName);
+    } else if(rbacTokenType == &UA_TYPES[UA_TYPES_X509IDENTITYTOKEN]) {
+        UA_X509IdentityToken *x509 = (UA_X509IdentityToken*)
+            req->userIdentityToken.content.decoded.data;
+        /* SHA-1 as 40 hex characters into caller-provided storage */
+        ctxRes = UA_ByteString_allocBuffer((UA_ByteString*)&ctx.userThumbprint, 40);
+        if(ctxRes == UA_STATUSCODE_GOOD)
+            ctxRes = UA_CertificateUtils_getThumbprint(&x509->certificateData,
+                                                       &ctx.userThumbprint);
+        if(ctxRes == UA_STATUSCODE_GOOD) {
+            UA_StatusCode dnRes = UA_CertificateUtils_getRoleSubjectCriteria(
+                &x509->certificateData, &ctx.userSubject, &ctx.userIssuer);
+            /* Not a reason to refuse the Session, X509Subject rules just do
+             * not match */
+            if(dnRes == UA_STATUSCODE_BADOUTOFMEMORY)
+                ctxRes = dnRes;
+            else if(dnRes != UA_STATUSCODE_GOOD)
+                UA_LOG_WARNING_SESSION(server->config.logging, session,
+                                       "ActivateSession: Could not derive the "
+                                       "X509Subject criteria from the user "
+                                       "certificate (%s). X509Subject rules "
+                                       "will not match this Session",
+                                       UA_StatusCode_name(dnRes));
+        }
+    }
+    /* Part 18 §4.4.3: the ApplicationUri of the client certificate, not of the
+     * ApplicationDescription (allowAllCertificateUris may tolerate a
+     * mismatch) */
+    if(ctxRes == UA_STATUSCODE_GOOD && ctx.trustedApplication) {
+        UA_StatusCode uriRes = UA_CertificateUtils_getApplicationUri(
+            &channel->remoteCertificate, &ctx.applicationUri);
+        if(uriRes == UA_STATUSCODE_BADOUTOFMEMORY)
+            ctxRes = uriRes;
+        else if(uriRes != UA_STATUSCODE_GOOD)
+            UA_LOG_WARNING_SESSION(server->config.logging, session,
+                                   "ActivateSession: Could not take the "
+                                   "ApplicationUri from the client "
+                                   "certificate (%s). Application rules "
+                                   "will not match this Session",
+                                   UA_StatusCode_name(uriRes));
+    }
+    /* The SecurityMode and SecurityPolicy of the SecureChannel for the
+     * Endpoint filters */
+    if(ctxRes == UA_STATUSCODE_GOOD && ed) {
+        ctx.endpointSecurityMode = channel->securityMode;
+        ctxRes = UA_String_copy(&channel->securityPolicy->policyUri,
+                                &ctx.securityPolicyUri);
+    }
+    if(ctxRes == UA_STATUSCODE_GOOD &&
+       server->config.accessControl.getUserGroups) {
+        ctxRes = server->config.accessControl.getUserGroups(
+            server, &server->config.accessControl, &session->sessionId,
+            session->context, &ctx.groups, &ctx.groupsSize);
+    }
+    /* Role criteria are claims of an IssuedIdentityToken */
+    if(ctxRes == UA_STATUSCODE_GOOD &&
+       rbacTokenType == &UA_TYPES[UA_TYPES_ISSUEDIDENTITYTOKEN] &&
+       server->config.accessControl.getUserTokenRoles) {
+        ctxRes = server->config.accessControl.getUserTokenRoles(
+            server, &server->config.accessControl, &session->sessionId,
+            session->context, &ctx.tokenRoles, &ctx.tokenRolesSize);
+    }
+
+    if(ctxRes != UA_STATUSCODE_GOOD) {
+        UA_SessionIdentityContext_clear(&ctx);
+        rh->serviceResult = ctxRes;
+        UA_SECURITY_REJECT;
+    }
+
+    /* The Session is only updated after all checks have passed */
     size_t rolesSize = 0;
     UA_NodeId *roleIds = NULL;
-    rh->serviceResult = UA_Server_evaluateSessionRoles(server,
-                                                       &req->userIdentityToken,
-                                                       trustedApp,
+    rh->serviceResult = UA_Server_evaluateSessionRoles(server, &ctx,
                                                        &rolesSize, &roleIds);
-    if(rh->serviceResult == UA_STATUSCODE_GOOD && rolesSize > 0) {
-        UA_Session_setRoles(server, session, roleIds, rolesSize);
-        for(size_t i = 0; i < rolesSize; i++) {
-            for(size_t k = 0; k < server->rolesSize; k++) {
-                if(UA_NodeId_equal(&roleIds[i], &server->roles[k].roleId)) {
-                    UA_LOG_INFO_SESSION(server->config.logging, session,
-                                        "ActivateSession: Assigned role '%.*s'",
-                                        (int)server->roles[k].roleName.name.length,
-                                        server->roles[k].roleName.name.data);
-                    break;
-                }
+    if(rh->serviceResult != UA_STATUSCODE_GOOD) {
+        UA_SessionIdentityContext_clear(&ctx);
+        UA_SECURITY_REJECT;
+    }
+
+    /* Also set an empty set, no Role of an earlier activation survives */
+    rh->serviceResult = UA_Session_setRoles(server, session, roleIds, rolesSize);
+    if(rh->serviceResult != UA_STATUSCODE_GOOD) {
+        UA_Array_delete(roleIds, rolesSize, &UA_TYPES[UA_TYPES_NODEID]);
+        UA_SessionIdentityContext_clear(&ctx);
+        UA_SECURITY_REJECT;
+    }
+    for(size_t i = 0; i < rolesSize; i++) {
+        for(size_t k = 0; k < server->rolesSize; k++) {
+            if(UA_NodeId_equal(&roleIds[i], &server->roles[k].roleId)) {
+                UA_LOG_INFO_SESSION(server->config.logging, session,
+                                    "ActivateSession: Assigned role '%.*s'",
+                                    (int)server->roles[k].roleName.name.length,
+                                    server->roles[k].roleName.name.data);
+                break;
             }
         }
-        UA_Array_delete(roleIds, rolesSize, &UA_TYPES[UA_TYPES_NODEID]);
     }
+    UA_Array_delete(roleIds, rolesSize, &UA_TYPES[UA_TYPES_NODEID]);
+
+    /* Transfer the ownership of the snapshot */
+    UA_SessionIdentityContext_clear(&session->identityContext);
+    session->identityContext = ctx;
+    session->hasIdentityContext = true;
+    session->rolesAssignedManually = false;
 #endif
 
     /* Attach the session to the currently used channel if the session isn't

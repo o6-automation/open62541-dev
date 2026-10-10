@@ -40,6 +40,28 @@ typedef struct UA_PublishResponseEntry {
 } UA_PublishResponseEntry;
 #endif
 
+#ifdef UA_ENABLE_RBAC
+/* The identity criteria of a Session (Part 18 §4.4), captured at
+ * ActivateSession. Kept to re-evaluate the Roles when the RoleSet changes. */
+typedef struct {
+    UA_Boolean isAnonymous;
+    UA_Boolean trustedApplication;
+    UA_String userName;
+    UA_String userThumbprint;        /* Of the X509 user certificate */
+    UA_String userSubject;           /* Part 18 X509Subject criteria */
+    UA_String userIssuer;
+    UA_String applicationUri;        /* From the client certificate */
+    UA_MessageSecurityMode endpointSecurityMode;
+    UA_String securityPolicyUri;
+    size_t groupsSize;               /* From AccessControl.getUserGroups */
+    UA_String *groups;
+    size_t tokenRolesSize;           /* From AccessControl.getUserTokenRoles */
+    UA_String *tokenRoles;
+} UA_SessionIdentityContext;
+
+void UA_SessionIdentityContext_clear(UA_SessionIdentityContext *ctx);
+#endif
+
 struct UA_Session {
     UA_Session *next; /* singly-linked list */
     UA_SecureChannel *channel; /* The pointer back to the SecureChannel in the session. */
@@ -113,6 +135,13 @@ struct UA_Session {
      * Populated by the activateSession callback. */
     size_t rolesSize;
     UA_NodeId *roles;
+
+    UA_SessionIdentityContext identityContext;
+    UA_Boolean hasIdentityContext;
+
+    /* Roles pinned with the "roles" Session attribute are not re-evaluated
+     * until the next ActivateSession or deleting the attribute */
+    UA_Boolean rolesAssignedManually;
 #endif
 };
 

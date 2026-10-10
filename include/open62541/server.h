@@ -2167,7 +2167,8 @@ UA_Server_readObjectProperty(UA_Server *server, const UA_NodeId objectId,
  * RBAC allows fine-grained access control by assigning roles to sessions and
  * defining permissions per role on individual nodes or entire namespaces.
  *
- * See :ref:`security-rbac` for the concepts and the default RolePermissions.
+ * See :ref:`security-rbac` for the concepts, the default Roles and
+ * RolePermissions and the format of the identity mapping criteria.
  *
  * Type Definitions
  * ~~~~~~~~~~~~~~~~
@@ -2214,16 +2215,30 @@ typedef struct {
     size_t identityMappingRulesSize;
     UA_IdentityMappingRuleType *identityMappingRules;
 
-    /* Application restrictions  (empty list = ignore) */
+    /* Application filter (Part 18 §4.4.1) with the ApplicationUris of client
+     * certificates. With applicationsExclude the list excludes (an empty list
+     * restricts nothing), else it includes (an empty list matches nothing). */
     UA_Boolean applicationsExclude;
     size_t applicationsSize;
     UA_String *applications;
 
-    /* Endpoint restrictions (empty list = ignore) */
+    /* Endpoint filter with the same semantics. Empty fields of an entry are
+     * not compared. An entry with an EndpointUrl or TransportProfileUri cannot
+     * be compared yet: it never matches an include list but always matches
+     * an exclude list. */
     UA_Boolean endpointsExclude;
     size_t endpointsSize;
     UA_EndpointType *endpoints;
 } UA_Role;
+
+/**
+ * Assigning Roles from the application
+ * ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+ * Setting the Session attribute ``roles`` (a NodeId array of registered Roles)
+ * with ``UA_Server_setSessionAttribute`` pins the Roles of the Session: they
+ * are not re-evaluated when the RoleSet changes, only removed Roles are
+ * dropped. Deleting the attribute or a new ActivateSession re-evaluates the
+ * identity mapping rules. */
 
 /* UA_Role Type Management */
 void UA_EXPORT

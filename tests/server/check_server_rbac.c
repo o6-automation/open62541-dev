@@ -140,19 +140,17 @@ START_TEST(addRole_nullRoleIdAllowed) {
 }
 END_TEST
 
-/* Verify that adding a role with unsupported identity criteria types
- * succeeds (the role is stored) but the criteria will not be evaluated.
- * This exercises the warning log path added for unsupported criteria. */
+/* Verify that a canonical Thumbprint criterion is accepted and retained. */
 START_TEST(addRole_unsupportedCriteriaStored) {
     UA_Role role;
     UA_Role_init(&role);
     role.roleName = UA_QUALIFIEDNAME(0, "ThumbprintRole");
 
-    /* Add a Thumbprint identity rule — currently not evaluated */
+    /* SHA-1 thumbprints are 40 uppercase hexadecimal characters. */
     UA_IdentityMappingRuleType rule;
     UA_IdentityMappingRuleType_init(&rule);
     rule.criteriaType = UA_IDENTITYCRITERIATYPE_THUMBPRINT;
-    rule.criteria = UA_STRING("AB:CD:EF");
+    rule.criteria = UA_STRING("00112233445566778899AABBCCDDEEFF00112233");
     role.identityMappingRules = &rule;
     role.identityMappingRulesSize = 1;
 
@@ -612,6 +610,7 @@ START_TEST(allowModifyingOptionalRoles) {
         UA_calloc(1, sizeof(UA_IdentityMappingRuleType));
     ck_assert_ptr_nonnull(role.identityMappingRules);
     role.identityMappingRules[0].criteriaType = UA_IDENTITYCRITERIATYPE_USERNAME;
+    role.identityMappingRules[0].criteria = UA_STRING_ALLOC("observer");
     role.identityMappingRulesSize = 1;
 
     res = UA_Server_updateRole(server, &role);
@@ -876,22 +875,19 @@ END_TEST
 /* An anonymous session is granted the TrustedApplication role only when the
  * client application is trusted (encrypted SecureChannel). */
 START_TEST(trustedApplication_assignedWhenTrusted) {
-    UA_AnonymousIdentityToken anon;
-    UA_AnonymousIdentityToken_init(&anon);
-    UA_ExtensionObject token;
-    UA_ExtensionObject_init(&token);
-    token.encoding = UA_EXTENSIONOBJECT_DECODED;
-    token.content.decoded.type = &UA_TYPES[UA_TYPES_ANONYMOUSIDENTITYTOKEN];
-    token.content.decoded.data = &anon;
-
     UA_NodeId taId =
         UA_NODEID_NUMERIC(0, UA_NS0ID_WELLKNOWNROLE_TRUSTEDAPPLICATION);
 
     /* Trusted application -> role is assigned */
+    UA_SessionIdentityContext ctx;
+    memset(&ctx, 0, sizeof(ctx));
+    ctx.isAnonymous = true;
+    ctx.trustedApplication = true;
+
     size_t size = 0;
     UA_NodeId *ids = NULL;
     UA_StatusCode res =
-        UA_Server_evaluateSessionRoles(server, &token, true, &size, &ids);
+        UA_Server_evaluateSessionRoles(server, &ctx, &size, &ids);
     ck_assert_uint_eq(res, UA_STATUSCODE_GOOD);
     UA_Boolean found = false;
     for(size_t i = 0; i < size; i++)
@@ -901,9 +897,10 @@ START_TEST(trustedApplication_assignedWhenTrusted) {
     UA_Array_delete(ids, size, &UA_TYPES[UA_TYPES_NODEID]);
 
     /* Untrusted application -> role is not assigned */
+    ctx.trustedApplication = false;
     size = 0;
     ids = NULL;
-    res = UA_Server_evaluateSessionRoles(server, &token, false, &size, &ids);
+    res = UA_Server_evaluateSessionRoles(server, &ctx, &size, &ids);
     ck_assert_uint_eq(res, UA_STATUSCODE_GOOD);
     found = false;
     for(size_t i = 0; i < size; i++)
@@ -920,17 +917,13 @@ START_TEST(anonymousRole_alwaysAssigned) {
     UA_NodeId anonId = UA_NODEID_NUMERIC(0, UA_NS0ID_WELLKNOWNROLE_ANONYMOUS);
 
     /* Anonymous identity token */
-    UA_AnonymousIdentityToken anon;
-    UA_AnonymousIdentityToken_init(&anon);
-    UA_ExtensionObject tok;
-    UA_ExtensionObject_init(&tok);
-    tok.encoding = UA_EXTENSIONOBJECT_DECODED;
-    tok.content.decoded.type = &UA_TYPES[UA_TYPES_ANONYMOUSIDENTITYTOKEN];
-    tok.content.decoded.data = &anon;
+    UA_SessionIdentityContext ctx;
+    memset(&ctx, 0, sizeof(ctx));
+    ctx.isAnonymous = true;
 
     size_t size = 0;
     UA_NodeId *ids = NULL;
-    ck_assert_uint_eq(UA_Server_evaluateSessionRoles(server, &tok, false,
+    ck_assert_uint_eq(UA_Server_evaluateSessionRoles(server, &ctx,
                                                      &size, &ids),
                       UA_STATUSCODE_GOOD);
     UA_Boolean found = false;
@@ -941,15 +934,13 @@ START_TEST(anonymousRole_alwaysAssigned) {
     UA_Array_delete(ids, size, &UA_TYPES[UA_TYPES_NODEID]);
 
     /* Authenticated (username) session still receives the Anonymous Role */
-    UA_UserNameIdentityToken un;
-    UA_UserNameIdentityToken_init(&un);
-    un.userName = UA_STRING("nobody");
-    tok.content.decoded.type = &UA_TYPES[UA_TYPES_USERNAMEIDENTITYTOKEN];
-    tok.content.decoded.data = &un;
+    memset(&ctx, 0, sizeof(ctx));
+    ctx.isAnonymous = false;
+    ctx.userName = UA_STRING("nobody");
 
     size = 0;
     ids = NULL;
-    ck_assert_uint_eq(UA_Server_evaluateSessionRoles(server, &tok, false,
+    ck_assert_uint_eq(UA_Server_evaluateSessionRoles(server, &ctx,
                                                      &size, &ids),
                       UA_STATUSCODE_GOOD);
     found = false;

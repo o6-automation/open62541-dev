@@ -68,6 +68,9 @@ void UA_Session_clear(UA_Session *session, UA_Server* server) {
                     &UA_TYPES[UA_TYPES_NODEID]);
     session->roles = NULL;
     session->rolesSize = 0;
+    UA_SessionIdentityContext_clear(&session->identityContext);
+    session->hasIdentityContext = false;
+    session->rolesAssignedManually = false;
 #endif
 
 #ifdef UA_ENABLE_DIAGNOSTICS
@@ -370,6 +373,10 @@ UA_Server_setSessionAttribute(UA_Server *server, const UA_NodeId *sessionId,
         } else {
             res = UA_STATUSCODE_BADINVALIDARGUMENT;
         }
+        /* Pin the Roles until the attribute is deleted or the Session is
+         * activated again */
+        if(res == UA_STATUSCODE_GOOD)
+            session->rolesAssignedManually = true;
         unlockServer(server);
         return res;
     }
@@ -398,9 +405,24 @@ UA_Server_deleteSessionAttribute(UA_Server *server, const UA_NodeId *sessionId,
             unlockServer(server);
             return UA_STATUSCODE_BADSESSIONIDINVALID;
         }
-        UA_Session_setRoles(server, session, NULL, 0);
+        /* Re-evaluate right away. Without an identity snapshot the Session
+         * ends up without Roles. */
+        session->rolesAssignedManually = false;
+        UA_StatusCode res;
+        if(session->hasIdentityContext) {
+            size_t rolesSize = 0;
+            UA_NodeId *roleIds = NULL;
+            res = UA_Server_evaluateSessionRoles(server, &session->identityContext,
+                                                 &rolesSize, &roleIds);
+            if(res == UA_STATUSCODE_GOOD) {
+                res = UA_Session_setRoles(server, session, roleIds, rolesSize);
+                UA_Array_delete(roleIds, rolesSize, &UA_TYPES[UA_TYPES_NODEID]);
+            }
+        } else {
+            res = UA_Session_setRoles(server, session, NULL, 0);
+        }
         unlockServer(server);
-        return UA_STATUSCODE_GOOD;
+        return res;
     }
 #endif
     lockServer(server);

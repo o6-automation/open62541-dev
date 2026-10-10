@@ -46,6 +46,26 @@ rbacChannelInit(UA_Server *server, UA_SecureChannel *channel,
     channel->state = UA_SECURECHANNELSTATE_OPEN;
 }
 
+/* Offer the None SecurityPolicy also with Sign and SignAndEncrypt, so that
+ * Sessions can be activated on channels of every mode. Before the startup. */
+static UA_INLINE void
+rbacAddEndpointModes(UA_ServerConfig *config) {
+    ck_assert_uint_ge(config->endpointsSize, 1);
+    UA_EndpointDescription ed;
+    ck_assert_uint_eq(UA_EndpointDescription_copy(&config->endpoints[0], &ed),
+                      UA_STATUSCODE_GOOD);
+    ck_assert_int_eq(ed.securityMode, UA_MESSAGESECURITYMODE_NONE);
+    for(int mode = UA_MESSAGESECURITYMODE_SIGN;
+        mode <= UA_MESSAGESECURITYMODE_SIGNANDENCRYPT; mode++) {
+        ed.securityMode = (UA_MessageSecurityMode)mode;
+        ck_assert_uint_eq(UA_Array_appendCopy((void**)&config->endpoints,
+                                              &config->endpointsSize, &ed,
+                                              &UA_TYPES[UA_TYPES_ENDPOINTDESCRIPTION]),
+                          UA_STATUSCODE_GOOD);
+    }
+    UA_EndpointDescription_clear(&ed);
+}
+
 /* An Object or Variable below the ObjectsFolder with a string NodeId */
 static UA_INLINE UA_NodeId
 rbacAddNode(UA_Server *server, const char *name, UA_NodeClass nodeClass) {
@@ -117,6 +137,92 @@ rbacSession(UA_Server *server, UA_SecureChannel *channel, UA_NodeId role) {
     ck_assert_uint_eq(res, UA_STATUSCODE_GOOD);
     rbacSetRoles(server, &session->sessionId, 1, &role);
     return session;
+}
+
+static UA_INLINE UA_Boolean
+rbacHasRole(UA_Server *server, const UA_NodeId *sessionId, UA_NodeId role) {
+    UA_Variant roles;
+    UA_Variant_init(&roles);
+    ck_assert_uint_eq(UA_Server_getSessionAttributeCopy(server, sessionId,
+                                                        UA_QUALIFIEDNAME(0, "roles"),
+                                                        &roles),
+                      UA_STATUSCODE_GOOD);
+    UA_Boolean found = false;
+    for(size_t i = 0; i < roles.arrayLength; i++)
+        found |= UA_NodeId_equal(&((UA_NodeId*)roles.data)[i], &role);
+    UA_Variant_clear(&roles);
+    return found;
+}
+
+/* ActivateSession, a NULL token type sends an empty token. The PolicyId is
+ * taken from GetEndpoints, as a Client does. */
+static UA_INLINE UA_StatusCode
+rbacActivate(UA_Server *server, UA_SecureChannel *channel,
+             const UA_NodeId *sessionId, const UA_DataType *tokenType,
+             void *token) {
+    lockServer(server);
+    UA_Session *session = getSessionById(server, sessionId);
+    ck_assert_ptr_nonnull(session);
+    UA_ActivateSessionRequest request;
+    UA_ActivateSessionRequest_init(&request);
+    request.requestHeader.authenticationToken = session->authenticationToken;
+    unlockServer(server);
+
+    UA_String *policyId = (UA_String*)token; /* First member of every token */
+    if(tokenType) {
+        UA_UserTokenType type = UA_USERTOKENTYPE_ANONYMOUS;
+        if(tokenType == &UA_TYPES[UA_TYPES_USERNAMEIDENTITYTOKEN])
+            type = UA_USERTOKENTYPE_USERNAME;
+        else if(tokenType == &UA_TYPES[UA_TYPES_ISSUEDIDENTITYTOKEN])
+            type = UA_USERTOKENTYPE_ISSUEDTOKEN;
+        UA_GetEndpointsRequest geReq;
+        UA_GetEndpointsRequest_init(&geReq);
+        geReq.endpointUrl = UA_STRING("opc.tcp://rbac.test");
+        UA_GetEndpointsResponse geRes;
+        UA_GetEndpointsResponse_init(&geRes);
+        rbacService(server, NULL, Service_GetEndpoints, &geReq, &geRes);
+        for(size_t i = 0; i < geRes.endpointsSize; i++) {
+            UA_EndpointDescription *ed = &geRes.endpoints[i];
+            if(ed->securityMode != channel->securityMode)
+                continue;
+            for(size_t j = 0; j < ed->userIdentityTokensSize; j++) {
+                if(ed->userIdentityTokens[j].tokenType == type && !policyId->data)
+                    UA_String_copy(&ed->userIdentityTokens[j].policyId, policyId);
+            }
+        }
+        UA_GetEndpointsResponse_clear(&geRes);
+        UA_ExtensionObject_setValueNoDelete(&request.userIdentityToken,
+                                            token, tokenType);
+    }
+
+    UA_ActivateSessionResponse response;
+    UA_ActivateSessionResponse_init(&response);
+    lockServer(server);
+    Service_ActivateSession(server, channel, &request, &response);
+    unlockServer(server);
+    UA_StatusCode res = response.responseHeader.serviceResult;
+    UA_ActivateSessionResponse_clear(&response);
+    if(tokenType)
+        UA_String_clear(policyId);
+    return res;
+}
+
+/* CreateSession and ActivateSession on the channel */
+static UA_INLINE UA_StatusCode
+rbacLogin(UA_Server *server, UA_SecureChannel *channel,
+          const UA_DataType *tokenType, void *token, UA_NodeId *sessionId) {
+    UA_CreateSessionRequest request;
+    UA_CreateSessionRequest_init(&request);
+    request.requestedSessionTimeout = 60000.0;
+    UA_CreateSessionResponse response;
+    UA_CreateSessionResponse_init(&response);
+    lockServer(server);
+    Service_CreateSession(server, channel, &request, &response);
+    unlockServer(server);
+    ck_assert_uint_eq(response.responseHeader.serviceResult, UA_STATUSCODE_GOOD);
+    *sessionId = response.sessionId; /* A Guid NodeId, no heap memory */
+    UA_CreateSessionResponse_clear(&response);
+    return rbacActivate(server, channel, sessionId, tokenType, token);
 }
 
 /* Call a Method in a Session */

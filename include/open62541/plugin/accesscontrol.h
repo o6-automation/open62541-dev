@@ -118,6 +118,25 @@ struct UA_AccessControl {
                                   const UA_NodeId *sessionId, void *sessionContext,
                                   const UA_NodeId *nodeId, void *nodeContext);
 
+#ifdef UA_ENABLE_RBAC
+    /* GroupIds of the user for the GroupId identity mapping criteria (Part 18
+     * §4.4.2), called at ActivateSession. Optional, without it GroupId rules
+     * never match. The caller takes ownership of the returned array. */
+    UA_StatusCode (*getUserGroups)(UA_Server *server, UA_AccessControl *ac,
+                                   const UA_NodeId *sessionId, void *sessionContext,
+                                   UA_String **groupIds, size_t *groupIdsSize);
+
+    /* Validated Role claims of an accepted IssuedIdentityToken for the Role
+     * criteria. Optional, called at ActivateSession for issued tokens only. For
+     * a JWT use "<iss>/<role>" ("<role>" without issuer). The caller takes
+     * ownership of the returned array. */
+    UA_StatusCode (*getUserTokenRoles)(UA_Server *server, UA_AccessControl *ac,
+                                       const UA_NodeId *sessionId,
+                                       void *sessionContext,
+                                       UA_String **roleClaims,
+                                       size_t *roleClaimsSize);
+#endif
+
 #ifdef UA_ENABLE_SUBSCRIPTIONS
     /* Allow creating a subscription */
     UA_Boolean (*allowCreateSubscription)(UA_Server *server, UA_AccessControl *ac,

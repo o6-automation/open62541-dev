@@ -33,15 +33,17 @@ UA_Session_setRoles(UA_Server *server, UA_Session *session,
 UA_StatusCode
 checkRBACMethodAccess(UA_Server *server, const UA_NodeId *sessionId);
 
-/* Evaluate identity mapping rules for all roles against the given user token.
- * trustedApplication satisfies the TrustedApplication identity criteria
- * (validated application instance certificate). Returns the matching role IDs
- * in a newly allocated array. Must be called with the server lock held. */
+/* The Roles granted to an identity context, always including Anonymous.
+ * Must be called with the server lock held. */
 UA_StatusCode
 UA_Server_evaluateSessionRoles(UA_Server *server,
-                               const UA_ExtensionObject *userIdentityToken,
-                               UA_Boolean trustedApplication,
+                               const UA_SessionIdentityContext *ctx,
                                size_t *outRolesSize, UA_NodeId **outRoleIds);
+
+/* Re-evaluate the Roles of all Sessions after a RoleSet change.
+ * Must be called with the server lock held. */
+void
+UA_Server_reevaluateSessionRoles(UA_Server *server);
 
 /* Own value or the namespace default. Must be called with the server lock
  * held. */
