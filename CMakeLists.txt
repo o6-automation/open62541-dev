@@ -44,7 +44,7 @@ set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 # overwritten with more detailed information if git is available.
 set(OPEN62541_VER_MAJOR 1)
 set(OPEN62541_VER_MINOR 5)
-set(OPEN62541_VER_PATCH 8)
+set(OPEN62541_VER_PATCH 9)
 set(OPEN62541_VER_LABEL "") # like "-rc1" or "-g4538abcd" or "-g4538abcd-dirty"
 set(OPEN62541_VER_COMMIT "unknown-commit")
 
@@ -923,6 +923,7 @@ set(exported_headers ${PROJECT_BINARY_DIR}/src_generated/open62541/config.h
                      ${PROJECT_SOURCE_DIR}/include/open62541/server.h
                      ${PROJECT_SOURCE_DIR}/include/open62541/driver/alarms_conditions.h
                      ${PROJECT_SOURCE_DIR}/include/open62541/driver/mdns.h
+                     ${PROJECT_SOURCE_DIR}/include/open62541/driver/file_transfer.h
                      ${PROJECT_SOURCE_DIR}/include/open62541/pubsub.h
                      ${PROJECT_SOURCE_DIR}/include/open62541/plugin/nodestore.h)
 
@@ -1407,6 +1408,22 @@ if(UA_ENABLE_MQTT)
     list(APPEND plugin_sources ${PROJECT_SOURCE_DIR}/arch/common/eventloop_mqtt.c)
 endif()
 
+# The file transfer driver uses the OS-specific file handling definitions.
+# It is appended after the eventloop sources so that the amalgamation
+# integrates the architecture header before the driver code.
+if(UA_ENABLE_METHODCALLS)
+    list(APPEND lib_headers
+         ${PROJECT_SOURCE_DIR}/drivers/file_transfer/file_transfer_internal.h)
+    list(APPEND plugin_sources
+         ${PROJECT_SOURCE_DIR}/drivers/file_transfer/file_transfer_driver.c
+         ${PROJECT_SOURCE_DIR}/drivers/file_transfer/file_transfer_model.c
+         ${PROJECT_SOURCE_DIR}/drivers/file_transfer/file_transfer_file.c
+         ${PROJECT_SOURCE_DIR}/drivers/file_transfer/file_transfer_directory.c
+         ${PROJECT_SOURCE_DIR}/drivers/file_transfer/file_transfer_backend_localfs.c
+         ${PROJECT_SOURCE_DIR}/drivers/file_transfer/file_transfer_backend_memory.c
+         ${PROJECT_SOURCE_DIR}/drivers/file_transfer/file_transfer_temporary.c)
+endif()
+
 # For file based server and client configuration
 if(UA_ENABLE_JSON_ENCODING)
     list(APPEND plugin_sources ${PROJECT_SOURCE_DIR}/plugins/ua_config_json.c)
@@ -1534,6 +1551,7 @@ else()
 
     if(UA_ENABLE_METHODCALLS)
         list(APPEND UA_NS0_DATATYPES ${UA_SCHEMA_DIR}/datatypes_method.txt)
+        list(APPEND UA_NS0_NODESETS Opc.Ua.NodeSet2.FileTransferMinimal.xml)
     endif()
 
     if(UA_ENABLE_DIAGNOSTICS)

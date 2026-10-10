@@ -19,6 +19,7 @@
  *    Copyright 2022-2025 (c) Fraunhofer IOSB (Author: Andreas Ebner)
  *    Copyright 2024 (c) Fraunhofer IOSB (Author: Noel Graf)
  *    Copyright 2026 (c) o6 Automation GmbH (Author: Julius Pfrommer)
+ *    Copyright 2026 (c) o6 Automation GmbH (Author: Andreas Ebner)
  */
 
 #include "ua_server_internal.h"
@@ -188,19 +189,19 @@ addDriver(UA_Server *server, UA_Driver *drv) {
     if(!drv)
         return UA_STATUSCODE_BADINTERNALERROR;
 
-    /* A server can expose the GDS PushManagement information model only once. */
-    if(drv->driverType == UA_DRIVERTYPE_GDS_RECEIVER) {
-        UA_Driver *registered = server->drivers;
-        while(registered) {
-            if(registered->driverType == UA_DRIVERTYPE_GDS_RECEIVER) {
-                UA_LOG_ERROR(server->config.logging, UA_LOGCATEGORY_SERVER,
-                             "Cannot add the driver \"%S\". A GDS Receiver "
-                             "driver is already configured",
-                             drv->name);
-                return UA_STATUSCODE_BADALREADYEXISTS;
-            }
-            registered = registered->next;
-        }
+    /* Generic drivers may have multiple instances; other types are singletons.
+     * Never link an instance twice, which would create a cycle in the list. */
+    for(UA_Driver *registered = server->drivers; registered;
+        registered = registered->next) {
+        if(registered == drv)
+            return UA_STATUSCODE_BADALREADYEXISTS;
+        if(drv->driverType == UA_DRIVERTYPE_GENERIC ||
+           registered->driverType != drv->driverType)
+            continue;
+        UA_LOG_ERROR(server->config.logging, UA_LOGCATEGORY_SERVER,
+                     "Cannot add the driver \"%S\". A driver of the same "
+                     "type is already configured", drv->name);
+        return UA_STATUSCODE_BADALREADYEXISTS;
     }
 
     /* If undefined, set the backpointer to the current server */
@@ -221,8 +222,21 @@ addDriver(UA_Server *server, UA_Driver *drv) {
     server->drivers = drv;
 
     /* Start the component if the server is started */
-    if(server->state == UA_LIFECYCLESTATE_STARTED && drv->start)
-        drv->start(drv);
+    if(server->state == UA_LIFECYCLESTATE_STARTED && drv->start) {
+        UA_StatusCode res = drv->start(drv);
+        if(res != UA_STATUSCODE_GOOD) {
+            /* Leave ownership with the caller. The start callback may have
+             * registered other drivers, so find this entry again. Keep the
+             * server backpointer available for cleanup after a partial start. */
+            UA_Driver **prev = &server->drivers;
+            while(*prev && *prev != drv)
+                prev = &(*prev)->next;
+            if(*prev)
+                *prev = drv->next;
+            drv->next = NULL;
+            return res;
+        }
+    }
 
     return UA_STATUSCODE_GOOD;
 }
@@ -1098,6 +1112,16 @@ UA_Server_run_startup(UA_Server *server) {
         UA_LOG_ERROR(config->logging, UA_LOGCATEGORY_SERVER,
                      "The server has no userIdentificationPolicies defined.");
         return UA_STATUSCODE_BADINTERNALERROR;
+    }
+
+    /* The services call these AccessControl callbacks without a NULL check */
+    const UA_AccessControl *ac = &config->accessControl;
+    if(!ac->activateSession || !ac->getUserRightsMask ||
+       !ac->getUserAccessLevel || !ac->getUserExecutable ||
+       !ac->getUserExecutableOnObject || !ac->allowBrowseNode) {
+        UA_LOG_ERROR(config->logging, UA_LOGCATEGORY_SERVER,
+                     "The AccessControl plugin lacks a mandatory callback");
+        return UA_STATUSCODE_BADCONFIGURATIONERROR;
     }
 
     /* Start the EventLoop if not already started */
