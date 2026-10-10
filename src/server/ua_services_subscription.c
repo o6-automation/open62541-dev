@@ -630,6 +630,28 @@ Operation_TransferSubscription(UA_Server *server, UA_Session *session,
         return;
     }
 
+#ifdef UA_ENABLE_RBAC
+    /* The same user can have other Roles or AccessRestrictions in another
+     * Session. The queued data must not cross that boundary. */
+    UA_Boolean sameRbacContext;
+    if(oldSession) {
+        UA_SubscriptionRbacContext oldContext;
+        memset(&oldContext, 0, sizeof(UA_SubscriptionRbacContext));
+        UA_SubscriptionRbacContext_copyFromSession(&oldContext, oldSession);
+        sameRbacContext =
+            UA_SubscriptionRbacContext_matchesSession(&oldContext, session);
+        UA_SubscriptionRbacContext_clear(&oldContext);
+    } else {
+        sameRbacContext =
+            UA_SubscriptionRbacContext_matchesSession(&sub->ownerRbacContext,
+                                                      session);
+    }
+    if(!sameRbacContext) {
+        result->statusCode = UA_STATUSCODE_BADUSERACCESSDENIED;
+        return;
+    }
+#endif
+
     /* Check limits for the number of subscriptions for this Session */
     if((server->config.maxSubscriptionsPerSession != 0) &&
        (session->subscriptionsSize >= server->config.maxSubscriptionsPerSession)) {
@@ -661,6 +683,9 @@ Operation_TransferSubscription(UA_Server *server, UA_Session *session,
     newSub->ownerKnown = false;
     UA_String_init(&newSub->ownerUserId);
     UA_String_init(&newSub->ownerApplicationUri);
+#ifdef UA_ENABLE_RBAC
+    memset(&newSub->ownerRbacContext, 0, sizeof(UA_SubscriptionRbacContext));
+#endif
 
     /* Set to the same state as the original subscription */
     newSub->publishCallbackId = 0;

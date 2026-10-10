@@ -223,7 +223,7 @@ createSubscription(void) {
 }
 
 static void
-createMonitoredItem(void) {
+createMonitoredItemForAttribute(UA_UInt32 attributeId) {
     UA_CreateMonitoredItemsRequest request;
     UA_CreateMonitoredItemsRequest_init(&request);
     request.subscriptionId = subscriptionId;
@@ -233,7 +233,7 @@ createMonitoredItem(void) {
     UA_ReadValueId rvi;
     UA_ReadValueId_init(&rvi);
     rvi.nodeId = UA_NODEID_NUMERIC(0, UA_NS0ID_SERVER);
-    rvi.attributeId = UA_ATTRIBUTEID_BROWSENAME;
+    rvi.attributeId = attributeId;
     rvi.indexRange = UA_STRING_NULL;
     item.itemToMonitor = rvi;
     item.monitoringMode = UA_MONITORINGMODE_REPORTING;
@@ -259,6 +259,11 @@ createMonitoredItem(void) {
 
     UA_MonitoredItemCreateRequest_clear(&item);
     UA_CreateMonitoredItemsResponse_clear(&response);
+}
+
+static void
+createMonitoredItem(void) {
+    createMonitoredItemForAttribute(UA_ATTRIBUTEID_BROWSENAME);
 }
 
 START_TEST(Server_createSubscription) {
@@ -1345,6 +1350,174 @@ START_TEST(Server_transferSubscription_anonymous) {
 }
 END_TEST
 
+#ifdef UA_ENABLE_RBAC
+static void
+setSessionRole(UA_Session *s, UA_UInt32 roleId) {
+    UA_NodeId role = UA_NODEID_NUMERIC(0, roleId);
+    UA_Variant v;
+    UA_Variant_setArray(&v, &role, 1, &UA_TYPES[UA_TYPES_NODEID]);
+    ck_assert_uint_eq(UA_Server_setSessionAttribute(server, &s->sessionId,
+                                                    UA_QUALIFIEDNAME(0, "roles"), &v),
+                      UA_STATUSCODE_GOOD);
+}
+
+static UA_StatusCode
+transferSubscriptionTo(UA_Session *s) {
+    UA_TransferSubscriptionsRequest request;
+    UA_TransferSubscriptionsRequest_init(&request);
+    request.subscriptionIdsSize = 1;
+    request.subscriptionIds = &subscriptionId;
+    UA_TransferSubscriptionsResponse response;
+    UA_TransferSubscriptionsResponse_init(&response);
+    lockServer(server);
+    Service_TransferSubscriptions(server, s, &request, &response);
+    unlockServer(server);
+    ck_assert_uint_eq(response.resultsSize, 1);
+    UA_StatusCode res = response.results[0].statusCode;
+    UA_TransferSubscriptionsResponse_clear(&response);
+    return res;
+}
+
+/* A Subscription keeps the Roles of its Session, also while it is detached.
+ * Only a Session of the same user with the same Roles can transfer it. */
+START_TEST(Server_transferSubscription_requiresSameRoles) {
+    lockServer(server);
+    UA_String_clear(&session->clientUserIdOfSession);
+    session->clientUserIdOfSession = UA_STRING_ALLOC("testuser");
+    unlockServer(server);
+    setSessionRole(session, UA_NS0ID_WELLKNOWNROLE_ANONYMOUS);
+    createSubscription();
+    createMonitoredItem();
+    for(size_t detached = 0; detached < 2; detached++) {
+        if(detached) {
+            /* The Session times out, the Subscription is detached */
+            lockServer(server);
+            session->validTill = UA_DateTime_nowMonotonic() - UA_DATETIME_SEC;
+            cleanupSessions(server, UA_DateTime_nowMonotonic());
+            unlockServer(server);
+            session = NULL;
+        }
+        UA_Session *other = createAuthenticatedSession("testuser");
+        setSessionRole(other, UA_NS0ID_WELLKNOWNROLE_OPERATOR);
+        ck_assert_uint_eq(transferSubscriptionTo(other),
+                          UA_STATUSCODE_BADUSERACCESSDENIED);
+        UA_Server_closeSession(server, &other->sessionId);
+    }
+    UA_Session *session2 = createAuthenticatedSession("testuser");
+    setSessionRole(session2, UA_NS0ID_WELLKNOWNROLE_ANONYMOUS);
+    ck_assert_uint_eq(transferSubscriptionTo(session2), UA_STATUSCODE_GOOD);
+
+    lockServer(server);
+    UA_Server_closeSession(server, &session2->sessionId);
+    unlockServer(server);
+    createSession();
+}
+END_TEST
+
+static UA_DataValue *pendingReads[8];
+static size_t pendingReadsSize;
+
+static UA_StatusCode
+readLater(UA_Server *s, const UA_NodeId *sessionId, void *sessionContext,
+          const UA_NodeId *nodeId, void *nodeContext,
+          UA_Boolean includeSourceTimeStamp, const UA_NumericRange *range,
+          UA_DataValue *value) {
+    if(pendingReadsSize >= 8)
+        return UA_STATUSCODE_BADTOOMANYOPERATIONS;
+    pendingReads[pendingReadsSize++] = value;
+    return UA_STATUSCODE_GOODCOMPLETESASYNCHRONOUSLY;
+}
+
+/* Complete the reads in [from, to). Returns the first error. */
+static UA_StatusCode
+completeReads(size_t from, size_t to, UA_UInt32 v) {
+    UA_StatusCode res = UA_STATUSCODE_GOOD;
+    for(size_t i = from; i < to; i++) {
+        UA_DataValue *out = pendingReads[i];
+        UA_Variant_setScalarCopy(&out->value, &v, &UA_TYPES[UA_TYPES_UINT32]);
+        out->hasValue = true;
+        UA_StatusCode r = UA_Server_setAsyncReadResult(server, out);
+        if(res == UA_STATUSCODE_GOOD)
+            res = r;
+    }
+    for(size_t j = 0; j < 3; j++)
+        UA_Server_run_iterate(server, false);
+    return res;
+}
+
+/* A sample that is still being read when the Roles change is dropped. The
+ * MonitoredItem samples again with the new Roles. All reads are completed
+ * before the checks, the server shutdown waits for them. */
+START_TEST(Server_roleChangeDropsPendingSample) {
+    pendingReadsSize = 0;
+    UA_VariableAttributes attr = UA_VariableAttributes_default;
+    UA_NodeId varId = UA_NODEID_STRING(1, "readLater");
+    ck_assert_uint_eq(UA_Server_addVariableNode(server, varId,
+        UA_NS0ID(OBJECTSFOLDER), UA_NS0ID(HASCOMPONENT),
+        UA_QUALIFIEDNAME(1, "readLater"), UA_NS0ID(BASEDATAVARIABLETYPE),
+        attr, NULL, NULL), UA_STATUSCODE_GOOD);
+    UA_CallbackValueSource src = {readLater, NULL};
+    ck_assert_uint_eq(UA_Server_setVariableNode_callbackValueSource(server, varId, src),
+                      UA_STATUSCODE_GOOD);
+    setSessionRole(session, UA_NS0ID_WELLKNOWNROLE_ANONYMOUS);
+    createSubscription();
+
+    UA_CreateMonitoredItemsRequest request;
+    UA_CreateMonitoredItemsRequest_init(&request);
+    request.subscriptionId = subscriptionId;
+    request.timestampsToReturn = UA_TIMESTAMPSTORETURN_NEITHER;
+    UA_MonitoredItemCreateRequest item;
+    UA_MonitoredItemCreateRequest_init(&item);
+    item.itemToMonitor.nodeId = varId;
+    item.itemToMonitor.attributeId = UA_ATTRIBUTEID_VALUE;
+    item.monitoringMode = UA_MONITORINGMODE_REPORTING;
+    item.requestedParameters.samplingInterval = 100000.0;
+    item.requestedParameters.queueSize = 1;
+    item.requestedParameters.discardOldest = true;
+    request.itemsToCreateSize = 1;
+    request.itemsToCreate = &item;
+    UA_CreateMonitoredItemsResponse response;
+    UA_CreateMonitoredItemsResponse_init(&response);
+    lockServer(server);
+    Service_CreateMonitoredItems(server, session, &request, &response);
+    unlockServer(server);
+    UA_StatusCode created = response.resultsSize == 1 ?
+        response.results[0].statusCode : UA_STATUSCODE_BADINTERNALERROR;
+    UA_UInt32 monId = response.resultsSize == 1 ? response.results[0].monitoredItemId : 0;
+    UA_CreateMonitoredItemsResponse_clear(&response);
+    UA_MonitoredItem *mon =
+        UA_Subscription_getMonitoredItem(TAILQ_FIRST(&session->subscriptions), monId);
+    UA_UInt32 outstandingBefore = mon ? mon->outstandingAsyncReads : 0;
+    size_t before = pendingReadsSize; /* Creation also reads the value */
+
+    /* The new Roles cancel the pending sample and start a new one */
+    setSessionRole(session, UA_NS0ID_WELLKNOWNROLE_OPERATOR);
+    for(size_t j = 0; j < 3; j++)
+        UA_Server_run_iterate(server, false);
+    size_t after = pendingReadsSize;
+
+    /* The application still completes the canceled reads */
+    UA_StatusCode oldRes = completeReads(0, before, 1);
+    size_t queuedAfterOld = mon ? mon->queueSize : 0;
+    UA_StatusCode newRes = completeReads(before, after, 2);
+
+    ck_assert_uint_eq(created, UA_STATUSCODE_GOOD);
+    ck_assert_ptr_nonnull(mon);
+    ck_assert_uint_eq(outstandingBefore, 1);
+    ck_assert_uint_eq(after, before + 1);
+    ck_assert_uint_eq(oldRes, UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(newRes, UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(queuedAfterOld, 0);
+    ck_assert_uint_eq(mon->outstandingAsyncReads, 0);
+    ck_assert_uint_eq(mon->queueSize, 1);
+    UA_Notification *n = TAILQ_FIRST(&mon->queue);
+    ck_assert(UA_Variant_hasScalarType(&n->data.dataChange.value.value,
+                                       &UA_TYPES[UA_TYPES_UINT32]));
+    ck_assert_uint_eq(*(UA_UInt32*)n->data.dataChange.value.value.data, 2);
+}
+END_TEST
+#endif
+
 /* --- Extended coverage tests --- */
 
 START_TEST(Server_setTriggering_nothingToDo) {
@@ -2086,6 +2259,51 @@ START_TEST(Server_detachedSubscription_anonymousInsecureNotTransferable) {
 
     lockServer(server);
     UA_Server_closeSession(server, &session2->sessionId);
+    unlockServer(server);
+
+    createSession();
+}END_TEST
+
+/* A detached Subscription keeps sampling its MonitoredItems without a Session.
+ * The attributes gated by RBAC must then be denied instead of dereferencing the
+ * missing Session. */
+START_TEST(Server_detachedSubscriptionSamplesWithoutSession) {
+    const UA_UInt32 attributeIds[] = {
+        UA_ATTRIBUTEID_BROWSENAME, UA_ATTRIBUTEID_DISPLAYNAME,
+#ifdef UA_ENABLE_RBAC
+        UA_ATTRIBUTEID_ROLEPERMISSIONS
+#endif
+    };
+    const size_t attributeIdsSize = sizeof(attributeIds) / sizeof(attributeIds[0]);
+    UA_UInt32 itemIds[3];
+
+    createSubscription();
+    for(size_t i = 0; i < attributeIdsSize; i++) {
+        createMonitoredItemForAttribute(attributeIds[i]);
+        itemIds[i] = monitoredItemId;
+    }
+
+    /* Force a session timeout. The Subscription survives detached. */
+    lockServer(server);
+    session->validTill = UA_DateTime_nowMonotonic() - UA_DATETIME_SEC;
+    cleanupSessions(server, UA_DateTime_nowMonotonic());
+    unlockServer(server);
+    session = NULL;
+
+    lockServer(server);
+    UA_Subscription *sub = getSubscriptionById(server, subscriptionId);
+    ck_assert_ptr_ne(sub, NULL);
+    ck_assert_ptr_eq(sub->session, NULL);
+    for(size_t i = 0; i < attributeIdsSize; i++) {
+        UA_MonitoredItem *mon = UA_Subscription_getMonitoredItem(sub, itemIds[i]);
+        ck_assert_ptr_ne(mon, NULL);
+        UA_MonitoredItem_sample(server, mon);
+        UA_Notification *notification = TAILQ_LAST(&mon->queue, NotificationQueue);
+        ck_assert_ptr_ne(notification, NULL);
+        ck_assert(notification->data.dataChange.value.hasStatus);
+        ck_assert_uint_eq(notification->data.dataChange.value.status,
+                          UA_STATUSCODE_BADUSERACCESSDENIED);
+    }
     unlockServer(server);
 
     createSession();
@@ -3038,6 +3256,10 @@ static Suite* testSuite_Client(void) {
                    Server_diagnosticsRejectLongBrowseNames);
 #endif
     tcase_add_test(tc_server, Server_transferSubscription_anonymous);
+#ifdef UA_ENABLE_RBAC
+    tcase_add_test(tc_server, Server_transferSubscription_requiresSameRoles);
+    tcase_add_test(tc_server, Server_roleChangeDropsPendingSample);
+#endif
     tcase_add_test(tc_server, Server_setTriggering_nothingToDo);
     tcase_add_test(tc_server, Server_setTriggering_invalidSubscription);
     tcase_add_test(tc_server, Server_setTriggering_invalidMonitoredItem);
@@ -3054,6 +3276,7 @@ static Suite* testSuite_Client(void) {
     tcase_add_test(tc_server, Server_transferSubscription_keepsMonitoredItemsTree);
     tcase_add_test(tc_server, Server_deleteMonitoredItems_partial_keepsTreeConsistent);
     tcase_add_test(tc_server, Server_subscriptionSurvivesSessionTimeoutTransferableToSameUser);
+    tcase_add_test(tc_server, Server_detachedSubscriptionSamplesWithoutSession);
     tcase_add_test(tc_server, Server_subscriptionRecoverableWithOverride);
     tcase_add_test(tc_server, Server_transferSubscription_statusChangeWithNextPublish);
     tcase_add_test(tc_server, Server_detachedSubscription_anonymousInsecureNotTransferable);

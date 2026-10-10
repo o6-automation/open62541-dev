@@ -162,6 +162,11 @@ UA_AsyncManager_cancelSession(UA_Server *server, struct UA_Session *session);
 UA_UInt32
 UA_AsyncManager_cancel(UA_Server *server, struct UA_Session *session, UA_UInt32 requestHandle);
 
+/* Cancel the local read operations started with the given result callback
+ * context. The callback is still called, with the status. */
+void
+UA_AsyncManager_cancelReads(UA_Server *server, void *context, UA_StatusCode status);
+
 /* Abandon an asynchronous response whose transport carrier has closed. */
 void
 UA_AsyncManager_abandon(UA_Server *server, struct UA_SecureChannel *channel,

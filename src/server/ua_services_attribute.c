@@ -184,6 +184,10 @@ readRolePermissions(UA_Server *server, UA_Session *session,
 static UA_StatusCode
 readUserRolePermissions(UA_Server *server, UA_Session *session,
                         const UA_Node *node, UA_DataValue *v) {
+    /* A detached Subscription samples without a Session */
+    if(!session)
+        return UA_STATUSCODE_BADUSERACCESSDENIED;
+
     /* Return only the roles that the current session has been granted */
     size_t entriesSize = 0;
     UA_RolePermissionType *entries = NULL;

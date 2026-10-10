@@ -714,6 +714,30 @@ UA_AsyncManager_cancel(UA_Server *server, UA_Session *session, UA_UInt32 request
     return count;
 }
 
+typedef struct {
+    UA_Server *server;
+    void *context;
+    UA_StatusCode status;
+} AsyncReadCancelContext;
+
+static void *
+cancelReadOperation(void *context, UA_AsyncOperation *op) {
+    AsyncReadCancelContext *cc = (AsyncReadCancelContext*)context;
+    if(!isRequestOp(op) &&
+       operationKind(op->asyncOperationType) == UA_ASYNCOPERATIONTYPE_READ_REQUEST &&
+       op->handling.callback.context == cc->context)
+        cancelOperation(cc->server, op, cc->status);
+    return NULL;
+}
+
+void
+UA_AsyncManager_cancelReads(UA_Server *server, void *context, UA_StatusCode status) {
+    UA_LOCK_ASSERT(&server->serviceMutex);
+    AsyncReadCancelContext cc = {server, context, status};
+    ZIP_ITER(UA_AsyncOperationTree, &server->asyncManager.operations,
+             cancelReadOperation, &cc);
+}
+
 void
 UA_AsyncManager_abandon(UA_Server *server, UA_SecureChannel *channel,
                         UA_UInt64 responseToken) {
