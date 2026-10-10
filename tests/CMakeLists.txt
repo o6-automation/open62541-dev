@@ -463,6 +463,7 @@ if(UA_ENABLE_RBAC)
     ua_add_test(server/check_server_rbac_services.c)
     ua_add_test(server/check_server_rbac_accessrestrictions.c)
     ua_add_test(server/check_server_rbac_identity.c)
+    ua_add_test(server/check_server_rbac_roles.c)
 endif()
 
 if(UA_ENABLE_SUBSCRIPTIONS)
