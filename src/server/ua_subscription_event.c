@@ -1729,6 +1729,29 @@ createEvent(UA_Server *server, const UA_EventDescription *ed,
                     !(srcPerms & UA_PERMISSIONTYPE_RECEIVEEVENTS))) {
                     continue;
                 }
+
+
+                /* Check the AccessRestrictions at delivery time, the
+                 * SecureChannel may have changed */
+                const UA_Node *eventTypeNode =
+                    UA_NODESTORE_GET(server, &ed->eventType);
+                const UA_Node *sourceNode =
+                    UA_NODESTORE_GET(server, &ed->sourceNode);
+                UA_StatusCode eventAr = eventTypeNode ?
+                    checkNodeAccessRestrictions(server, ctx.session,
+                                                eventTypeNode, false) :
+                    UA_STATUSCODE_BADNODEIDUNKNOWN;
+                UA_StatusCode sourceAr = sourceNode ?
+                    checkNodeAccessRestrictions(server, ctx.session,
+                                                sourceNode, false) :
+                    UA_STATUSCODE_BADNODEIDUNKNOWN;
+                if(eventTypeNode)
+                    UA_NODESTORE_RELEASE(server, eventTypeNode);
+                if(sourceNode)
+                    UA_NODESTORE_RELEASE(server, sourceNode);
+                if(eventAr != UA_STATUSCODE_GOOD ||
+                   sourceAr != UA_STATUSCODE_GOOD)
+                    continue;
             }
 #endif
 

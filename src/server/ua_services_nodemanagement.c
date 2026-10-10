@@ -1391,6 +1391,13 @@ addNode_raw(UA_Server *server, UA_Session *session, void *nodeContext,
     if(retval != UA_STATUSCODE_GOOD)
         goto create_error;
 
+#ifdef UA_ENABLE_RBAC
+    /* The namespace-default AccessRestrictions of the new Node */
+    retval = checkNodeAccessRestrictions(server, session, node, false);
+    if(retval != UA_STATUSCODE_GOOD)
+        goto create_error;
+#endif
+
     /* The reference from the parent modifies the parent: require AddReference
      * there. Only for the requested Node, not for instantiated children. */
     if(session != &server->adminSession &&
@@ -2417,6 +2424,16 @@ checkDeleteNodeSetAccess(UA_Server *server, UA_Session *session,
            allowDeleteNode(server, &server->config.accessControl,
                            &session->sessionId, session->context, &childItem))
             return UA_STATUSCODE_BADUSERACCESSDENIED;
+
+#ifdef UA_ENABLE_RBAC
+        const UA_Node *member = UA_NODESTORE_GET(server, &childItem.nodeId);
+        if(!member)
+            continue;
+        UA_StatusCode res = checkNodeAccessRestrictions(server, session, member, false);
+        UA_NODESTORE_RELEASE(server, member);
+        if(res != UA_STATUSCODE_GOOD)
+            return res;
+#endif
     }
     return UA_STATUSCODE_GOOD;
 }
@@ -2464,6 +2481,14 @@ deleteNodeOperation_inner(UA_Server *server, UA_Session *session,
         *result = UA_STATUSCODE_BADNODEIDUNKNOWN;
         return;
     }
+
+#ifdef UA_ENABLE_RBAC
+    *result = checkNodeAccessRestrictions(server, session, node, false);
+    if(*result != UA_STATUSCODE_GOOD) {
+        UA_NODESTORE_RELEASE(server, node);
+        return;
+    }
+#endif
 
     if(UA_Node_hasSubTypeOrInstances(&node->head)) {
         UA_LOG_INFO_SESSION(server->config.logging, session,
@@ -2627,6 +2652,31 @@ Operation_addReference_inner(UA_Server *server, UA_Session *session, void *conte
             return;
         }
     }
+
+
+#ifdef UA_ENABLE_RBAC
+    /* Check both local endpoints before either direction is changed */
+    const UA_Node *restrictedNode =
+        UA_NODESTORE_GET(server, &item->sourceNodeId);
+    if(restrictedNode) {
+        *retval = checkNodeAccessRestrictions(server, session,
+                                              restrictedNode, false);
+        UA_NODESTORE_RELEASE(server, restrictedNode);
+        if(*retval != UA_STATUSCODE_GOOD)
+            return;
+    }
+    if(UA_ExpandedNodeId_isLocal(&item->targetNodeId)) {
+        restrictedNode =
+            UA_NODESTORE_GET(server, &item->targetNodeId.nodeId);
+        if(restrictedNode) {
+            *retval = checkNodeAccessRestrictions(server, session,
+                                                  restrictedNode, false);
+            UA_NODESTORE_RELEASE(server, restrictedNode);
+            if(*retval != UA_STATUSCODE_GOOD)
+                return;
+        }
+    }
+#endif
 
     /* TODO: Currently no expandednodeids are allowed */
     if(item->targetServerUri.length > 0) {
@@ -2844,6 +2894,31 @@ Operation_deleteReference_inner(UA_Server *server, UA_Session *session, void *co
             return;
         }
     }
+
+
+#ifdef UA_ENABLE_RBAC
+    /* Check both local endpoints before either direction is removed */
+    const UA_Node *restrictedNode =
+        UA_NODESTORE_GET(server, &item->sourceNodeId);
+    if(restrictedNode) {
+        *retval = checkNodeAccessRestrictions(server, session,
+                                              restrictedNode, false);
+        UA_NODESTORE_RELEASE(server, restrictedNode);
+        if(*retval != UA_STATUSCODE_GOOD)
+            return;
+    }
+    if(UA_ExpandedNodeId_isLocal(&item->targetNodeId)) {
+        restrictedNode =
+            UA_NODESTORE_GET(server, &item->targetNodeId.nodeId);
+        if(restrictedNode) {
+            *retval = checkNodeAccessRestrictions(server, session,
+                                                  restrictedNode, false);
+            UA_NODESTORE_RELEASE(server, restrictedNode);
+            if(*retval != UA_STATUSCODE_GOOD)
+                return;
+        }
+    }
+#endif
 
     /* Check the ReferenceType and get the RefTypeIndex */
     const UA_Node *refType =
