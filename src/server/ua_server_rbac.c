@@ -19,14 +19,7 @@
  * The RolePermissions and AccessRestrictions of a Node live in deduplicated,
  * reference-counted entries (UA_Server::rolePermissions) that the Node head
  * references by index. Changing a single Node points it to another entry
- * (copy-on-write).
- *
- * Known limitations (single source of truth for the whole RBAC subsystem;
- * OPC UA Part 18 / Part 3 / Part 5, all v1.05):
- *
- * - Part 18 §5 User Management (UserManagementType, AddUser / ModifyUser /
- *   RemoveUser / ChangePassword) is not implemented.
- */
+ * (copy-on-write). */
 
 /*********************************/
 /* UA_RolePermissionSet Type API */
@@ -2008,6 +2001,8 @@ UA_Server_reevaluateSessionRoles(UA_Server *server) {
             continue;
         }
         if(!session->hasIdentityContext)
+            continue;
+        if(session->passwordChangeRequired)
             continue;
         size_t rolesSize = 0;
         UA_NodeId *roleIds = NULL;

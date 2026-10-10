@@ -70,6 +70,7 @@ void UA_Session_clear(UA_Session *session, UA_Server* server) {
     session->rolesSize = 0;
     UA_SessionIdentityContext_clear(&session->identityContext);
     session->hasIdentityContext = false;
+    session->passwordChangeRequired = false;
     session->rolesAssignedManually = false;
 #endif
 
@@ -417,7 +418,7 @@ UA_Server_deleteSessionAttribute(UA_Server *server, const UA_NodeId *sessionId,
          * ends up without Roles. */
         session->rolesAssignedManually = false;
         UA_StatusCode res;
-        if(session->hasIdentityContext) {
+        if(session->hasIdentityContext && !session->passwordChangeRequired) {
             size_t rolesSize = 0;
             UA_NodeId *roleIds = NULL;
             res = UA_Server_evaluateSessionRoles(server, &session->identityContext,

@@ -138,6 +138,7 @@ struct UA_Session {
 
     UA_SessionIdentityContext identityContext;
     UA_Boolean hasIdentityContext;
+    UA_Boolean passwordChangeRequired;
 
     /* Roles pinned with the "roles" Session attribute are not re-evaluated
      * until the next ActivateSession or deleting the attribute */

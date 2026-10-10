@@ -165,6 +165,10 @@ UA_Server_getUserRolePermissions(UA_Server *server,
                                  size_t *entriesSize,
                                  UA_RolePermissionType **entries);
 
+/* True when all UserManagement callbacks are set */
+UA_Boolean
+UA_Server_hasUserManagementProvider(const UA_AccessControl *ac);
+
 #endif /* UA_ENABLE_RBAC */
 
 _UA_END_DECLS

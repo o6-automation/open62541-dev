@@ -249,6 +249,14 @@ rbacCall(UA_Server *server, UA_Session *session, UA_NodeId objectId,
     return res;
 }
 
+static UA_INLINE UA_Session *
+rbacGetSession(UA_Server *server, const UA_NodeId *sessionId) {
+    lockServer(server);
+    UA_Session *session = getSessionById(server, sessionId);
+    unlockServer(server);
+    return session;
+}
+
 #ifdef UA_ENABLE_SUBSCRIPTIONS
 /* A Subscription with one MonitoredItem. For the EventNotifier the filter
  * selects the Event field with the BrowseName (namespace 0). */
