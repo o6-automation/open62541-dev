@@ -137,6 +137,11 @@ getUserExecutable(UA_Server *server, const UA_Session *session,
 static UA_StatusCode
 readRolePermissions(UA_Server *server, UA_Session *session,
                     const UA_Node *node, UA_DataValue *v) {
+    /* A detached Subscription samples without a Session. Do not fall back to
+     * allPermissionsForAnonymous. */
+    if(!session)
+        return UA_STATUSCODE_BADUSERACCESSDENIED;
+
     /* Check if the user has ReadRolePermissions permission on this node */
     UA_UInt32 effectivePerms = 0;
     UA_StatusCode retval = UA_Server_getEffectivePermissions(
@@ -181,6 +186,10 @@ readRolePermissions(UA_Server *server, UA_Session *session,
 static UA_StatusCode
 readUserRolePermissions(UA_Server *server, UA_Session *session,
                         const UA_Node *node, UA_DataValue *v) {
+    /* A detached Subscription samples without a Session */
+    if(!session)
+        return UA_STATUSCODE_BADUSERACCESSDENIED;
+
     /* Return only the roles that the current session has been granted */
     size_t entriesSize = 0;
     UA_RolePermissionType *entries = NULL;

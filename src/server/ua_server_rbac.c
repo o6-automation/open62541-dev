@@ -1855,6 +1855,25 @@ UA_Server_evaluateSessionRoles(UA_Server *server,
     return UA_STATUSCODE_GOOD;
 }
 
+static UA_Boolean
+sessionRolesEqual(const UA_Session *session,
+                  size_t rolesSize, const UA_NodeId *roleIds) {
+    if(session->rolesSize != rolesSize)
+        return false;
+    for(size_t i = 0; i < session->rolesSize; i++) {
+        UA_Boolean found = false;
+        for(size_t j = 0; j < rolesSize; j++) {
+            if(UA_NodeId_equal(&session->roles[i], &roleIds[j])) {
+                found = true;
+                break;
+            }
+        }
+        if(!found)
+            return false;
+    }
+    return true;
+}
+
 /* Returns whether the Roles of the Session changed */
 static UA_Boolean
 pruneUnknownRoles(UA_Server *server, UA_Session *session) {
@@ -1885,7 +1904,13 @@ UA_Server_reevaluateSessionRoles(UA_Server *server) {
         UA_Session *session = &entry->session;
         /* Pinned Roles are not re-evaluated, but removed Roles are dropped */
         if(session->rolesAssignedManually) {
-            pruneUnknownRoles(server, session);
+            UA_Boolean pruned = pruneUnknownRoles(server, session);
+#ifdef UA_ENABLE_SUBSCRIPTIONS
+            if(pruned)
+                UA_Session_invalidateRoleNotifications(server, session);
+#else
+            (void)pruned;
+#endif
             continue;
         }
         if(!session->hasIdentityContext)
@@ -1895,22 +1920,38 @@ UA_Server_reevaluateSessionRoles(UA_Server *server) {
         UA_StatusCode res = UA_Server_evaluateSessionRoles(
             server, &session->identityContext, &rolesSize, &roleIds);
         if(res != UA_STATUSCODE_GOOD) {
+            UA_Boolean changed = (session->rolesSize > 0);
             /* Fail closed: never keep the former Roles */
             (void)UA_Session_setRoles(server, session, NULL, 0);
+#ifdef UA_ENABLE_SUBSCRIPTIONS
+            if(changed)
+                UA_Session_invalidateRoleNotifications(server, session);
+#else
+            (void)changed;
+#endif
             UA_LOG_ERROR_SESSION(server->config.logging, session,
                                  "RBAC: Could not re-evaluate roles; cleared "
                                  "the Session roles with StatusCode %s",
                                  UA_StatusCode_name(res));
             continue;
         }
+        UA_Boolean changed = !sessionRolesEqual(session, rolesSize, roleIds);
+        UA_Boolean hadRoles = (session->rolesSize > 0);
         res = UA_Session_setRoles(server, session, roleIds, rolesSize);
         if(res != UA_STATUSCODE_GOOD) {
+            changed = hadRoles;
             (void)UA_Session_setRoles(server, session, NULL, 0);
             UA_LOG_ERROR_SESSION(server->config.logging, session,
                                  "RBAC: Could not install re-evaluated roles; "
                                  "cleared the Session roles with StatusCode %s",
                                  UA_StatusCode_name(res));
         }
+#ifdef UA_ENABLE_SUBSCRIPTIONS
+        if(changed)
+            UA_Session_invalidateRoleNotifications(server, session);
+#else
+        (void)changed;
+#endif
         UA_Array_delete(roleIds, rolesSize, &UA_TYPES[UA_TYPES_NODEID]);
     }
 }

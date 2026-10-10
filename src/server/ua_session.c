@@ -234,6 +234,10 @@ UA_Session_detachSubscription(UA_Server *server, UA_Session *session,
                        &sub->ownerUserId) == UA_STATUSCODE_GOOD &&
         UA_String_copy(&session->clientDescription.applicationUri,
                        &sub->ownerApplicationUri) == UA_STATUSCODE_GOOD;
+#ifdef UA_ENABLE_RBAC
+    /* TransferSubscriptions compares the RBAC context as well */
+    UA_SubscriptionRbacContext_copyFromSession(&sub->ownerRbacContext, session);
+#endif
 
     /* Detach from the session */
     sub->session = NULL;
@@ -375,8 +379,12 @@ UA_Server_setSessionAttribute(UA_Server *server, const UA_NodeId *sessionId,
         }
         /* Pin the Roles until the attribute is deleted or the Session is
          * activated again */
-        if(res == UA_STATUSCODE_GOOD)
+        if(res == UA_STATUSCODE_GOOD) {
             session->rolesAssignedManually = true;
+#ifdef UA_ENABLE_SUBSCRIPTIONS
+            UA_Session_invalidateRoleNotifications(server, session);
+#endif
+        }
         unlockServer(server);
         return res;
     }
@@ -421,6 +429,9 @@ UA_Server_deleteSessionAttribute(UA_Server *server, const UA_NodeId *sessionId,
         } else {
             res = UA_Session_setRoles(server, session, NULL, 0);
         }
+#ifdef UA_ENABLE_SUBSCRIPTIONS
+        UA_Session_invalidateRoleNotifications(server, session);
+#endif
         unlockServer(server);
         return res;
     }
