@@ -11,6 +11,25 @@ it returns `Bad_ConfigurationError`. Otherwise, while the WriterGroup of a
 connected writer is enabled, it returns `Bad_InvalidState` and changes nothing.
 Before, the PublishedDataSet was freed even when removing a connected writer failed.
 
+### RBAC: build requirements and stricter service checks
+
+`UA_ENABLE_RBAC` requires `UA_ENABLE_METHODCALLS` and `UA_NAMESPACE_ZERO=FULL`.
+AddNodes also needs the AddReference permission on the parent Node,
+DeleteNodes the DeleteNode permission on every deleted child Node, and
+MonitoredItems are sampled with the rights of the subscribing Session.
+
+### Events with the full Namespace Zero require Method calls
+
+Building with `UA_NAMESPACE_ZERO=FULL` and `UA_ENABLE_SUBSCRIPTIONS_EVENTS`
+now requires `UA_ENABLE_METHODCALLS`, also without RBAC: the Alarms &
+Conditions driver binds the ConditionType Methods.
+
+### Audit events do not contain secrets
+
+The AuditUpdateMethodEvents of AddUser, ModifyUser, ChangePassword,
+UpdateCertificate and the PubSub security key Methods no longer contain
+passwords, private keys or security keys.
+
 ### PubSub message security with OpenSSL and LibreSSL
 
 The PubSub SecurityPolicies `PubSub-Aes128-CTR` and `PubSub-Aes256-CTR`
