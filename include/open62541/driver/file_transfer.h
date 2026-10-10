@@ -212,6 +212,12 @@ struct UA_FileTransferBackend {
  * 0:max-open-handles-per-file [UInt16]
  *    Open-handle limit per file (default: 16). Either handle limit makes
  *    Open return Bad_ResourceUnavailable when reached.
+ * 0:client-processing-timeout [Double]
+ *    Temporary drivers: maximum time in milliseconds between the Method calls
+ *    of a transfer (default: 60000), published as ClientProcessingTimeout. An
+ *    idle transfer is cancelled and its file removed within twice the timeout.
+ *    0 disables it (closing the Session still ends the transfers); otherwise
+ *    at least 0.0001.
  * 0:max-read-length [UInt32]
  *    Maximum bytes per Read or Write (default, also when zero: 1048576).
  *    Published as MaxByteStringLength. Reads are capped at this length;

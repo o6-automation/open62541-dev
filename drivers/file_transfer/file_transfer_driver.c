@@ -137,6 +137,14 @@ refreshCallback(UA_Server *server, void *context) {
     ftd->refreshResult = res;
 }
 
+/* Zero disables a timer. Otherwise the timer needs at least one DateTime tick
+ * and an Int64 tick count (rejects NaN and infinity). */
+static UA_Boolean
+validInterval(UA_Double ms) {
+    return ms == 0.0 || (ms * UA_DATETIME_MSEC >= 1.0 &&
+                         ms <= (UA_Double)UA_INT64_MAX / UA_DATETIME_MSEC);
+}
+
 static UA_StatusCode
 configureDriver(FileTransferDriver *ftd) {
     const UA_KeyValueMap *params = &ftd->driver.params;
@@ -189,11 +197,12 @@ configureDriver(FileTransferDriver *ftd) {
         params, UA_QUALIFIEDNAME(0, "refresh-interval"), &UA_TYPES[UA_TYPES_DOUBLE]);
     if(interval)
         ftd->config.refreshInterval = *interval;
-    /* Zero disables the periodic refresh. Otherwise the timer needs at least
-     * one DateTime tick and an Int64 tick count (rejects NaN and infinity). */
-    UA_Double ri = ftd->config.refreshInterval;
-    if(ri != 0.0 && !(ri * UA_DATETIME_MSEC >= 1.0 &&
-                      ri <= (UA_Double)UA_INT64_MAX / UA_DATETIME_MSEC))
+    const UA_Double *timeout = (const UA_Double*)UA_KeyValueMap_getScalar(
+        params, UA_QUALIFIEDNAME(0, "client-processing-timeout"), &UA_TYPES[UA_TYPES_DOUBLE]);
+    if(timeout)
+        ftd->config.clientProcessingTimeout = *timeout;
+    if(!validInterval(ftd->config.refreshInterval) ||
+       !validInterval(ftd->config.clientProcessingTimeout))
         return UA_STATUSCODE_BADINVALIDARGUMENT;
     UA_Boolean complete = (ftd->root->kind == FT_ENTRY_TEMPORARY) ?
         storeComplete(&ftd->backend) :
@@ -266,6 +275,11 @@ startDriver(UA_Driver *drv) {
     ZIP_ITER(FTEntriesById, &ftd->entriesByNodeId, bindEntryMethods, &res);
     if(res == UA_STATUSCODE_GOOD && ftd->root->kind == FT_ENTRY_TEMPORARY)
         res = registerTemporaryMethodCallbacks(drv->server);
+    if(res == UA_STATUSCODE_GOOD && ftd->root->kind == FT_ENTRY_TEMPORARY &&
+       ftd->config.clientProcessingTimeout > 0)
+        res = UA_Server_addRepeatedCallback(drv->server, sweepTransfers, ftd,
+                                            ftd->config.clientProcessingTimeout,
+                                            &ftd->sweepCallbackId);
     if(res == UA_STATUSCODE_GOOD && ftd->root->isDirectory &&
        ftd->config.refreshInterval > 0)
         res = UA_Server_addRepeatedCallback(drv->server, refreshCallback, ftd,
@@ -302,6 +316,10 @@ FileTransferDriver_stop(UA_Driver *drv) {
     if(ftd->refreshCallbackId) {
         UA_Server_removeCallback(drv->server, ftd->refreshCallbackId);
         ftd->refreshCallbackId = 0;
+    }
+    if(ftd->sweepCallbackId) {
+        UA_Server_removeCallback(drv->server, ftd->sweepCallbackId);
+        ftd->sweepCallbackId = 0;
     }
     if(wasStarted)
         ZIP_ITER(FTEntriesById, &ftd->entriesByNodeId, unbindEntryMethods, NULL);

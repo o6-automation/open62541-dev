@@ -62,6 +62,7 @@ typedef struct {
     UA_Boolean forWrite;
     UA_Boolean committing;      /* The handle is closed for CloseAndCommit */
     UA_Variant generateOptions; /* Of a write transfer, for commitWrite */
+    UA_DateTime lastActivity;   /* Monotonic, of the last Method call */
 } FTTransfer;
 
 ZIP_HEAD(FTEntriesById, FTEntry);
@@ -133,6 +134,7 @@ struct FileTransferDriver {
     UA_UInt32 nextTransferId;
     UA_UInt32 activeReads;
     UA_Boolean activeWrite;
+    UA_UInt64 sweepCallbackId; /* Cancels idle transfers */
 };
 
 static UA_INLINE enum ZIP_CMP
@@ -229,6 +231,8 @@ UA_StatusCode closeFTHandle(UA_Server *server, FTHandle *handle);
 void closeDriverHandles(UA_Server *server, FileTransferDriver *ftd);
 void closeSessionHandles(UA_Server *server, FileTransferDriver *ftd,
                           const UA_NodeId *sessionId);
+/* Close the handles of transfers idle beyond the ClientProcessingTimeout */
+void sweepTransfers(UA_Server *server, void *driver);
 
 /* directory.c -- reconcile a managed directory with the server lock held.
  * Skipped entries are logged on the first refresh after start and when the
