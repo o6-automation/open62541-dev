@@ -629,6 +629,9 @@ UA_EXPORT UA_THREADSAFE UA_StatusCode
 UA_Server_writeExecutable(UA_Server *server, const UA_NodeId nodeId,
                           const UA_Boolean executable);
 
+/* RolePermissions and AccessRestrictions cannot be written with these two
+ * functions. With UA_ENABLE_RBAC, set them with
+ * UA_Server_setNodeRolePermissions and UA_Server_setNodeAccessRestrictions. */
 UA_EXPORT UA_THREADSAFE UA_StatusCode
 UA_Server_writeRolePermissions(UA_Server *server, const UA_NodeId nodeId,
                                const UA_Variant rolePermissions);
@@ -2729,7 +2732,8 @@ struct UA_ServerConfig {
      * indices when assigning permissions to nodes.
      *
      * Additional role-permission sets can be assigned at runtime through
-     * UA_Server_setNodeRolePermissions. */
+     * UA_Server_setNodeRolePermissions. Nodes with AccessRestrictions of their
+     * own follow an update of a preset as well. */
     size_t rolePermissionPresetsSize;
     UA_RolePermissionSet *rolePermissionPresets;
 
@@ -3105,6 +3109,51 @@ UA_Server_getNamespaceDefaultRolePermissions(UA_Server *server,
                                              UA_UInt16 namespaceIndex,
                                              size_t *entriesSize,
                                              UA_RolePermission **entries);
+
+/**
+ * AccessRestrictions
+ * ~~~~~~~~~~~~~~~~~~
+ * AccessRestrictions (OPC UA Part 3 §5.2.11) make the access to a Node depend
+ * on the SecureChannel, see :ref:`security-rbac`. A Node without own
+ * AccessRestrictions uses the default of its namespace (none if unset). An own
+ * value overrides the namespace default, also ``UA_ACCESSRESTRICTIONTYPE_NONE``.
+ * The reserved bits 4-15 are stored and reported, but not enforced.
+ *
+ * The AccessRestrictions attribute cannot be written by the Write service or
+ * ``UA_Server_writeAccessRestrictions``. The functions below return
+ * ``UA_STATUSCODE_BADINVALIDARGUMENT`` for a NULL server or output pointer,
+ * ``UA_STATUSCODE_BADNODEIDUNKNOWN`` for an unknown Node and
+ * ``UA_STATUSCODE_BADINDEXRANGEINVALID`` for an unknown namespace index. */
+
+/* Set the own AccessRestrictions of a Node. Its RolePermissions are kept. */
+UA_StatusCode UA_EXPORT UA_THREADSAFE
+UA_Server_setNodeAccessRestrictions(UA_Server *server, const UA_NodeId nodeId,
+                                    UA_AccessRestrictionType restrictions);
+
+/* Remove the own AccessRestrictions of a Node, the namespace default applies
+ * again. Its RolePermissions are kept. */
+UA_StatusCode UA_EXPORT UA_THREADSAFE
+UA_Server_removeNodeAccessRestrictions(UA_Server *server, const UA_NodeId nodeId);
+
+/* Get the effective AccessRestrictions of a Node (its own value, else the
+ * namespace default). */
+UA_StatusCode UA_EXPORT UA_THREADSAFE
+UA_Server_getNodeAccessRestrictions(UA_Server *server, const UA_NodeId nodeId,
+                                    UA_AccessRestrictionType *outRestrictions);
+
+/* Set the default of the Nodes of a namespace without own AccessRestrictions.
+ * For Namespace Zero, the DefaultAccessRestrictions Property of the
+ * OPCUANamespaceMetadata Object is updated as well. */
+UA_StatusCode UA_EXPORT UA_THREADSAFE
+UA_Server_setNamespaceDefaultAccessRestrictions(UA_Server *server,
+                                                UA_UInt16 namespaceIndex,
+                                                UA_AccessRestrictionType restrictions);
+
+/* Get the default of a namespace, ``UA_ACCESSRESTRICTIONTYPE_NONE`` if unset */
+UA_StatusCode UA_EXPORT UA_THREADSAFE
+UA_Server_getNamespaceDefaultAccessRestrictions(UA_Server *server,
+                                                UA_UInt16 namespaceIndex,
+                                                UA_AccessRestrictionType *outRestrictions);
 
 #endif /* UA_ENABLE_RBAC */
 

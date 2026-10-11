@@ -5,7 +5,9 @@
  *    Copyright 2026 (c) o6 Automation GmbH (Author: Andreas Ebner)
  */
 
-/* In-process Sessions for the RBAC tests */
+/* In-process Sessions for the RBAC tests. A Session runs on a SecureChannel
+ * without a transport. The SecurityMode of the channel is set directly, the
+ * SecurityPolicy stays None. So no certificate is involved. */
 
 #ifndef TEST_HELPERS_RBAC_H_
 #define TEST_HELPERS_RBAC_H_
@@ -27,6 +29,67 @@ rbacService(UA_Server *server, UA_Session *session, RbacService service,
     lockServer(server);
     service(server, session, request, response);
     unlockServer(server);
+}
+
+/* Clear the channel only after the server was deleted */
+static UA_INLINE void
+rbacChannelInit(UA_Server *server, UA_SecureChannel *channel,
+                UA_MessageSecurityMode mode) {
+    UA_SecureChannel_init(channel);
+    UA_ServerConfig *config = UA_Server_getConfig(server);
+    for(size_t i = 0; i < config->securityPoliciesSize; i++) {
+        if(config->securityPolicies[i].policyType == UA_SECURITYPOLICYTYPE_NONE)
+            channel->securityPolicy = &config->securityPolicies[i];
+    }
+    ck_assert_ptr_nonnull(channel->securityPolicy);
+    channel->securityMode = mode;
+    channel->state = UA_SECURECHANNELSTATE_OPEN;
+}
+
+/* An Object or Variable below the ObjectsFolder with a string NodeId */
+static UA_INLINE UA_NodeId
+rbacAddNode(UA_Server *server, const char *name, UA_NodeClass nodeClass) {
+    UA_NodeId id = UA_NODEID_STRING(1, (char*)(uintptr_t)name);
+    UA_QualifiedName qn = UA_QUALIFIEDNAME(1, (char*)(uintptr_t)name);
+    UA_StatusCode res;
+    if(nodeClass == UA_NODECLASS_VARIABLE) {
+        UA_VariableAttributes attr = UA_VariableAttributes_default;
+        UA_Int32 value = 1;
+        UA_Variant_setScalar(&attr.value, &value, &UA_TYPES[UA_TYPES_INT32]);
+        attr.accessLevel = UA_ACCESSLEVELMASK_READ | UA_ACCESSLEVELMASK_WRITE;
+        res = UA_Server_addVariableNode(server, id, UA_NS0ID(OBJECTSFOLDER),
+                                        UA_NS0ID(ORGANIZES), qn,
+                                        UA_NS0ID(BASEDATAVARIABLETYPE),
+                                        attr, NULL, NULL);
+    } else {
+        res = UA_Server_addObjectNode(server, id, UA_NS0ID(OBJECTSFOLDER),
+                                      UA_NS0ID(ORGANIZES), qn,
+                                      UA_NS0ID(BASEOBJECTTYPE),
+                                      UA_ObjectAttributes_default, NULL, NULL);
+    }
+    ck_assert_uint_eq(res, UA_STATUSCODE_GOOD);
+    return id;
+}
+
+/* A Role in namespace 1 with one identity mapping rule or none */
+#define RBAC_NO_RULE ((UA_IdentityCriteriaType)0)
+
+static UA_INLINE UA_NodeId
+rbacAddRole(UA_Server *server, const char *name,
+            UA_IdentityCriteriaType criteriaType, const char *criteria) {
+    UA_IdentityMappingRuleType rule;
+    UA_IdentityMappingRuleType_init(&rule);
+    rule.criteriaType = criteriaType;
+    rule.criteria = UA_STRING((char*)(uintptr_t)criteria);
+    UA_Role role;
+    UA_Role_init(&role);
+    role.roleName = UA_QUALIFIEDNAME(1, (char*)(uintptr_t)name);
+    role.identityMappingRules = &rule;
+    role.identityMappingRulesSize = (criteriaType != RBAC_NO_RULE) ? 1 : 0;
+    UA_NodeId roleId = UA_NODEID_NULL;
+    ck_assert_uint_eq(UA_Server_addRole(server, &role, &roleId),
+                      UA_STATUSCODE_GOOD);
+    return roleId;
 }
 
 static UA_INLINE void

@@ -63,11 +63,18 @@ typedef struct {
  * Multiple nodes can share the same entry via the permissionIndex stored
  * in the node head. Entries originating from the server configuration
  * presets have refCount set to UA_ROLEPERMISSIONS_REFCOUNT_PROTECTED to
- * prevent deletion during server runtime. */
+ * prevent deletion during server runtime.
+ *
+ * An entry also holds the AccessRestrictions of its nodes. An absent part falls
+ * back to the namespace default. The first two fields must stay in this order:
+ * UA_Server_getRolePermissionConfig casts the entry to UA_RolePermissionSet. */
 typedef struct {
     size_t rolePermissionsSize;
     UA_RolePermission *rolePermissions;
     size_t refCount;
+    UA_AccessRestrictionType accessRestrictions;
+    UA_Boolean hasRolePermissions;
+    UA_Boolean hasAccessRestrictions;
 } UA_RolePermissionEntry;
 
 /* Namespace metadata for default role permissions.
@@ -76,6 +83,8 @@ typedef struct {
 typedef struct {
     size_t entriesSize;
     UA_RolePermission *entries;
+    UA_AccessRestrictionType defaultAccessRestrictions;
+    UA_Boolean hasDefaultAccessRestrictions;
 } UA_NamespaceMetadata;
 
 /* Internal RBAC lifecycle */
@@ -84,6 +93,11 @@ void UA_Server_cleanupRBAC(UA_Server *server);
 
 /* Initialize RBAC information model (NS0 role representations and methods) */
 UA_StatusCode initNS0RBAC(UA_Server *server);
+
+/* NULL if the node has no RolePermissions of its own (also for an out-of-range
+ * index). Must be called with the server lock held. */
+const UA_RolePermissionEntry *
+getRolePermissionsEntry(const UA_Server *server, UA_PermissionIndex index);
 
 #endif /* UA_ENABLE_RBAC */
 
