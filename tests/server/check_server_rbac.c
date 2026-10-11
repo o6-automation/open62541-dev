@@ -633,7 +633,7 @@ START_TEST(allowModifyingOptionalRoles) {
 }
 END_TEST
 
-#ifdef UA_GENERATED_NAMESPACE_ZERO_FULL
+#ifdef UA_GENERATED_NAMESPACE_ZERO
 START_TEST(roleSetExists) {
     UA_NodeId roleSetNodeId =
         UA_NODEID_NUMERIC(0, UA_NS0ID_SERVER_SERVERCAPABILITIES_ROLESET);
@@ -646,9 +646,9 @@ START_TEST(roleSetExists) {
     UA_QualifiedName_clear(&browseName);
 }
 END_TEST
-#endif /* UA_GENERATED_NAMESPACE_ZERO_FULL */
+#endif /* UA_GENERATED_NAMESPACE_ZERO */
 
-#ifdef UA_GENERATED_NAMESPACE_ZERO_FULL
+#ifdef UA_GENERATED_NAMESPACE_ZERO
 /* Is targetId reachable from RoleSet via a forward HasComponent reference? */
 static UA_Boolean
 roleSetHasComponent(UA_NodeId targetId) {
@@ -696,9 +696,9 @@ START_TEST(addRole_cApiPublishesRoleObject) {
     UA_NodeId_clear(&outId);
 }
 END_TEST
-#endif /* UA_GENERATED_NAMESPACE_ZERO_FULL */
+#endif /* UA_GENERATED_NAMESPACE_ZERO */
 
-#if defined(UA_GENERATED_NAMESPACE_ZERO_FULL) && defined(UA_ENABLE_METHODCALLS)
+#if defined(UA_GENERATED_NAMESPACE_ZERO) && defined(UA_ENABLE_METHODCALLS)
 /* The RoleSet AddRole/RemoveRole Methods must create/remove the Role Object
  * under Server/ServerCapabilities/RoleSet so a browsing client sees roles
  * added or removed at runtime (Part 18 §4.2.2, §4.2.3, §4.3). */
@@ -759,9 +759,9 @@ START_TEST(addRemoveRoleMethod_updatesAddressSpace) {
     UA_NodeId_clear(&newRoleId);
 }
 END_TEST
-#endif /* UA_GENERATED_NAMESPACE_ZERO_FULL && UA_ENABLE_METHODCALLS */
+#endif /* UA_GENERATED_NAMESPACE_ZERO && UA_ENABLE_METHODCALLS */
 
-#ifdef UA_GENERATED_NAMESPACE_ZERO_FULL
+#ifdef UA_GENERATED_NAMESPACE_ZERO
 START_TEST(standardRolesWithCorrectIds) {
     struct {
         UA_UInt32 id;
@@ -789,7 +789,7 @@ START_TEST(standardRolesWithCorrectIds) {
     }
 }
 END_TEST
-#endif /* UA_GENERATED_NAMESPACE_ZERO_FULL */
+#endif /* UA_GENERATED_NAMESPACE_ZERO */
 
 START_TEST(getAllRoles_includesWellKnown) {
     size_t rolesSize = 0;
@@ -961,7 +961,7 @@ START_TEST(anonymousRole_alwaysAssigned) {
 }
 END_TEST
 
-#ifdef UA_GENERATED_NAMESPACE_ZERO_FULL
+#ifdef UA_GENERATED_NAMESPACE_ZERO
 START_TEST(wellKnownRoles_nodeFields) {
     /* Verify DisplayName and NodeClass for well-known role nodes */
     struct {
@@ -1058,7 +1058,7 @@ START_TEST(wellKnownRoles_identitiesFromRegistry) {
     ck_assert_uint_eq(res, UA_STATUSCODE_GOOD);
 }
 END_TEST
-#endif /* UA_GENERATED_NAMESPACE_ZERO_FULL */
+#endif /* UA_GENERATED_NAMESPACE_ZERO */
 
 START_TEST(addedRole_ns0NodeFields) {
     /* Add a custom role via the API and verify it is registered */
@@ -2461,7 +2461,7 @@ START_TEST(addRole_quotaEnforced) {
 }
 END_TEST
 
-#if defined(UA_GENERATED_NAMESPACE_ZERO_FULL) && defined(UA_ENABLE_METHODCALLS)
+#if defined(UA_GENERATED_NAMESPACE_ZERO) && defined(UA_ENABLE_METHODCALLS)
 /* The RoleSet AddRole Method must only grant CALL to SecurityAdmin, while the
  * public Roles keep BROWSE only (Part 18). */
 START_TEST(roleSetMethods_restrictedToAdmin) {
@@ -2488,7 +2488,7 @@ START_TEST(roleSetMethods_restrictedToAdmin) {
     ck_assert(!anonCanCall);
 }
 END_TEST
-#endif /* UA_GENERATED_NAMESPACE_ZERO_FULL && UA_ENABLE_METHODCALLS */
+#endif /* UA_GENERATED_NAMESPACE_ZERO && UA_ENABLE_METHODCALLS */
 
 static Suite *testSuite_RolTypeAPI(void) {
     Suite *s = suite_create("RBAC Role Type API");
@@ -2582,26 +2582,26 @@ static Suite *testSuite_InformationModel(void) {
     Suite *s = suite_create("RBAC Information Model");
     TCase *tc = tcase_create("NS0");
     tcase_add_unchecked_fixture(tc, setup, teardown);
-#ifdef UA_GENERATED_NAMESPACE_ZERO_FULL
+#ifdef UA_GENERATED_NAMESPACE_ZERO
     tcase_add_test(tc, roleSetExists);
     tcase_add_test(tc, standardRolesWithCorrectIds);
-#endif /* UA_GENERATED_NAMESPACE_ZERO_FULL */
+#endif /* UA_GENERATED_NAMESPACE_ZERO */
     tcase_add_test(tc, getAllRoles_includesWellKnown);
     tcase_add_test(tc, protectMandatoryRoles);
     tcase_add_test(tc, allowModifyingOptionalRoles);
     tcase_add_test(tc, identityMapping_wellKnownRoles);
-#ifdef UA_GENERATED_NAMESPACE_ZERO_FULL
+#ifdef UA_GENERATED_NAMESPACE_ZERO
     tcase_add_test(tc, wellKnownRoles_nodeFields);
     tcase_add_test(tc, wellKnownRoles_identitiesFromRegistry);
-#endif /* UA_GENERATED_NAMESPACE_ZERO_FULL */
+#endif /* UA_GENERATED_NAMESPACE_ZERO */
     tcase_add_test(tc, addedRole_ns0NodeFields);
-#ifdef UA_GENERATED_NAMESPACE_ZERO_FULL
+#ifdef UA_GENERATED_NAMESPACE_ZERO
     tcase_add_test(tc, addRole_cApiPublishesRoleObject);
-#endif /* UA_GENERATED_NAMESPACE_ZERO_FULL */
-#if defined(UA_GENERATED_NAMESPACE_ZERO_FULL) && defined(UA_ENABLE_METHODCALLS)
+#endif /* UA_GENERATED_NAMESPACE_ZERO */
+#if defined(UA_GENERATED_NAMESPACE_ZERO) && defined(UA_ENABLE_METHODCALLS)
     tcase_add_test(tc, addRemoveRoleMethod_updatesAddressSpace);
     tcase_add_test(tc, roleSetMethods_restrictedToAdmin);
-#endif /* UA_GENERATED_NAMESPACE_ZERO_FULL && UA_ENABLE_METHODCALLS */
+#endif /* UA_GENERATED_NAMESPACE_ZERO && UA_ENABLE_METHODCALLS */
     suite_add_tcase(s, tc);
 
     TCase *tc_session = tcase_create("SessionRoles");

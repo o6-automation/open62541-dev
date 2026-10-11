@@ -571,6 +571,7 @@ START_TEST(Server_setNodeRolePermissions_subtreeKeepsOthersIntact) {
 }
 END_TEST
 
+#ifdef UA_GENERATED_NAMESPACE_ZERO /* MINIMAL and NONE lack the ModellingRules */
 /* Object instantiation copies the type children including their
  * permissionIndex without adjusting the shared entry's refCount. A
  * permission entry whose refCount dropped to zero must not be rewritten
@@ -684,6 +685,7 @@ START_TEST(Server_setNodeRolePermissions_staleEntryNotRewritten) {
     UA_NodeId_clear(&instanceChildId);
 }
 END_TEST
+#endif /* UA_GENERATED_NAMESPACE_ZERO */
 
 static Suite *testSuite_Server_RBAC_EffectivePerms(void) {
     Suite *s = suite_create("Server RBAC Effective Permissions");
@@ -706,7 +708,9 @@ static Suite *testSuite_Server_RBAC_EffectivePerms(void) {
     TCase *tc_slots = tcase_create("Permission Entry Slots");
     tcase_add_checked_fixture(tc_slots, setup, teardown);
     tcase_add_test(tc_slots, Server_setNodeRolePermissions_subtreeKeepsOthersIntact);
+#ifdef UA_GENERATED_NAMESPACE_ZERO
     tcase_add_test(tc_slots, Server_setNodeRolePermissions_staleEntryNotRewritten);
+#endif
     suite_add_tcase(s, tc_slots);
 
     suite_add_tcase(s, tc_effperms);

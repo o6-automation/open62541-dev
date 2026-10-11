@@ -1,0 +1,6 @@
+PermissionType
+RolePermissionType
+AccessRestrictionType
+IdentityCriteriaType
+IdentityMappingRuleType
+EndpointType

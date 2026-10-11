@@ -3,6 +3,17 @@ refactorings and bug fixes are not reported here.
 
 # Development
 
+### RBAC without the full namespace zero
+
+`UA_ENABLE_RBAC` no longer requires `UA_NAMESPACE_ZERO=FULL`. REDUCED gets the
+Part 18 RoleSet, RoleType and well-known Roles (with `Identities` only) from the
+new `tools/schema/Opc.Ua.NodeSet2.RbacMinimal.xml`. With MINIMAL, and NONE
+unless the nodestore provides the RoleSet, Roles are managed through the C API.
+Without `UA_ENABLE_METHODCALLS`, the RoleSet has no Methods. Below FULL, the
+NodeIds 18625-18643 now belong to the TrustedApplication Role as in OPC UA
+1.05, which removes the 19 stale `UA_NS0ID_SYSTEMDIAGNOSTICALARMTYPE_*`
+defines for them.
+
 ### Removing a PublishedDataSet removes the connected DataSetWriters
 
 `UA_Server_removePublishedDataSet` removes the connected DataSetWriters together
