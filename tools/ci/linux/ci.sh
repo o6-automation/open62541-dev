@@ -591,6 +591,43 @@ function unit_tests_alarms_memcheck {
     sudo -E bash -c "make test ARGS=\"${args}\""
 }
 
+function unit_tests_rbac {
+    # MINIMAL (no RoleSet) and REDUCED without method calls. Not all unit
+    # tests build without method calls, so build only the RBAC tests there.
+    local cfg
+    for cfg in "-DUA_NAMESPACE_ZERO=MINIMAL" \
+               "-DUA_NAMESPACE_ZERO=REDUCED -DUA_ENABLE_METHODCALLS=OFF"; do
+        rm -rf build; mkdir -p build; cd build
+        cmake -DCMAKE_BUILD_TYPE=Debug \
+              -DUA_BUILD_UNIT_TESTS=ON \
+              -DUA_ENABLE_PUBSUB_INFORMATIONMODEL=OFF \
+              -DUA_ENABLE_RBAC=ON \
+              -DUA_FORCE_WERROR=ON \
+              ${cfg} \
+              ..
+        make ${MAKEOPTS} check_server_rbac check_server_rbac_client \
+             check_server_rbac_interlocked check_server_rbac_permissions
+        set_capabilities
+        make test ARGS="-V -R rbac"
+        cd ..
+    done
+
+    # REDUCED with the RoleSet from Opc.Ua.NodeSet2.RbacMinimal.xml. The other
+    # tests have RBAC-specific code paths as well.
+    rm -rf build; mkdir -p build; cd build
+    cmake -DCMAKE_BUILD_TYPE=Debug \
+          -DUA_BUILD_UNIT_TESTS=ON \
+          -DUA_ENABLE_COVERAGE=ON \
+          -DUA_ENABLE_RBAC=ON \
+          -DUA_FORCE_WERROR=ON \
+          -DUA_NAMESPACE_ZERO=REDUCED \
+          ..
+    make ${MAKEOPTS}
+    set_capabilities
+    make test ARGS="-V -R 'rbac|attr_wrappers|highlevel_read|async_read'"
+    make gcov
+}
+
 function unit_tests_encryption {
     rm -rf build; mkdir -p build; cd build
     cmake -DCMAKE_BUILD_TYPE=Debug \
@@ -934,6 +971,12 @@ function build_option_coverage {
     build_option_cfg "UA_ENABLE_QUERY"             -DUA_ENABLE_QUERY=ON
     build_option_cfg "UA_ENABLE_DETERMINISTIC_RNG" -DUA_ENABLE_DETERMINISTIC_RNG=ON
     build_option_cfg "UA_ENABLE_RBAC"              -DUA_ENABLE_RBAC=ON -DUA_NAMESPACE_ZERO=FULL
+    build_option_cfg "UA_ENABLE_RBAC (MINIMAL)"    -DUA_ENABLE_RBAC=ON -DUA_NAMESPACE_ZERO=MINIMAL \
+                     -DUA_ENABLE_PUBSUB_INFORMATIONMODEL=OFF
+    build_option_cfg "UA_ENABLE_RBAC (NONE)"       -DUA_ENABLE_RBAC=ON -DUA_NAMESPACE_ZERO=NONE
+    build_option_cfg "UA_ENABLE_RBAC without UA_ENABLE_METHODCALLS" -DUA_ENABLE_RBAC=ON \
+                     -DUA_NAMESPACE_ZERO=REDUCED -DUA_ENABLE_METHODCALLS=OFF \
+                     -DUA_ENABLE_PUBSUB_INFORMATIONMODEL=OFF
 
     # On by default, so only ever compiled in the enabled state
     # The PubSub information model twin exposes methods, so it has to go as well
