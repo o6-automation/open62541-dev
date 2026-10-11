@@ -340,8 +340,9 @@ UA_CreateCertificate(const UA_Logger *logger, const UA_String *subject,
         memcpy(field, subject[iSubject].data, (size_t) sep);
         field[sep] = 0;
         UA_Byte* pData = &subject[iSubject].data[sep + 1];
+        /* UA_Strings are UTF-8, not Latin-1 */
         if(X509_NAME_add_entry_by_txt(
-               name, field, MBSTRING_ASC,
+               name, field, MBSTRING_UTF8,
                (const unsigned char *)pData,
                (int) subject[iSubject].length - (int) sep - 1, -1, 0) != 1) {
             UA_LOG_ERROR(logger, UA_LOGCATEGORY_SECURECHANNEL,

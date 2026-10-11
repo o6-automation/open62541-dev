@@ -694,6 +694,9 @@ static const struct {
     const char *subject[4];
     const char *criteria;
 } subjectCases[] = {
+    /* UA_CreateCertificate encodes the subject as UTF-8 */
+    {{"C=DE", "O=M\xC3\xBCller GmbH", "CN=J\xC3\xB6rg Test"},
+     "CN=\"J\xC3\xB6rg Test\"/O=\"M\xC3\xBCller GmbH\"/C=\"DE\""},
     {{"C=DE", "O=Acme", "CN=Joe \"J\" Test"}, ""},
     {{"CN=alice", "title=The \"Boss\"", "emailAddress=alice@example.com", "O=Acme"},
      "CN=\"alice\"/O=\"Acme\""},
