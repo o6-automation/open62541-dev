@@ -583,6 +583,14 @@ _UA_END_DECLS
                 and ref.referenceType == node.parentReference.id:
                 # Skip parent reference
                 continue
+            # Methods and their arguments only exist with UA_ENABLE_METHODCALLS
+            target = nodeset.nodes[ref.target]
+            if not isinstance(node, MethodNode) and not isinstance(node.parent, MethodNode) \
+                and (isinstance(target, MethodNode) or isinstance(target.parent, MethodNode)):
+                writec("#ifdef UA_ENABLE_METHODCALLS")
+                writec(generateReferenceCode(ref))
+                writec("#endif /* UA_ENABLE_METHODCALLS */")
+                continue
             writec(generateReferenceCode(ref))
 
         if node.hidden:

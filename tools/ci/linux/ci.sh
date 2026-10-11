@@ -504,6 +504,21 @@ function unit_tests_mt {
     make gcov
 }
 
+function unit_tests_no_methodcalls {
+    rm -rf build; mkdir -p build; cd build
+    cmake -DCMAKE_BUILD_TYPE=Debug \
+          -DUA_BUILD_UNIT_TESTS=ON \
+          -DUA_ENABLE_METHODCALLS=OFF \
+          -DUA_ENABLE_PUBSUB_INFORMATIONMODEL=OFF \
+          -DUA_FORCE_WERROR=ON \
+          ..
+    # Not every unit test builds without method calls. This one starts a
+    # server and so checks the generated namespace zero.
+    make ${MAKEOPTS} check_services_view
+    set_capabilities
+    make test ARGS="-V -R check_services_view"
+}
+
 function unit_tests_glib {
     rm -rf build; mkdir -p build; cd build
     cmake -DCMAKE_BUILD_TYPE=Debug \
