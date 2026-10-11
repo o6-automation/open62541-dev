@@ -250,6 +250,8 @@ removeRoleRepresentation(UA_Server *server, const UA_NodeId *roleId) {
     return UA_Server_deleteNode(server, *roleId, true);
 }
 
+#ifdef UA_ENABLE_METHODCALLS
+
 /* Method callbacks */
 
 static UA_StatusCode
@@ -612,6 +614,8 @@ removeEndpointMethodCallback(UA_Server *server,
     return res;
 }
 
+#endif /* UA_ENABLE_METHODCALLS */
+
 /* Restrict the RoleSet Object and the security-sensitive RoleSet/RoleType
  * Methods to the SecurityAdmin Role (OPC UA Part 18). The RoleSet stays
  * browsable for the Anonymous/AuthenticatedUser Roles. Skipped when the NS0
@@ -768,6 +772,7 @@ initNS0RBAC(UA_Server *server) {
         }
     }
 
+#ifdef UA_ENABLE_METHODCALLS
     /* The method callbacks must be attached to the RoleSet *instance* methods.
      * A Call resolves the object's own HasComponent method (the instance node),
      * not the type method, so a callback on the type node would never fire. */
@@ -798,6 +803,7 @@ initNS0RBAC(UA_Server *server) {
     retval |= UA_Server_setMethodNode_callback(
         server, UA_NODEID_NUMERIC(0, UA_NS0ID_ROLETYPE_REMOVEENDPOINT),
         removeEndpointMethodCallback);
+#endif /* UA_ENABLE_METHODCALLS */
 
     return retval;
 }
