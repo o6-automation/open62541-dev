@@ -153,18 +153,10 @@ readRolePermissions(UA_Server *server, UA_Session *session,
             return UA_STATUSCODE_BADUSERACCESSDENIED;
     }
 
-    /* Check if node has a valid permission index */
-    if(node->head.permissionIndex == UA_PERMISSION_INDEX_INVALID) {
-        UA_Variant_setArray(&v->value, NULL, 0,
-                           &UA_TYPES[UA_TYPES_ROLEPERMISSIONTYPE]);
-        return UA_STATUSCODE_GOOD;
-    }
-
+    /* Own RolePermissions. If no entries -> return empty array */
     const UA_RolePermissionEntry *rp =
-        &server->rolePermissions[node->head.permissionIndex];
-
-    /* If no entries -> return empty array */
-    if(rp->rolePermissionsSize == 0 || !rp->rolePermissions) {
+        getRolePermissionsEntry(server, node->head.permissionIndex);
+    if(!rp || rp->rolePermissionsSize == 0 || !rp->rolePermissions) {
         UA_Variant_setArray(&v->value, NULL, 0,
                            &UA_TYPES[UA_TYPES_ROLEPERMISSIONTYPE]);
         return UA_STATUSCODE_GOOD;
@@ -804,10 +796,16 @@ Operation_ReadWithNode(UA_Server *server, UA_Session *session,
         retval = UA_STATUSCODE_GOOD;
 #endif
         break;
-    case UA_ATTRIBUTEID_ACCESSRESTRICTIONS:
-        /* TODO: Add support for AccessRestrictions from the 1.04 spec */
+    case UA_ATTRIBUTEID_ACCESSRESTRICTIONS: {
+#ifdef UA_ENABLE_RBAC
+        UA_AccessRestrictionType ar = getNodeAccessRestrictions(server, node);
+        retval = UA_Variant_setScalarCopy(&v->value, &ar,
+                                          &UA_TYPES[UA_TYPES_ACCESSRESTRICTIONTYPE]);
+#else
         retval = UA_STATUSCODE_BADATTRIBUTEIDINVALID;
+#endif
         break;
+    }
 
     default:
         retval = UA_STATUSCODE_BADATTRIBUTEIDINVALID;

@@ -593,6 +593,8 @@ UA_Node_copy(const UA_Node *src, UA_Node *dst) {
     dsthead->context = srchead->context;
     dsthead->constructed = srchead->constructed;
 #ifdef UA_ENABLE_RBAC
+    /* No refCount is taken: a copy replaces its source in the Nodestore.
+     * Callers adding the copy as another node set the index (copyChildNode). */
     dsthead->permissionIndex = srchead->permissionIndex;
 #endif
 #ifdef UA_ENABLE_SUBSCRIPTIONS

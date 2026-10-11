@@ -190,10 +190,25 @@ START_TEST(hl_readRbacAttributes) {
     ck_assert_uint_eq(res, UA_STATUSCODE_BADATTRIBUTEIDINVALID);
 #endif
 
-    UA_AccessRestrictionType restrictions;
+    UA_AccessRestrictionType restrictions = 0;
+#ifdef UA_ENABLE_RBAC
+    /* SessionRequired does not restrict this Session */
+    ck_assert_uint_eq(UA_Server_setNodeAccessRestrictions(server,
+                          UA_NODEID_NUMERIC(0, UA_NS0ID_SERVER),
+                          UA_ACCESSRESTRICTIONTYPE_SESSIONREQUIRED),
+                      UA_STATUSCODE_GOOD);
+#endif
     res = UA_Client_readAccessRestrictionsAttribute(client,
         UA_NODEID_NUMERIC(0, UA_NS0ID_SERVER), &restrictions);
+#ifdef UA_ENABLE_RBAC
+    /* With RBAC the attribute reports the effective AccessRestrictions of the
+     * Node (Part 3 §5.2.11) instead of being unsupported. The value arrives as
+     * the UInt16 of the wire encoding. */
+    ck_assert_uint_eq(res, UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(restrictions, UA_ACCESSRESTRICTIONTYPE_SESSIONREQUIRED);
+#else
     ck_assert_uint_eq(res, UA_STATUSCODE_BADATTRIBUTEIDINVALID);
+#endif
     disconnectClient(client);
 } END_TEST
 
