@@ -9,6 +9,9 @@ refactorings and bug fixes are not reported here.
 Part 18 RoleSet, RoleType and well-known Roles (with `Identities` only) from the
 new `tools/schema/Opc.Ua.NodeSet2.RbacMinimal.xml`. With MINIMAL, and NONE
 unless the nodestore provides the RoleSet, Roles are managed through the C API.
+RoleSet nodes added after `UA_Server_new` (by a nodeset loader or the
+application) are bound in `UA_Server_run_startup`, and an incomplete RoleSet no
+longer fails the server creation.
 Without `UA_ENABLE_METHODCALLS`, the RoleSet has no Methods. Below FULL, the
 NodeIds 18625-18643 now belong to the TrustedApplication Role as in OPC UA
 1.05, which removes the 19 stale `UA_NS0ID_SYSTEMDIAGNOSTICALARMTYPE_*`

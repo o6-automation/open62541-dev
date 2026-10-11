@@ -178,24 +178,21 @@ addRoleRepresentation(UA_Server *server, UA_Role *role) {
     if(res != UA_STATUSCODE_GOOD)
         return res;
 
-    /* Back the mandatory Identities property with the role registry */
+    /* Back the mandatory Identities property with the role registry. It is
+     * missing only if the RoleType in the nodestore lacks it. */
     UA_NodeId identitiesNodeId;
-    res = findPropertyChild(server, role->roleId, "Identities", &identitiesNodeId);
-    if(res != UA_STATUSCODE_GOOD) {
-        UA_Server_deleteNode(server, role->roleId, true);
-        return res;
-    }
-
-    UA_DataSource identitiesDataSource;
-    identitiesDataSource.read = readRoleIdentities;
-    identitiesDataSource.write = NULL;
-
-    res = UA_Server_setVariableNode_dataSource(server, identitiesNodeId,
-                                               identitiesDataSource);
-    UA_NodeId_clear(&identitiesNodeId);
-    if(res != UA_STATUSCODE_GOOD) {
-        UA_Server_deleteNode(server, role->roleId, true);
-        return res;
+    if(findPropertyChild(server, role->roleId, "Identities",
+                         &identitiesNodeId) == UA_STATUSCODE_GOOD) {
+        UA_DataSource identitiesDataSource;
+        identitiesDataSource.read = readRoleIdentities;
+        identitiesDataSource.write = NULL;
+        res = UA_Server_setVariableNode_dataSource(server, identitiesNodeId,
+                                                   identitiesDataSource);
+        UA_NodeId_clear(&identitiesNodeId);
+        if(res != UA_STATUSCODE_GOOD) {
+            UA_Server_deleteNode(server, role->roleId, true);
+            return res;
+        }
     }
 
     /* Add optional Applications property with DataSource */
@@ -247,6 +244,9 @@ UA_StatusCode
 removeRoleRepresentation(UA_Server *server, const UA_NodeId *roleId) {
     if(!server || !roleId)
         return UA_STATUSCODE_BADINVALIDARGUMENT;
+    /* Without the information model no Role Object was added */
+    if(!server->rbacNS0Bound)
+        return UA_STATUSCODE_GOOD;
     return UA_Server_deleteNode(server, *roleId, true);
 }
 
@@ -622,12 +622,10 @@ removeEndpointMethodCallback(UA_Server *server,
  * RBAC information model is unavailable. */
 UA_StatusCode
 initRoleSetRolePermissions(UA_Server *server) {
+    if(!server->rbacNS0Bound)
+        return UA_STATUSCODE_GOOD; /* no NS0 RBAC model -> nothing to protect */
     UA_NodeId roleSetId =
         UA_NODEID_NUMERIC(0, UA_NS0ID_SERVER_SERVERCAPABILITIES_ROLESET);
-    UA_QualifiedName bn;
-    if(UA_Server_readBrowseName(server, roleSetId, &bn) != UA_STATUSCODE_GOOD)
-        return UA_STATUSCODE_GOOD; /* no NS0 RBAC model -> nothing to protect */
-    UA_QualifiedName_clear(&bn);
 
     const UA_NodeId secAdmin =
         UA_NODEID_NUMERIC(0, UA_NS0ID_WELLKNOWNROLE_SECURITYADMIN);
@@ -688,45 +686,31 @@ initRoleSetRolePermissions(UA_Server *server) {
     return UA_STATUSCODE_GOOD;
 }
 
-UA_StatusCode
-initNS0RBAC(UA_Server *server) {
-    /* RBAC NS0 wiring requires UA_NAMESPACE_ZERO=FULL.
-     * Without it the C API still works, but we skip the NS0 objects. */
-    UA_NodeId roleSetTypeId = UA_NODEID_NUMERIC(0, UA_NS0ID_ROLESETTYPE);
-    UA_QualifiedName typebn;
-    UA_Boolean hasFullRbacNS0 =
-        (UA_Server_readBrowseName(server, roleSetTypeId, &typebn) == UA_STATUSCODE_GOOD);
-    if(hasFullRbacNS0)
-        UA_QualifiedName_clear(&typebn);
-
-    if(!hasFullRbacNS0) {
-        UA_LOG_WARNING(server->config.logging, UA_LOGCATEGORY_SERVER,
-                       "RBAC: RoleSetType (NS0 i=%u) not present - NS0 RBAC "
-                       "information model skipped (requires UA_NAMESPACE_ZERO=FULL)",
-                       UA_NS0ID_ROLESETTYPE);
-        return UA_STATUSCODE_GOOD;
-    }
-
-    UA_StatusCode retval = UA_STATUSCODE_GOOD;
-
-    /* Ensure the RoleSet instance node exists */
-    UA_NodeId roleSetId = UA_NODEID_NUMERIC(0, UA_NS0ID_SERVER_SERVERCAPABILITIES_ROLESET);
+static UA_Boolean
+rbacNodeExists(UA_Server *server, const UA_NodeId nodeId) {
     UA_QualifiedName bn;
-    if(UA_Server_readBrowseName(server, roleSetId, &bn) != UA_STATUSCODE_GOOD) {
-        UA_ObjectAttributes oAttr = UA_ObjectAttributes_default;
-        oAttr.displayName = UA_LOCALIZEDTEXT("", "RoleSet");
-        retval |= UA_Server_addObjectNode(
-            server, roleSetId,
-            UA_NODEID_NUMERIC(0, UA_NS0ID_SERVER_SERVERCAPABILITIES),
-            UA_NODEID_NUMERIC(0, UA_NS0ID_HASCOMPONENT),
-            UA_QUALIFIEDNAME(0, "RoleSet"),
-            UA_NODEID_NUMERIC(0, UA_NS0ID_ROLESETTYPE),
-            oAttr, NULL, NULL);
-    } else {
-        UA_QualifiedName_clear(&bn);
-    }
+    if(UA_Server_readBrowseName(server, nodeId, &bn) != UA_STATUSCODE_GOOD)
+        return false;
+    UA_QualifiedName_clear(&bn);
+    return true;
+}
 
-    /* Ensure the well-known role instance nodes exist under the RoleSet */
+/* Bind the NS0 RBAC information model (Part 18 RoleSet) to the role registry.
+ * The nodes come from the generated NS0 (FULL, or REDUCED with the RbacMinimal
+ * subset), from the nodestore (NONE) or are added after UA_Server_new.
+ * Best-effort and idempotent: without the RoleSetType (BadNodeIdUnknown) or
+ * the RoleType, or if the RoleSet and the well-known Role Objects cannot be
+ * added, the model is unavailable and the C API works alone. Other missing
+ * nodes are skipped with a single warning. */
+static UA_StatusCode
+bindNS0RBAC(UA_Server *server) {
+    if(server->rbacNS0Bound)
+        return UA_STATUSCODE_GOOD;
+    if(!rbacNodeExists(server, UA_NODEID_NUMERIC(0, UA_NS0ID_ROLESETTYPE)))
+        return UA_STATUSCODE_BADNODEIDUNKNOWN;
+    if(!rbacNodeExists(server, UA_NODEID_NUMERIC(0, UA_NS0ID_ROLETYPE)))
+        return UA_STATUSCODE_BADTYPEDEFINITIONINVALID;
+
     struct { UA_UInt32 id; const char *name; } roles[] = {
         {UA_NS0ID_WELLKNOWNROLE_ANONYMOUS,          "Anonymous"},
         {UA_NS0ID_WELLKNOWNROLE_AUTHENTICATEDUSER,  "AuthenticatedUser"},
@@ -743,69 +727,146 @@ initNS0RBAC(UA_Server *server) {
         ,{UA_NS0ID_WELLKNOWNROLE_SECURITYKEYSERVERACCESS, "SecurityKeyServerAccess"}
 #endif
     };
-    for(size_t i = 0; i < sizeof(roles) / sizeof(roles[0]); i++) {
-        UA_NodeId rId = UA_NODEID_NUMERIC(0, roles[i].id);
-        if(UA_Server_readBrowseName(server, rId, &bn) != UA_STATUSCODE_GOOD) {
-            UA_ObjectAttributes oAttr = UA_ObjectAttributes_default;
-            oAttr.displayName = UA_LOCALIZEDTEXT("", (char*)(uintptr_t)roles[i].name);
-            retval |= UA_Server_addObjectNode(
-                server, rId, roleSetId,
-                UA_NODEID_NUMERIC(0, UA_NS0ID_HASCOMPONENT),
-                UA_QUALIFIEDNAME(0, (char*)(uintptr_t)roles[i].name),
-                UA_NODEID_NUMERIC(0, UA_NS0ID_ROLETYPE),
-                oAttr, NULL, NULL);
-        } else {
-            UA_QualifiedName_clear(&bn);
-        }
+    const size_t rolesSize = sizeof(roles) / sizeof(roles[0]);
 
-        /* Back the Identities property with the role registry so that reads
-         * return the currently configured identity mapping rules */
-        UA_NodeId identitiesId;
-        if(findPropertyChild(server, rId, "Identities",
-                             &identitiesId) == UA_STATUSCODE_GOOD) {
-            UA_DataSource identitiesDataSource;
-            identitiesDataSource.read = readRoleIdentities;
-            identitiesDataSource.write = NULL;
-            retval |= UA_Server_setVariableNode_dataSource(server, identitiesId,
-                                                           identitiesDataSource);
-            UA_NodeId_clear(&identitiesId);
+    /* Ensure the RoleSet and the well-known Role Objects exist. If one cannot
+     * be added, remove the nodes added here again so that no unbound and
+     * unrestricted RoleSet is left behind. */
+    UA_StatusCode res = UA_STATUSCODE_GOOD;
+    UA_Boolean addedRoleSet = false;
+    UA_Boolean addedRoles[sizeof(roles) / sizeof(roles[0])] = {false};
+    UA_NodeId roleSetId = UA_NODEID_NUMERIC(0, UA_NS0ID_SERVER_SERVERCAPABILITIES_ROLESET);
+    if(!rbacNodeExists(server, roleSetId)) {
+        UA_ObjectAttributes oAttr = UA_ObjectAttributes_default;
+        oAttr.displayName = UA_LOCALIZEDTEXT("", "RoleSet");
+        res = UA_Server_addObjectNode(server, roleSetId,
+                                      UA_NODEID_NUMERIC(0, UA_NS0ID_SERVER_SERVERCAPABILITIES),
+                                      UA_NODEID_NUMERIC(0, UA_NS0ID_HASCOMPONENT),
+                                      UA_QUALIFIEDNAME(0, "RoleSet"),
+                                      UA_NODEID_NUMERIC(0, UA_NS0ID_ROLESETTYPE),
+                                      oAttr, NULL, NULL);
+        addedRoleSet = (res == UA_STATUSCODE_GOOD);
+    }
+    for(size_t i = 0; res == UA_STATUSCODE_GOOD && i < rolesSize; i++) {
+        UA_NodeId rId = UA_NODEID_NUMERIC(0, roles[i].id);
+        if(rbacNodeExists(server, rId))
+            continue;
+        UA_ObjectAttributes oAttr = UA_ObjectAttributes_default;
+        oAttr.displayName = UA_LOCALIZEDTEXT("", (char*)(uintptr_t)roles[i].name);
+        res = UA_Server_addObjectNode(server, rId, roleSetId,
+                                      UA_NODEID_NUMERIC(0, UA_NS0ID_HASCOMPONENT),
+                                      UA_QUALIFIEDNAME(0, (char*)(uintptr_t)roles[i].name),
+                                      UA_NODEID_NUMERIC(0, UA_NS0ID_ROLETYPE),
+                                      oAttr, NULL, NULL);
+        addedRoles[i] = (res == UA_STATUSCODE_GOOD);
+    }
+    if(res != UA_STATUSCODE_GOOD) {
+        for(size_t i = 0; i < rolesSize; i++) {
+            if(addedRoles[i])
+                UA_Server_deleteNode(server, UA_NODEID_NUMERIC(0, roles[i].id), true);
         }
+        if(addedRoleSet)
+            UA_Server_deleteNode(server, roleSetId, true);
+        return res;
+    }
+
+    /* Count the nodes that are missing or cannot be bound */
+    size_t unbound = 0;
+
+    /* Back the Identities property of the well-known Roles with the role
+     * registry so that reads return the configured identity mapping rules */
+    for(size_t i = 0; i < rolesSize; i++) {
+        UA_NodeId identitiesId;
+        if(findPropertyChild(server, UA_NODEID_NUMERIC(0, roles[i].id), "Identities",
+                             &identitiesId) != UA_STATUSCODE_GOOD) {
+            unbound++;
+            continue;
+        }
+        UA_DataSource identitiesDataSource;
+        identitiesDataSource.read = readRoleIdentities;
+        identitiesDataSource.write = NULL;
+        if(UA_Server_setVariableNode_dataSource(server, identitiesId,
+                                                identitiesDataSource) != UA_STATUSCODE_GOOD)
+            unbound++;
+        UA_NodeId_clear(&identitiesId);
     }
 
 #ifdef UA_ENABLE_METHODCALLS
     /* The method callbacks must be attached to the RoleSet *instance* methods.
      * A Call resolves the object's own HasComponent method (the instance node),
      * not the type method, so a callback on the type node would never fire. */
-    retval |= UA_Server_setMethodNode_callback(
-        server, UA_NODEID_NUMERIC(0, UA_NS0ID_SERVER_SERVERCAPABILITIES_ROLESET_ADDROLE),
-        addRoleMethodCallback);
-    retval |= UA_Server_setMethodNode_callback(
-        server, UA_NODEID_NUMERIC(0, UA_NS0ID_SERVER_SERVERCAPABILITIES_ROLESET_REMOVEROLE),
-        removeRoleMethodCallback);
-
-    retval |= UA_Server_setMethodNode_callback(
-        server, UA_NODEID_NUMERIC(0, UA_NS0ID_ROLETYPE_ADDIDENTITY),
-        addIdentityMethodCallback);
-    retval |= UA_Server_setMethodNode_callback(
-        server, UA_NODEID_NUMERIC(0, UA_NS0ID_ROLETYPE_REMOVEIDENTITY),
-        removeIdentityMethodCallback);
-
-    retval |= UA_Server_setMethodNode_callback(
-        server, UA_NODEID_NUMERIC(0, UA_NS0ID_ROLETYPE_ADDAPPLICATION),
-        addApplicationMethodCallback);
-    retval |= UA_Server_setMethodNode_callback(
-        server, UA_NODEID_NUMERIC(0, UA_NS0ID_ROLETYPE_REMOVEAPPLICATION),
-        removeApplicationMethodCallback);
-
-    retval |= UA_Server_setMethodNode_callback(
-        server, UA_NODEID_NUMERIC(0, UA_NS0ID_ROLETYPE_ADDENDPOINT),
-        addEndpointMethodCallback);
-    retval |= UA_Server_setMethodNode_callback(
-        server, UA_NODEID_NUMERIC(0, UA_NS0ID_ROLETYPE_REMOVEENDPOINT),
-        removeEndpointMethodCallback);
+    struct { UA_UInt32 id; UA_MethodCallback callback; } methods[] = {
+        {UA_NS0ID_SERVER_SERVERCAPABILITIES_ROLESET_ADDROLE, addRoleMethodCallback},
+        {UA_NS0ID_SERVER_SERVERCAPABILITIES_ROLESET_REMOVEROLE, removeRoleMethodCallback},
+        {UA_NS0ID_ROLETYPE_ADDIDENTITY, addIdentityMethodCallback},
+        {UA_NS0ID_ROLETYPE_REMOVEIDENTITY, removeIdentityMethodCallback},
+        {UA_NS0ID_ROLETYPE_ADDAPPLICATION, addApplicationMethodCallback},
+        {UA_NS0ID_ROLETYPE_REMOVEAPPLICATION, removeApplicationMethodCallback},
+        {UA_NS0ID_ROLETYPE_ADDENDPOINT, addEndpointMethodCallback},
+        {UA_NS0ID_ROLETYPE_REMOVEENDPOINT, removeEndpointMethodCallback}
+    };
+    for(size_t i = 0; i < sizeof(methods) / sizeof(methods[0]); i++) {
+        if(UA_Server_setMethodNode_callback(server, UA_NODEID_NUMERIC(0, methods[i].id),
+                                            methods[i].callback) != UA_STATUSCODE_GOOD)
+            unbound++;
+    }
 #endif /* UA_ENABLE_METHODCALLS */
 
-    return retval;
+    if(unbound > 0)
+        UA_LOG_WARNING(server->config.logging, UA_LOGCATEGORY_SERVER,
+                       "RBAC: %u node(s) of the NS0 RBAC information model are "
+                       "missing or could not be bound", (unsigned)unbound);
+    server->rbacNS0Bound = true;
+    return UA_STATUSCODE_GOOD;
+}
+
+void
+initNS0RBAC(UA_Server *server) {
+    /* Never fails the server creation. Without the information model (e.g.
+     * MINIMAL, or nodes added only after UA_Server_new) the binding is retried
+     * in UA_Server_run_startup. */
+    bindNS0RBAC(server);
+}
+
+UA_StatusCode
+startNS0RBAC(UA_Server *server) {
+    if(server->rbacNS0Bound)
+        return UA_STATUSCODE_GOOD;
+
+    UA_StatusCode res = bindNS0RBAC(server);
+    if(res != UA_STATUSCODE_GOOD) {
+        /* Log once per server. Without the RoleSetType (MINIMAL, NONE) the
+         * information model is left out deliberately. */
+        if(server->rbacNS0Reported)
+            return UA_STATUSCODE_GOOD;
+        server->rbacNS0Reported = true;
+        if(res == UA_STATUSCODE_BADNODEIDUNKNOWN)
+            UA_LOG_INFO(server->config.logging, UA_LOGCATEGORY_SERVER,
+                        "RBAC: No RoleSetType in the nodestore. Roles are "
+                        "managed through the C API only.");
+        else
+            UA_LOG_WARNING(server->config.logging, UA_LOGCATEGORY_SERVER,
+                           "RBAC: Cannot bind the NS0 RBAC information model "
+                           "(RoleSet) (%s). Roles are managed through the C API "
+                           "only.", UA_StatusCode_name(res));
+        return UA_STATUSCODE_GOOD;
+    }
+
+    /* Publish the Roles registered before the information model was bound */
+    for(size_t i = 0; i < server->rolesSize; i++) {
+        UA_Role *role = &server->roles[i];
+        if(rbacNodeExists(server, role->roleId))
+            continue;
+        res = addRoleRepresentation(server, role);
+        if(res != UA_STATUSCODE_GOOD)
+            UA_LOG_WARNING(server->config.logging, UA_LOGCATEGORY_SERVER,
+                           "RBAC: Role '%S' cannot be added to the RoleSet (%s)",
+                           role->roleName.name, UA_StatusCode_name(res));
+    }
+
+    /* Skipped in UA_Server_initRBAC without the information model. Fail the
+     * startup like UA_Server_new does, never serve unrestricted Methods. */
+    return initRoleSetRolePermissions(server);
 }
 
 #endif /* UA_ENABLE_RBAC */

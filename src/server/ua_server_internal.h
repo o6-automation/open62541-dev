@@ -82,8 +82,14 @@ typedef struct {
 UA_StatusCode UA_Server_initRBAC(UA_Server *server);
 void UA_Server_cleanupRBAC(UA_Server *server);
 
-/* Initialize RBAC information model (NS0 role representations and methods) */
-UA_StatusCode initNS0RBAC(UA_Server *server);
+/* Bind the RBAC information model (NS0 role representations and methods) if
+ * the nodes are available */
+void initNS0RBAC(UA_Server *server);
+
+/* Bind the RBAC information model in UA_Server_run_startup if it was not yet
+ * available in UA_Server_new (nodes added later by a nodeset loader or the
+ * application) */
+UA_StatusCode startNS0RBAC(UA_Server *server);
 
 #endif /* UA_ENABLE_RBAC */
 
@@ -242,6 +248,10 @@ struct UA_Server {
     /* Namespace metadata: default role permissions per namespace */
     size_t namespaceMetadataSize;
     UA_NamespaceMetadata *namespaceMetadata;
+
+    /* The NS0 RBAC information model (RoleSet) is bound to the registry */
+    UA_Boolean rbacNS0Bound;
+    UA_Boolean rbacNS0Reported; /* Its absence was logged once */
 #endif
 
 #ifdef UA_ENABLE_DISCOVERY

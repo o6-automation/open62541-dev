@@ -648,7 +648,6 @@ START_TEST(roleSetExists) {
 END_TEST
 #endif /* UA_GENERATED_NAMESPACE_ZERO */
 
-#ifdef UA_GENERATED_NAMESPACE_ZERO
 /* Is targetId reachable from RoleSet via a forward HasComponent reference? */
 static UA_Boolean
 roleSetHasComponent(UA_NodeId targetId) {
@@ -672,6 +671,7 @@ roleSetHasComponent(UA_NodeId targetId) {
     return found;
 }
 
+#ifdef UA_GENERATED_NAMESPACE_ZERO
 /* A role added/removed through the C API is mirrored under the RoleSet, the
  * same way other subsystems reflect their config in NS0. */
 START_TEST(addRole_cApiPublishesRoleObject) {
@@ -697,6 +697,152 @@ START_TEST(addRole_cApiPublishesRoleObject) {
 }
 END_TEST
 #endif /* UA_GENERATED_NAMESPACE_ZERO */
+
+#ifndef UA_GENERATED_NAMESPACE_ZERO
+static UA_Boolean
+nodeExists(UA_NodeId nodeId) {
+    UA_QualifiedName bn;
+    if(UA_Server_readBrowseName(server, nodeId, &bn) != UA_STATUSCODE_GOOD)
+        return false;
+    UA_QualifiedName_clear(&bn);
+    return true;
+}
+
+/* Without the RoleSet (MINIMAL, NONE) the role registry works through the C
+ * API alone, also across a restart of the server */
+START_TEST(noRoleSet_registryAcrossRestart) {
+    server = UA_Server_newForUnitTest();
+    ck_assert(server != NULL);
+    UA_NodeId earlyId, removedId;
+    ck_assert_uint_eq(addTestRole("EarlyRole", 1, 55201, &earlyId), UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(addTestRole("RemovedRole", 1, 55202, &removedId),
+                      UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(UA_Server_run_startup(server), UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(removeTestRole("RemovedRole", 1), UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(UA_Server_run_shutdown(server), UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(UA_Server_run_startup(server), UA_STATUSCODE_GOOD);
+
+    UA_Role role;
+    ck_assert_uint_eq(UA_Server_getRoleById(server, earlyId, &role), UA_STATUSCODE_GOOD);
+    UA_Role_clear(&role);
+    ck_assert_uint_eq(UA_Server_getRoleById(server, removedId, &role),
+                      UA_STATUSCODE_BADNOTFOUND);
+    ck_assert_uint_eq(UA_Server_getRoleById(server,
+                          UA_NODEID_NUMERIC(0, UA_NS0ID_WELLKNOWNROLE_SECURITYADMIN),
+                          &role), UA_STATUSCODE_GOOD);
+    UA_Role_clear(&role);
+    ck_assert(!nodeExists(UA_NODEID_NUMERIC(0, UA_NS0ID_SERVER_SERVERCAPABILITIES_ROLESET)));
+    ck_assert(!nodeExists(earlyId));
+
+    ck_assert_uint_eq(UA_Server_run_shutdown(server), UA_STATUSCODE_GOOD);
+    UA_Server_delete(server);
+    server = NULL;
+    UA_NodeId_clear(&earlyId);
+    UA_NodeId_clear(&removedId);
+}
+END_TEST
+
+/* Add the RoleSetType, the RoleType with its mandatory Identities Property and
+ * the RoleSet after UA_Server_new, as a nodeset loader would */
+static void
+addRoleSetModel(void) {
+    UA_ObjectAttributes oAttr = UA_ObjectAttributes_default;
+    if(!nodeExists(UA_NODEID_NUMERIC(0, UA_NS0ID_MODELLINGRULE_MANDATORY)))
+        ck_assert_uint_eq(UA_Server_addObjectNode(server,
+            UA_NODEID_NUMERIC(0, UA_NS0ID_MODELLINGRULE_MANDATORY),
+            UA_NODEID_NUMERIC(0, UA_NS0ID_OBJECTSFOLDER),
+            UA_NODEID_NUMERIC(0, UA_NS0ID_ORGANIZES), UA_QUALIFIEDNAME(0, "Mandatory"),
+            UA_NODEID_NUMERIC(0, UA_NS0ID_BASEOBJECTTYPE), oAttr, NULL, NULL),
+            UA_STATUSCODE_GOOD);
+    if(!nodeExists(UA_NODEID_NUMERIC(0, UA_NS0ID_SERVER_SERVERCAPABILITIES)))
+        ck_assert_uint_eq(UA_Server_addObjectNode(server,
+            UA_NODEID_NUMERIC(0, UA_NS0ID_SERVER_SERVERCAPABILITIES),
+            UA_NODEID_NUMERIC(0, UA_NS0ID_SERVER),
+            UA_NODEID_NUMERIC(0, UA_NS0ID_HASCOMPONENT),
+            UA_QUALIFIEDNAME(0, "ServerCapabilities"),
+            UA_NODEID_NUMERIC(0, UA_NS0ID_BASEOBJECTTYPE), oAttr, NULL, NULL),
+            UA_STATUSCODE_GOOD);
+
+    UA_ObjectTypeAttributes otAttr = UA_ObjectTypeAttributes_default;
+    ck_assert_uint_eq(UA_Server_addObjectTypeNode(server,
+        UA_NODEID_NUMERIC(0, UA_NS0ID_ROLESETTYPE),
+        UA_NODEID_NUMERIC(0, UA_NS0ID_BASEOBJECTTYPE),
+        UA_NODEID_NUMERIC(0, UA_NS0ID_HASSUBTYPE), UA_QUALIFIEDNAME(0, "RoleSetType"),
+        otAttr, NULL, NULL), UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(UA_Server_addObjectTypeNode(server,
+        UA_NODEID_NUMERIC(0, UA_NS0ID_ROLETYPE),
+        UA_NODEID_NUMERIC(0, UA_NS0ID_BASEOBJECTTYPE),
+        UA_NODEID_NUMERIC(0, UA_NS0ID_HASSUBTYPE), UA_QUALIFIEDNAME(0, "RoleType"),
+        otAttr, NULL, NULL), UA_STATUSCODE_GOOD);
+    UA_VariableAttributes vAttr = UA_VariableAttributes_default;
+    vAttr.valueRank = UA_VALUERANK_ANY;
+    ck_assert_uint_eq(UA_Server_addVariableNode(server,
+        UA_NODEID_NUMERIC(0, UA_NS0ID_ROLETYPE_IDENTITIES),
+        UA_NODEID_NUMERIC(0, UA_NS0ID_ROLETYPE),
+        UA_NODEID_NUMERIC(0, UA_NS0ID_HASPROPERTY), UA_QUALIFIEDNAME(0, "Identities"),
+        UA_NODEID_NUMERIC(0, UA_NS0ID_PROPERTYTYPE), vAttr, NULL, NULL),
+        UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(UA_Server_addReference(server,
+        UA_NODEID_NUMERIC(0, UA_NS0ID_ROLETYPE_IDENTITIES),
+        UA_NODEID_NUMERIC(0, UA_NS0ID_HASMODELLINGRULE),
+        UA_EXPANDEDNODEID_NUMERIC(0, UA_NS0ID_MODELLINGRULE_MANDATORY), true),
+        UA_STATUSCODE_GOOD);
+
+    ck_assert_uint_eq(UA_Server_addObjectNode(server,
+        UA_NODEID_NUMERIC(0, UA_NS0ID_SERVER_SERVERCAPABILITIES_ROLESET),
+        UA_NODEID_NUMERIC(0, UA_NS0ID_SERVER_SERVERCAPABILITIES),
+        UA_NODEID_NUMERIC(0, UA_NS0ID_HASCOMPONENT), UA_QUALIFIEDNAME(0, "RoleSet"),
+        UA_NODEID_NUMERIC(0, UA_NS0ID_ROLESETTYPE), oAttr, NULL, NULL),
+        UA_STATUSCODE_GOOD);
+}
+
+/* A RoleSet added after UA_Server_new is bound in UA_Server_run_startup. The
+ * Roles registered before are published then. */
+START_TEST(lateRoleSet_boundAtStartup) {
+    server = UA_Server_newForUnitTest();
+    ck_assert(server != NULL);
+    UA_NodeId earlyId;
+    ck_assert_uint_eq(addTestRole("EarlyRole", 1, 55211, &earlyId), UA_STATUSCODE_GOOD);
+    addRoleSetModel();
+    ck_assert(!nodeExists(earlyId));
+
+    ck_assert_uint_eq(UA_Server_run_startup(server), UA_STATUSCODE_GOOD);
+    ck_assert(roleSetHasComponent(earlyId));
+
+    /* The Identities of the well-known Roles are read from the registry */
+    UA_NodeId anonId = UA_NODEID_NUMERIC(0, UA_NS0ID_WELLKNOWNROLE_ANONYMOUS);
+    ck_assert(roleSetHasComponent(anonId));
+    UA_QualifiedName identities = UA_QUALIFIEDNAME(0, "Identities");
+    UA_BrowsePathResult bpr =
+        UA_Server_browseSimplifiedBrowsePath(server, anonId, 1, &identities);
+    ck_assert_uint_eq(bpr.statusCode, UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(bpr.targetsSize, 1);
+    UA_Variant value;
+    ck_assert_uint_eq(UA_Server_readValue(server, bpr.targets[0].targetId.nodeId,
+                                          &value), UA_STATUSCODE_GOOD);
+    UA_Role anon;
+    ck_assert_uint_eq(UA_Server_getRoleById(server, anonId, &anon), UA_STATUSCODE_GOOD);
+    ck_assert(value.type == &UA_TYPES[UA_TYPES_IDENTITYMAPPINGRULETYPE]);
+    ck_assert_uint_eq(value.arrayLength, anon.identityMappingRulesSize);
+    UA_Role_clear(&anon);
+    UA_Variant_clear(&value);
+    UA_BrowsePathResult_clear(&bpr);
+
+    /* Roles added and removed later are mirrored directly */
+    UA_NodeId lateId;
+    ck_assert_uint_eq(addTestRole("LateRole", 1, 55212, &lateId), UA_STATUSCODE_GOOD);
+    ck_assert(roleSetHasComponent(lateId));
+    ck_assert_uint_eq(removeTestRole("LateRole", 1), UA_STATUSCODE_GOOD);
+    ck_assert(!nodeExists(lateId));
+
+    ck_assert_uint_eq(UA_Server_run_shutdown(server), UA_STATUSCODE_GOOD);
+    UA_Server_delete(server);
+    server = NULL;
+    UA_NodeId_clear(&earlyId);
+    UA_NodeId_clear(&lateId);
+}
+END_TEST
+#endif /* !UA_GENERATED_NAMESPACE_ZERO */
 
 #if defined(UA_GENERATED_NAMESPACE_ZERO) && defined(UA_ENABLE_METHODCALLS)
 /* The RoleSet AddRole/RemoveRole Methods must create/remove the Role Object
@@ -2603,6 +2749,14 @@ static Suite *testSuite_InformationModel(void) {
     tcase_add_test(tc, roleSetMethods_restrictedToAdmin);
 #endif /* UA_GENERATED_NAMESPACE_ZERO && UA_ENABLE_METHODCALLS */
     suite_add_tcase(s, tc);
+
+#ifndef UA_GENERATED_NAMESPACE_ZERO
+    /* The tests create their own server */
+    TCase *tc_noRoleSet = tcase_create("WithoutRoleSet");
+    tcase_add_test(tc_noRoleSet, noRoleSet_registryAcrossRestart);
+    tcase_add_test(tc_noRoleSet, lateRoleSet_boundAtStartup);
+    suite_add_tcase(s, tc_noRoleSet);
+#endif /* !UA_GENERATED_NAMESPACE_ZERO */
 
     TCase *tc_session = tcase_create("SessionRoles");
     tcase_add_unchecked_fixture(tc_session, setup, teardown);
