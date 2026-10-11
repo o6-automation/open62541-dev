@@ -1409,6 +1409,13 @@ addNode_raw(UA_Server *server, UA_Session *session, void *nodeContext,
     if(retval != UA_STATUSCODE_GOOD)
         goto create_error;
 
+#ifdef UA_ENABLE_RBAC
+    /* The namespace-default AccessRestrictions of the new Node */
+    retval = checkNodeAccessRestrictions(server, session, node, false);
+    if(retval != UA_STATUSCODE_GOOD)
+        goto create_error;
+#endif
+
     /* Create a current source timestamp for values that don't have any */
     if(node->head.nodeClass == UA_NODECLASS_VARIABLE) {
         UA_VariableNode *vn = &node->variableNode;
@@ -2408,14 +2415,21 @@ checkDeleteNodeSetAccess(UA_Server *server, UA_Session *session,
                          const UA_DeleteNodesItem *item, const RefTree *refTree) {
     UA_LOCK_ASSERT(&server->serviceMutex);
     UA_AccessControl *ac = &server->config.accessControl;
-    if(!ac->allowDeleteNode)
-        return UA_STATUSCODE_GOOD;
     UA_DeleteNodesItem childItem = *item;
     for(size_t i = 1; i < refTree->size; i++) {
         childItem.nodeId = refTree->targets[i].nodeId;
-        if(!ac->allowDeleteNode(server, ac, &session->sessionId,
+        if(ac->allowDeleteNode &&
+           !ac->allowDeleteNode(server, ac, &session->sessionId,
                                 session->context, &childItem))
             return UA_STATUSCODE_BADUSERACCESSDENIED;
+
+#ifdef UA_ENABLE_RBAC
+        /* Also without an allowDeleteNode callback */
+        UA_StatusCode res =
+            checkNodeIdAccessRestrictions(server, session, &childItem.nodeId);
+        if(res != UA_STATUSCODE_GOOD)
+            return res;
+#endif
     }
     return UA_STATUSCODE_GOOD;
 }
@@ -2463,6 +2477,14 @@ deleteNodeOperation_inner(UA_Server *server, UA_Session *session,
         *result = UA_STATUSCODE_BADNODEIDUNKNOWN;
         return;
     }
+
+#ifdef UA_ENABLE_RBAC
+    *result = checkNodeAccessRestrictions(server, session, node, false);
+    if(*result != UA_STATUSCODE_GOOD) {
+        UA_NODESTORE_RELEASE(server, node);
+        return;
+    }
+#endif
 
     if(UA_Node_hasSubTypeOrInstances(&node->head)) {
         UA_LOG_INFO_SESSION(server->config.logging, session,
@@ -2608,6 +2630,19 @@ deleteNode(UA_Server *server, const UA_NodeId nodeId,
 /* Add References */
 /******************/
 
+#ifdef UA_ENABLE_RBAC
+/* Check both local ends before either direction of the reference changes */
+static UA_StatusCode
+checkReferenceAccessRestrictions(UA_Server *server, UA_Session *session,
+                                 const UA_NodeId *sourceNodeId,
+                                 const UA_ExpandedNodeId *targetNodeId) {
+    UA_StatusCode res = checkNodeIdAccessRestrictions(server, session, sourceNodeId);
+    if(res == UA_STATUSCODE_GOOD && UA_ExpandedNodeId_isLocal(targetNodeId))
+        res = checkNodeIdAccessRestrictions(server, session, &targetNodeId->nodeId);
+    return res;
+}
+#endif
+
 static void
 Operation_addReference_inner(UA_Server *server, UA_Session *session, void *context,
                              const UA_AddReferencesItem *item, UA_StatusCode *retval) {
@@ -2626,6 +2661,13 @@ Operation_addReference_inner(UA_Server *server, UA_Session *session, void *conte
             return;
         }
     }
+
+#ifdef UA_ENABLE_RBAC
+    *retval = checkReferenceAccessRestrictions(server, session, &item->sourceNodeId,
+                                               &item->targetNodeId);
+    if(*retval != UA_STATUSCODE_GOOD)
+        return;
+#endif
 
     /* TODO: Currently no expandednodeids are allowed */
     if(item->targetServerUri.length > 0) {
@@ -2843,6 +2885,13 @@ Operation_deleteReference_inner(UA_Server *server, UA_Session *session, void *co
             return;
         }
     }
+
+#ifdef UA_ENABLE_RBAC
+    *retval = checkReferenceAccessRestrictions(server, session, &item->sourceNodeId,
+                                               &item->targetNodeId);
+    if(*retval != UA_STATUSCODE_GOOD)
+        return;
+#endif
 
     /* Check the ReferenceType and get the RefTypeIndex */
     const UA_Node *refType =

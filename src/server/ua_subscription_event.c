@@ -1652,6 +1652,19 @@ createEvent(UA_Server *server, const UA_EventDescription *ed,
             return res;
     }
 
+#ifdef UA_ENABLE_RBAC
+    /* Checking the union of the AccessRestrictions of the EventType and the
+     * SourceNode checks both. A null SourceNode is allowed (Part 5,
+     * BaseEventType) and not checked. */
+    UA_AccessRestrictionType eventAr = UA_ACCESSRESTRICTIONTYPE_NONE;
+    UA_AccessRestrictionType sourceAr = UA_ACCESSRESTRICTIONTYPE_NONE;
+    UA_StatusCode arRes = getEffectiveAccessRestrictions(server, &ed->eventType,
+                                                         &eventAr);
+    if(arRes == UA_STATUSCODE_GOOD && !UA_NodeId_isNull(&ed->sourceNode))
+        arRes = getEffectiveAccessRestrictions(server, &ed->sourceNode, &sourceAr);
+    eventAr |= sourceAr;
+#endif
+
     /* Loop over all nodes that emit this event instance */
     for(size_t i = 0; i < emitNodesSize; i++) {
         /* We can only emit on local nodes */
@@ -1729,6 +1742,13 @@ createEvent(UA_Server *server, const UA_EventDescription *ed,
                     !(srcPerms & UA_PERMISSIONTYPE_RECEIVEEVENTS))) {
                     continue;
                 }
+
+                /* Check the AccessRestrictions at delivery time, the
+                 * SecureChannel may have changed */
+                if(arRes != UA_STATUSCODE_GOOD ||
+                   checkAccessRestrictions(server, ctx.session, eventAr,
+                                           false) != UA_STATUSCODE_GOOD)
+                    continue;
             }
 #endif
 

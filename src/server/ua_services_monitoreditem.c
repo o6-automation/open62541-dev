@@ -22,6 +22,9 @@
 #include "ua_server_internal.h"
 #include "ua_services.h"
 #include "ua_subscription.h"
+#ifdef UA_ENABLE_RBAC
+#include "ua_server_rbac.h"
+#endif
 
 #ifdef UA_ENABLE_SUBSCRIPTIONS /* conditional compilation */
 
@@ -536,6 +539,17 @@ Operation_CreateMonitoredItem(UA_Server *server, UA_Session *session,
     /* Adding an Event MonitoredItem */
 #ifdef UA_ENABLE_SUBSCRIPTIONS_EVENTS
     if(request->itemToMonitor.attributeId == UA_ATTRIBUTEID_EVENTNOTIFIER) {
+#ifdef UA_ENABLE_RBAC
+        /* Reading the EventNotifier is part of Browse, subscribing is not */
+        UA_StatusCode arRes = checkNodeIdAccessRestrictions(
+            server, session, &request->itemToMonitor.nodeId);
+        if(arRes != UA_STATUSCODE_GOOD) {
+            result->statusCode = arRes;
+            UA_DataValue_clear(&v);
+            return;
+        }
+#endif
+
         /* If the 'SubscribeToEvents' bit of EventNotifier attribute is
          * zero, then the object cannot be subscribed to monitor events.
          * Return why the EventNotifier cannot be read. */

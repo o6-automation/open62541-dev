@@ -119,6 +119,30 @@ rbacSession(UA_Server *server, UA_SecureChannel *channel, UA_NodeId role) {
     return session;
 }
 
+/* Call a Method in a Session */
+static UA_INLINE UA_StatusCode
+rbacCall(UA_Server *server, UA_Session *session, UA_NodeId objectId,
+         UA_NodeId methodId, size_t inputSize, UA_Variant *input) {
+    UA_CallMethodRequest item;
+    UA_CallMethodRequest_init(&item);
+    item.objectId = objectId;
+    item.methodId = methodId;
+    item.inputArgumentsSize = inputSize;
+    item.inputArguments = input;
+    UA_CallRequest request;
+    UA_CallRequest_init(&request);
+    request.methodsToCallSize = 1;
+    request.methodsToCall = &item;
+    UA_CallResponse response;
+    UA_CallResponse_init(&response);
+    rbacService(server, session, Service_Call, &request, &response);
+    ck_assert_uint_eq(response.responseHeader.serviceResult, UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(response.resultsSize, 1);
+    UA_StatusCode res = response.results[0].statusCode;
+    UA_CallResponse_clear(&response);
+    return res;
+}
+
 #ifdef UA_ENABLE_SUBSCRIPTIONS
 /* A Subscription with one MonitoredItem. For the EventNotifier the filter
  * selects the Event field with the BrowseName (namespace 0). */

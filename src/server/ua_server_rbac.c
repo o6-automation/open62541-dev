@@ -2621,6 +2621,87 @@ getNodeAccessRestrictions(UA_Server *server, const UA_Node *node) {
     return namespaceDefaultAccessRestrictions(server, node->head.nodeId.namespaceIndex);
 }
 
+/* Fails closed for an invalid permission index, like the RolePermissions */
+static UA_StatusCode
+getCheckedAccessRestrictions(UA_Server *server, const UA_Node *node,
+                             UA_AccessRestrictionType *out) {
+    UA_PermissionIndex idx = node->head.permissionIndex;
+    if(idx != UA_PERMISSION_INDEX_INVALID && idx >= server->rolePermissionsSize)
+        return UA_STATUSCODE_BADUSERACCESSDENIED;
+    *out = getNodeAccessRestrictions(server, node);
+    return UA_STATUSCODE_GOOD;
+}
+
+UA_StatusCode
+getEffectiveAccessRestrictions(UA_Server *server, const UA_NodeId *nodeId,
+                               UA_AccessRestrictionType *out) {
+    UA_LOCK_ASSERT(&server->serviceMutex);
+    const UA_Node *node = UA_NODESTORE_GET(server, nodeId);
+    if(!node) {
+        *out = namespaceDefaultAccessRestrictions(server, nodeId->namespaceIndex);
+        return UA_STATUSCODE_GOOD;
+    }
+    UA_StatusCode res = getCheckedAccessRestrictions(server, node, out);
+    UA_NODESTORE_RELEASE(server, node);
+    return res;
+}
+
+/* SessionRequired also applies to Browse: Part 3 §8.56 exempts only Signing
+ * and EncryptionRequired. All Sessions of open62541 satisfy it (there is no
+ * SessionlessInvoke), except a missing Session. */
+UA_StatusCode
+checkAccessRestrictions(UA_Server *server, const UA_Session *session,
+                        UA_AccessRestrictionType ar, UA_Boolean forBrowse) {
+    UA_LOCK_ASSERT(&server->serviceMutex);
+    if(session == &server->adminSession || ar == UA_ACCESSRESTRICTIONTYPE_NONE)
+        return UA_STATUSCODE_GOOD;
+
+    if((ar & UA_ACCESSRESTRICTIONTYPE_SESSIONREQUIRED) && !session)
+        return UA_STATUSCODE_BADUSERACCESSDENIED;
+
+    if(forBrowse && !(ar & UA_ACCESSRESTRICTIONTYPE_APPLYRESTRICTIONSTOBROWSE))
+        return UA_STATUSCODE_GOOD;
+
+    UA_MessageSecurityMode mode = (session && session->channel) ?
+        session->channel->securityMode : UA_MESSAGESECURITYMODE_INVALID;
+
+    if((ar & UA_ACCESSRESTRICTIONTYPE_ENCRYPTIONREQUIRED) &&
+       mode != UA_MESSAGESECURITYMODE_SIGNANDENCRYPT)
+        return UA_STATUSCODE_BADSECURITYMODEINSUFFICIENT;
+
+    if((ar & UA_ACCESSRESTRICTIONTYPE_SIGNINGREQUIRED) &&
+       mode != UA_MESSAGESECURITYMODE_SIGN &&
+       mode != UA_MESSAGESECURITYMODE_SIGNANDENCRYPT)
+        return UA_STATUSCODE_BADSECURITYMODEINSUFFICIENT;
+
+    return UA_STATUSCODE_GOOD;
+}
+
+UA_StatusCode
+checkNodeAccessRestrictions(UA_Server *server, const UA_Session *session,
+                            const UA_Node *node, UA_Boolean forBrowse) {
+    UA_LOCK_ASSERT(&server->serviceMutex);
+    if(session == &server->adminSession)
+        return UA_STATUSCODE_GOOD;
+    UA_AccessRestrictionType ar = UA_ACCESSRESTRICTIONTYPE_NONE;
+    UA_StatusCode res = getCheckedAccessRestrictions(server, node, &ar);
+    if(res != UA_STATUSCODE_GOOD)
+        return res;
+    return checkAccessRestrictions(server, session, ar, forBrowse);
+}
+
+UA_StatusCode
+checkNodeIdAccessRestrictions(UA_Server *server, const UA_Session *session,
+                              const UA_NodeId *nodeId) {
+    UA_LOCK_ASSERT(&server->serviceMutex);
+    const UA_Node *node = UA_NODESTORE_GET(server, nodeId);
+    if(!node)
+        return UA_STATUSCODE_GOOD;
+    UA_StatusCode res = checkNodeAccessRestrictions(server, session, node, false);
+    UA_NODESTORE_RELEASE(server, node);
+    return res;
+}
+
 /* Replace the AccessRestrictions part of the entry of a node. Without
  * hasAccessRestrictions the namespace default applies. */
 static UA_StatusCode
