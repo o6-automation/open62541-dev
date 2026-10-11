@@ -70,6 +70,10 @@ crypto library:
 - ``UA_CertificateUtils_verifyApplicationUri()`` -- check that the
   cert's SubjectAltName URI matches the application's
   ``ApplicationUri``.
+- ``UA_CertificateUtils_getApplicationUri()`` -- the ``ApplicationUri``
+  from the SubjectAltName; fails unless the cert has exactly one URI.
+- ``UA_CertificateUtils_getX509SubjectCriteria()`` -- the Part 18
+  ``X509Subject`` identity mapping criteria of the Subject and the Issuer.
 - ``UA_CertificateUtils_getExpirationDate()`` -- X.509 ``notAfter``.
 - ``UA_CertificateUtils_getSubjectName()`` -- X.509 Subject DN.
 - ``UA_CertificateUtils_getThumbprint()`` -- SHA-1 thumbprint.
