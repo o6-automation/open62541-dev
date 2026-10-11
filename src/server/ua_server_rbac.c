@@ -50,6 +50,13 @@
  *   clients (Part 18 §4.2.2, §4.2.3, §4.3). The well-known roles created
  *   during NS0 setup are left untouched.
  *
+ * - The RoleSet information model needs the RoleSetType and RoleType in NS0:
+ *   FULL, or REDUCED with Opc.Ua.NodeSet2.RbacMinimal.xml (the well-known
+ *   Roles only have the Identities Property there). Nodes added after
+ *   UA_Server_new are bound in UA_Server_run_startup. Without them (MINIMAL,
+ *   or NONE unless the nodestore provides them), Roles are managed through
+ *   the C API only.
+ *
  * - RBAC-related audit events (e.g. RoleMappingRuleChangedAuditEventType)
  *   are not emitted.
  */
@@ -748,12 +755,13 @@ UA_Server_addRole(UA_Server *server, const UA_Role *role,
 
     /* Mirror the role under Server/ServerCapabilities/RoleSet so it is
      * browseable. Skipped when the NS0 RBAC information model is unavailable
-     * or the Role Object already exists (well-known roles). On failure the
-     * appended registry entry is rolled back. */
+     * (see startNS0RBAC) or the Role Object already exists (well-known roles).
+     * On failure the appended registry entry is rolled back. */
     UA_NodeId roleSetId =
         UA_NODEID_NUMERIC(0, UA_NS0ID_SERVER_SERVERCAPABILITIES_ROLESET);
     UA_QualifiedName probe;
-    if(UA_Server_readBrowseName(server, roleSetId, &probe) == UA_STATUSCODE_GOOD) {
+    if(server->rbacNS0Bound &&
+       UA_Server_readBrowseName(server, roleSetId, &probe) == UA_STATUSCODE_GOOD) {
         UA_QualifiedName_clear(&probe);
         if(UA_Server_readBrowseName(server, newRole->roleId, &probe) ==
            UA_STATUSCODE_GOOD) {

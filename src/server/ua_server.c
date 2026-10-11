@@ -563,8 +563,7 @@ UA_Server_init(UA_Server *server) {
     UA_CHECK_STATUS(res, goto cleanup);
 
 #ifdef UA_ENABLE_RBAC
-    res = initNS0RBAC(server);
-    UA_CHECK_STATUS(res, goto cleanup);
+    initNS0RBAC(server);
 
     /* Initialize RBAC: copy config presets into internal array */
     res = UA_Server_initRBAC(server);
@@ -1320,6 +1319,15 @@ UA_Server_run_startup(UA_Server *server) {
     UA_NodeId startTime =
         UA_NODEID_NUMERIC(0, UA_NS0ID_SERVER_SERVERSTATUS_STARTTIME);
     writeValueAttribute(server, startTime, &var);
+
+#ifdef UA_ENABLE_RBAC
+    retVal = startNS0RBAC(server);
+    if(retVal != UA_STATUSCODE_GOOD) {
+        UA_LOG_ERROR(config->logging, UA_LOGCATEGORY_SERVER,
+                     "Could not restrict the RBAC information model");
+        goto undo;
+    }
+#endif
 
     /* Start all drivers. The async manager is required for Read/Write/Call.
      * A failed transport aborts the startup only if the
