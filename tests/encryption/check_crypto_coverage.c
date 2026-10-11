@@ -618,6 +618,294 @@ START_TEST(certificate_generation_pem) {
 }
 END_TEST
 
+/* A self-signed certificate with the subject and the subjectAltName */
+static void
+createCertificate(const char *const *subject, const char *const *san,
+                  UA_ByteString *cert) {
+    UA_String subjectStrings[4], sanStrings[3];
+    size_t subjectSize = 0, sanSize = 0;
+    for(; subjectSize < 4 && subject[subjectSize]; subjectSize++)
+        subjectStrings[subjectSize] = UA_STRING((char*)(uintptr_t)subject[subjectSize]);
+    for(; sanSize < 3 && san[sanSize]; sanSize++)
+        sanStrings[sanSize] = UA_STRING((char*)(uintptr_t)san[sanSize]);
+    UA_KeyValueMap *kvm = UA_KeyValueMap_new();
+    UA_UInt16 keyLength = 2048;
+    UA_KeyValueMap_setScalar(kvm, UA_QUALIFIEDNAME(0, "key-size-bits"),
+                             (void *)&keyLength, &UA_TYPES[UA_TYPES_UINT16]);
+    UA_ByteString privKey = UA_BYTESTRING_NULL;
+    UA_StatusCode retval = UA_CreateCertificate(
+        UA_Log_Stdout, subjectStrings, subjectSize, sanStrings, sanSize,
+        UA_CERTIFICATEFORMAT_DER, kvm, &privKey, cert);
+    UA_KeyValueMap_delete(kvm);
+    UA_ByteString_clear(&privKey);
+    ck_assert_uint_eq(retval, UA_STATUSCODE_GOOD);
+}
+
+/* The subjectAltName of an Application Instance Certificate shall have exactly
+ * one URI, which is the ApplicationUri (Part 6 6.2.2) */
+START_TEST(application_uri_exactly_one) {
+    static const struct {
+        const char *san[3];
+        const char *uri; /* NULL: Bad_CertificateUriInvalid */
+    } cases[] = {
+        {{"DNS:localhost", "URI:urn:test.single"}, "urn:test.single"},
+        {{"URI:urn:test.first", "DNS:localhost", "URI:urn:test.second"}, NULL},
+        {{"DNS:localhost"}, NULL}
+    };
+    const char *subject[] = {"O=TestOrganization", "CN=TestClient@localhost", NULL};
+    for(size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        UA_ByteString cert = UA_BYTESTRING_NULL;
+        createCertificate(subject, cases[i].san, &cert);
+        UA_String uri = UA_STRING("stale");
+        UA_StatusCode retval = UA_CertificateUtils_getApplicationUri(&cert, &uri);
+        UA_String expected = UA_STRING((char*)(uintptr_t)cases[i].uri);
+        ck_assert_uint_eq(retval, cases[i].uri ? UA_STATUSCODE_GOOD :
+                          UA_STATUSCODE_BADCERTIFICATEURIINVALID);
+        ck_assert(UA_String_equal(&uri, &expected));
+        UA_String_clear(&uri);
+        UA_ByteString_clear(&cert);
+    }
+
+    /* PEM input */
+    UA_ByteString pem = {CERT_PEM_LENGTH, CERT_PEM_DATA};
+    UA_String uri = UA_STRING_NULL;
+    ck_assert_uint_eq(UA_CertificateUtils_getApplicationUri(&pem, &uri),
+                      UA_STATUSCODE_GOOD);
+    UA_String expected = UA_STRING("urn:unconfigured:application");
+    ck_assert(UA_String_equal(&uri, &expected));
+    UA_String_clear(&uri);
+}
+END_TEST
+
+/* An expected empty criteria is a null or an empty string */
+static void
+assertCriteria(const UA_String *criteria, const char *expected) {
+    size_t length = strlen(expected);
+    ck_assert_msg(criteria->length == length &&
+                  (length == 0 || memcmp(criteria->data, expected, length) == 0),
+                  "criteria \"%.*s\" instead of \"%s\"", (int)criteria->length,
+                  (const char*)criteria->data, expected);
+}
+
+/* X509Subject criteria (Part 18 4.4.3) of self-signed certificates: the names
+ * of Table 10 in table order, values quoted. An unrepresentable value gives an
+ * empty criteria that never matches. */
+static const struct {
+    const char *subject[4];
+    const char *criteria;
+} subjectCases[] = {
+    {{"C=DE", "O=Acme", "CN=Joe \"J\" Test"}, ""},
+    {{"CN=alice", "title=The \"Boss\"", "emailAddress=alice@example.com", "O=Acme"},
+     "CN=\"alice\"/O=\"Acme\""},
+    {{"CN=alice", "OU=Dev", "O=Acme", "C=DE"},
+     "CN=\"alice\"/O=\"Acme\"/OU=\"Dev\"/C=\"DE\""},
+    {{"title=Boss", "emailAddress=alice@example.com"}, ""}, /* No Table 10 name */
+#ifdef UA_ENABLE_ENCRYPTION_MBEDTLS
+    /* DER hexstrings (RFC 4514) to choose the string type */
+    {{"O=Acme", "CN=#0C034AFF67"}, ""},   /* UTF8String with an invalid byte */
+    {{"O=Acme", "CN=#0C044AC0AF67"}, ""}, /* UTF8String overlong encoding */
+#endif
+};
+
+START_TEST(x509_subject_criteria) {
+    const char *san[] = {"URI:urn:test.subject", NULL};
+    UA_ByteString cert = UA_BYTESTRING_NULL;
+    createCertificate(subjectCases[_i].subject, san, &cert);
+    UA_String subjectCriteria = UA_STRING_NULL;
+    UA_String issuerCriteria = UA_STRING_NULL;
+    ck_assert_uint_eq(UA_CertificateUtils_getX509SubjectCriteria(&cert, &subjectCriteria,
+                                                                 &issuerCriteria),
+                      UA_STATUSCODE_GOOD);
+    assertCriteria(&subjectCriteria, subjectCases[_i].criteria);
+    assertCriteria(&issuerCriteria, subjectCases[_i].criteria); /* Self-signed */
+    UA_String_clear(&subjectCriteria);
+    UA_String_clear(&issuerCriteria);
+    UA_ByteString_clear(&cert);
+}
+END_TEST
+
+/* Certificates made with "openssl asn1parse -genconf" for string types and
+ * values that UA_CreateCertificate does not write */
+static UA_Byte namesCert[] =
+    "\x30\x82\x02\x1e\x30\x82\x01\xc3\xa0\x03\x02\x01\x02\x02\x01\x01\x30\x0a"
+    "\x06\x08\x2a\x86\x48\xce\x3d\x04\x03\x02\x30\x24\x31\x10\x30\x0e\x06\x03"
+    "\x55\x04\x0a\x0c\x07\x41\x63\x6d\x65\x20\x43\x41\x31\x10\x30\x0e\x06\x03"
+    "\x55\x04\x03\x0c\x07\x54\x65\x73\x74\x20\x43\x41\x30\x1e\x17\x0d\x32\x35"
+    "\x30\x31\x30\x31\x30\x30\x30\x30\x30\x30\x5a\x17\x0d\x34\x35\x30\x31\x30"
+    "\x31\x30\x30\x30\x30\x30\x30\x5a\x30\x81\xef\x31\x13\x30\x11\x06\x0a\x09"
+    "\x92\x26\x89\x93\xf2\x2c\x64\x01\x19\x16\x03\x63\x6f\x6d\x31\x17\x30\x15"
+    "\x06\x0a\x09\x92\x26\x89\x93\xf2\x2c\x64\x01\x19\x16\x07\x65\x78\x61\x6d"
+    "\x70\x6c\x65\x31\x0b\x30\x09\x06\x03\x55\x04\x06\x13\x02\x44\x45\x31\x12"
+    "\x30\x10\x06\x03\x55\x04\x08\x14\x09\x54\x68\xfc\x72\x69\x6e\x67\x65\x6e"
+    "\x31\x21\x30\x1f\x06\x03\x55\x04\x07\x1c\x18\x00\x00\x00\x4b\x00\x00\x00"
+    "\xf6\x00\x00\x00\x6c\x00\x00\x00\x6e\x00\x00\x00\x20\x00\x01\xd1\x1e\x31"
+    "\x1f\x30\x1d\x06\x03\x55\x04\x0a\x1e\x16\x00\x4d\x00\xfc\x00\x6c\x00\x6c"
+    "\x00\x65\x00\x72\x00\x20\x00\x47\x00\x6d\x00\x62\x00\x48\x31\x0d\x30\x0b"
+    "\x06\x03\x55\x04\x0b\x0c\x04\x5a\x65\x74\x61\x31\x0e\x30\x0c\x06\x03\x55"
+    "\x04\x0b\x0c\x05\x41\x6c\x70\x68\x61\x31\x13\x30\x11\x06\x03\x55\x04\x0c"
+    "\x0c\x0a\x54\x68\x65\x20\x22\x42\x6f\x73\x73\x22\x31\x19\x30\x09\x06\x03"
+    "\x55\x04\x05\x13\x02\x34\x32\x30\x0c\x06\x03\x55\x04\x03\x0c\x05\x61\x6c"
+    "\x69\x63\x65\x31\x0b\x30\x09\x06\x03\x55\x04\x2e\x13\x02\x71\x31\x30\x59"
+    "\x30\x13\x06\x07\x2a\x86\x48\xce\x3d\x02\x01\x06\x08\x2a\x86\x48\xce\x3d"
+    "\x03\x01\x07\x03\x42\x00\x04\xfe\x92\x22\x2a\x8f\xaf\x7a\x72\x2b\x70\x93"
+    "\x56\x53\xb0\x87\x09\x90\xf6\x3e\x5b\x12\x1d\xbc\x28\xca\x1f\x77\x66\x16"
+    "\xbb\x6f\xd9\x40\xe3\xda\xf7\x89\xa2\x65\xa5\x05\x89\xea\x14\x9e\x23\xe1"
+    "\x43\x6c\x16\x77\x39\x9c\xd1\x5f\x45\x96\xfc\x9c\x42\x78\xb3\x0d\x79\xa3"
+    "\x1a\x30\x18\x30\x16\x06\x03\x55\x1d\x11\x04\x0f\x30\x0d\x86\x00\x82\x09"
+    "\x6c\x6f\x63\x61\x6c\x68\x6f\x73\x74\x30\x0a\x06\x08\x2a\x86\x48\xce\x3d"
+    "\x04\x03\x02\x03\x49\x00\x30\x46\x02\x21\x00\xb6\x96\x87\x87\xdf\x7b\x0d"
+    "\x19\x47\x25\xc7\x4e\x7e\xeb\xc3\xf9\x87\xb6\xf8\xac\x29\x37\x85\xa8\x86"
+    "\xc3\xbe\xa3\x2d\xa0\xa2\x9a\x02\x21\x00\xe6\x6a\xef\xe5\x62\x3c\xb0\x59"
+    "\xc5\xed\x89\x7f\x5e\xe3\x3c\x18\x2e\x79\xdb\x0f\x9f\xd9\x8b\x72\x7b\xf7"
+    "\x43\x2e\x4b\xe1\x31\x34";
+static UA_Byte surrogateCert[] =
+    "\x30\x82\x01\x0e\x30\x81\xb4\xa0\x03\x02\x01\x02\x02\x01\x01\x30\x0a\x06"
+    "\x08\x2a\x86\x48\xce\x3d\x04\x03\x02\x30\x10\x31\x0e\x30\x0c\x06\x03\x55"
+    "\x04\x03\x0c\x05\x41\xed\xa0\x80\x42\x30\x1e\x17\x0d\x32\x35\x30\x31\x30"
+    "\x31\x30\x30\x30\x30\x30\x30\x5a\x17\x0d\x34\x35\x30\x31\x30\x31\x30\x30"
+    "\x30\x30\x30\x30\x5a\x30\x11\x31\x0f\x30\x0d\x06\x03\x55\x04\x03\x1e\x06"
+    "\x00\x41\xd8\x3d\xde\x00\x30\x59\x30\x13\x06\x07\x2a\x86\x48\xce\x3d\x02"
+    "\x01\x06\x08\x2a\x86\x48\xce\x3d\x03\x01\x07\x03\x42\x00\x04\xfe\x92\x22"
+    "\x2a\x8f\xaf\x7a\x72\x2b\x70\x93\x56\x53\xb0\x87\x09\x90\xf6\x3e\x5b\x12"
+    "\x1d\xbc\x28\xca\x1f\x77\x66\x16\xbb\x6f\xd9\x40\xe3\xda\xf7\x89\xa2\x65"
+    "\xa5\x05\x89\xea\x14\x9e\x23\xe1\x43\x6c\x16\x77\x39\x9c\xd1\x5f\x45\x96"
+    "\xfc\x9c\x42\x78\xb3\x0d\x79\x30\x0a\x06\x08\x2a\x86\x48\xce\x3d\x04\x03"
+    "\x02\x03\x49\x00\x30\x46\x02\x21\x00\xa9\x58\xba\x3e\x60\x31\x9c\x68\x2c"
+    "\x89\xc9\x87\x91\x10\xd1\x74\x17\x07\xcb\x7f\xb0\x33\x99\xbe\x03\x74\x5c"
+    "\x2c\x58\x48\x19\x05\x02\x21\x00\xcc\x3c\x65\x19\xb5\x2e\xd4\x7d\x0f\x77"
+    "\x74\x9d\x9f\xb6\x32\x94\xd8\xf7\x2a\xcf\xfd\x3f\x83\x8f\xf2\xd8\x45\x2c"
+    "\x56\xf6\xca\x5d";
+static UA_Byte asciiCert[] =
+    "\x30\x82\x01\x0f\x30\x81\xb5\xa0\x03\x02\x01\x02\x02\x01\x01\x30\x0a\x06"
+    "\x08\x2a\x86\x48\xce\x3d\x04\x03\x02\x30\x14\x31\x12\x30\x10\x06\x0a\x09"
+    "\x92\x26\x89\x93\xf2\x2c\x64\x01\x19\x16\x02\x41\x80\x30\x1e\x17\x0d\x32"
+    "\x35\x30\x31\x30\x31\x30\x30\x30\x30\x30\x30\x5a\x17\x0d\x34\x35\x30\x31"
+    "\x30\x31\x30\x30\x30\x30\x30\x30\x5a\x30\x0e\x31\x0c\x30\x0a\x06\x03\x55"
+    "\x04\x03\x13\x03\x41\xe9\x42\x30\x59\x30\x13\x06\x07\x2a\x86\x48\xce\x3d"
+    "\x02\x01\x06\x08\x2a\x86\x48\xce\x3d\x03\x01\x07\x03\x42\x00\x04\xfe\x92"
+    "\x22\x2a\x8f\xaf\x7a\x72\x2b\x70\x93\x56\x53\xb0\x87\x09\x90\xf6\x3e\x5b"
+    "\x12\x1d\xbc\x28\xca\x1f\x77\x66\x16\xbb\x6f\xd9\x40\xe3\xda\xf7\x89\xa2"
+    "\x65\xa5\x05\x89\xea\x14\x9e\x23\xe1\x43\x6c\x16\x77\x39\x9c\xd1\x5f\x45"
+    "\x96\xfc\x9c\x42\x78\xb3\x0d\x79\x30\x0a\x06\x08\x2a\x86\x48\xce\x3d\x04"
+    "\x03\x02\x03\x49\x00\x30\x46\x02\x21\x00\xa2\xc6\xfa\xaa\xab\x66\x94\x1a"
+    "\x63\x18\xf7\x66\x85\xb6\x20\xf9\x06\x25\x2b\xf7\x1b\x50\xb2\xee\x3b\xce"
+    "\x7d\xea\xb0\x99\x81\x5e\x02\x21\x00\xbe\x6c\x71\x76\xf2\x8f\xff\xa0\xd2"
+    "\x77\x8c\xf6\xef\x23\xe3\x37\x9e\xe5\x5d\x87\xc2\xc5\x32\x10\x2a\xf6\x61"
+    "\xd7\xee\xad\x6e\x47";
+static UA_Byte controlCert[] =
+    "\x30\x82\x01\x09\x30\x81\xb0\xa0\x03\x02\x01\x02\x02\x01\x01\x30\x0a\x06"
+    "\x08\x2a\x86\x48\xce\x3d\x04\x03\x02\x30\x0e\x31\x0c\x30\x0a\x06\x03\x55"
+    "\x04\x03\x03\x03\x00\x41\x42\x30\x1e\x17\x0d\x32\x35\x30\x31\x30\x31\x30"
+    "\x30\x30\x30\x30\x30\x5a\x17\x0d\x34\x35\x30\x31\x30\x31\x30\x30\x30\x30"
+    "\x30\x30\x5a\x30\x0f\x31\x0d\x30\x0b\x06\x03\x55\x04\x03\x0c\x04\x41\xc2"
+    "\x85\x42\x30\x59\x30\x13\x06\x07\x2a\x86\x48\xce\x3d\x02\x01\x06\x08\x2a"
+    "\x86\x48\xce\x3d\x03\x01\x07\x03\x42\x00\x04\xfe\x92\x22\x2a\x8f\xaf\x7a"
+    "\x72\x2b\x70\x93\x56\x53\xb0\x87\x09\x90\xf6\x3e\x5b\x12\x1d\xbc\x28\xca"
+    "\x1f\x77\x66\x16\xbb\x6f\xd9\x40\xe3\xda\xf7\x89\xa2\x65\xa5\x05\x89\xea"
+    "\x14\x9e\x23\xe1\x43\x6c\x16\x77\x39\x9c\xd1\x5f\x45\x96\xfc\x9c\x42\x78"
+    "\xb3\x0d\x79\x30\x0a\x06\x08\x2a\x86\x48\xce\x3d\x04\x03\x02\x03\x48\x00"
+    "\x30\x45\x02\x21\x00\xdc\x87\x9c\x4d\x1c\xfb\xbf\x48\xf6\x86\xcd\x2c\x63"
+    "\x0c\x47\x07\x12\x1c\xae\x6f\xf7\x8c\xce\x6a\x99\x3e\xc4\x9e\x73\xa4\xf1"
+    "\x71\x02\x20\x12\x54\x2f\x44\xda\xb4\x2f\xe8\xa0\x72\x9f\x4b\x09\xeb\xf0"
+    "\xef\x15\x1c\xe2\xe0\xa4\xdf\xfa\x80\x14\x32\x5e\xaa\xf2\x7b\xff\x57";
+
+/* Depending on the library, a certificate with a malformed string in a name is
+ * not decoded at all (OpenSSL) or decoded without criteria (mbedTLS) */
+#define MALFORMED_NAME UA_STATUSCODE_BADCERTIFICATEINVALID
+
+static const struct {
+    UA_ByteString certificate;
+    UA_StatusCode res;
+    const char *subject;
+    const char *issuer;
+} certificateCases[] = {
+    /* Subject in certificate order: DC=com, DC=example, C=DE, ST=Thüringen
+     * (T61String), L=Köln U+1D11E (UniversalString), O=Müller GmbH
+     * (BMPString), OU=Zeta, OU=Alpha, title=The "Boss",
+     * CN=alice+serialNumber=42, dnQualifier=q1. The subjectAltName has an
+     * empty URI. */
+    {{sizeof(namesCert) - 1, namesCert}, UA_STATUSCODE_GOOD,
+     "CN=\"alice\"/O=\"M\xC3\xBCller GmbH\"/OU=\"Zeta\"/OU=\"Alpha\"/DC=\"com\"/"
+     "DC=\"example\"/L=\"K\xC3\xB6ln \xF0\x9D\x84\x9E\"/S=\"Th\xC3\xBCringen\"/"
+     "C=\"DE\"/dnQualifier=\"q1\"/serialNumber=\"42\"",
+     "CN=\"Test CA\"/O=\"Acme CA\""},
+    /* Subject CN: BMPString with the surrogate pair of U+1F600. Issuer CN:
+     * UTF8String with an encoded surrogate. */
+    {{sizeof(surrogateCert) - 1, surrogateCert}, MALFORMED_NAME, "", ""},
+    /* Subject CN: PrintableString 41 E9 42. Issuer DC: IA5String 41 80. */
+    {{sizeof(asciiCert) - 1, asciiCert}, UA_STATUSCODE_GOOD, "", ""},
+    /* Subject CN: UTF8String with the C1 control U+0085. Issuer CN: BIT
+     * STRING, not a string type of Table 10. */
+    {{sizeof(controlCert) - 1, controlCert}, UA_STATUSCODE_GOOD, "", ""}
+};
+
+START_TEST(x509_subject_criteria_fixtures) {
+    const UA_ByteString *cert = &certificateCases[_i].certificate;
+    UA_String subjectCriteria = UA_STRING_NULL;
+    UA_String issuerCriteria = UA_STRING_NULL;
+    UA_StatusCode res =
+        UA_CertificateUtils_getX509SubjectCriteria(cert, &subjectCriteria, &issuerCriteria);
+    if(certificateCases[_i].res == MALFORMED_NAME)
+        ck_assert(res == UA_STATUSCODE_GOOD || res == MALFORMED_NAME);
+    else
+        ck_assert_uint_eq(res, certificateCases[_i].res);
+    assertCriteria(&subjectCriteria, certificateCases[_i].subject);
+    assertCriteria(&issuerCriteria, certificateCases[_i].issuer);
+    UA_String_clear(&subjectCriteria);
+    UA_String_clear(&issuerCriteria);
+
+    /* No usable ApplicationUri: the URI is empty or there is no subjectAltName */
+    UA_String uri = UA_STRING_NULL;
+    ck_assert_uint_eq(UA_CertificateUtils_getApplicationUri(cert, &uri),
+                      res == UA_STATUSCODE_GOOD ? UA_STATUSCODE_BADCERTIFICATEURIINVALID : res);
+    ck_assert(uri.length == 0 && uri.data == NULL);
+}
+END_TEST
+
+/* Invalid arguments, certificates that cannot be decoded and NULL outputs */
+START_TEST(certificate_identity_invalid_input) {
+    UA_ByteString garbage = UA_BYTESTRING("not-a-certificate");
+    UA_ByteString truncated = {100, namesCert};
+    UA_ByteString empty = UA_BYTESTRING_NULL;
+    UA_ByteString noData = {1, NULL};
+    const struct {
+        const UA_ByteString *certificate;
+        UA_StatusCode res;
+    } cases[] = {
+        {&garbage, UA_STATUSCODE_BADCERTIFICATEINVALID},
+        {&truncated, UA_STATUSCODE_BADCERTIFICATEINVALID},
+        {&empty, UA_STATUSCODE_BADINVALIDARGUMENT},
+        {&noData, UA_STATUSCODE_BADINVALIDARGUMENT},
+        {NULL, UA_STATUSCODE_BADINVALIDARGUMENT}
+    };
+    for(size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        UA_String uri = UA_STRING("stale");
+        ck_assert_uint_eq(UA_CertificateUtils_getApplicationUri(cases[i].certificate,
+                                                                &uri), cases[i].res);
+        ck_assert(uri.length == 0 && uri.data == NULL);
+        UA_String subjectCriteria = UA_STRING("stale");
+        UA_String issuerCriteria = UA_STRING("stale");
+        ck_assert_uint_eq(UA_CertificateUtils_getX509SubjectCriteria(
+                              cases[i].certificate, &subjectCriteria, &issuerCriteria),
+                          cases[i].res);
+        ck_assert(subjectCriteria.length == 0 && subjectCriteria.data == NULL);
+        ck_assert(issuerCriteria.length == 0 && issuerCriteria.data == NULL);
+    }
+
+    UA_ByteString cert = {sizeof(namesCert) - 1, namesCert};
+    UA_String criteria = UA_STRING("stale");
+    ck_assert_uint_eq(UA_CertificateUtils_getApplicationUri(&cert, NULL),
+                      UA_STATUSCODE_BADINVALIDARGUMENT);
+    ck_assert_uint_eq(UA_CertificateUtils_getX509SubjectCriteria(&cert, NULL, &criteria),
+                      UA_STATUSCODE_BADINVALIDARGUMENT);
+    ck_assert(criteria.length == 0 && criteria.data == NULL);
+    criteria = UA_STRING("stale");
+    ck_assert_uint_eq(UA_CertificateUtils_getX509SubjectCriteria(&cert, &criteria, NULL),
+                      UA_STATUSCODE_BADINVALIDARGUMENT);
+    ck_assert(criteria.length == 0 && criteria.data == NULL);
+}
+END_TEST
+
 START_TEST(certificate_generation_ip_san) {
     UA_ByteString derPrivKey = UA_BYTESTRING_NULL;
     UA_ByteString derCert = UA_BYTESTRING_NULL;
@@ -1092,6 +1380,12 @@ static Suite *testSuite_crypto_coverage(void) {
     tcase_add_test(tc_certgen, certificate_generation_pem);
     tcase_add_test(tc_certgen, certificate_generation_ip_san);
     tcase_add_test(tc_certgen, certificate_generation_pem_ip_san);
+    tcase_add_test(tc_certgen, application_uri_exactly_one);
+    tcase_add_loop_test(tc_certgen, x509_subject_criteria, 0,
+                        sizeof(subjectCases) / sizeof(subjectCases[0]));
+    tcase_add_loop_test(tc_certgen, x509_subject_criteria_fixtures, 0,
+                        sizeof(certificateCases) / sizeof(certificateCases[0]));
+    tcase_add_test(tc_certgen, certificate_identity_invalid_input);
 #endif
     suite_add_tcase(s, tc_certgen);
 

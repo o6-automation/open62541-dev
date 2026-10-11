@@ -788,6 +788,52 @@ UA_CertificateUtils_verifyApplicationUri(const UA_ByteString *certificate,
 }
 
 UA_StatusCode
+UA_CertificateUtils_getApplicationUri(const UA_ByteString *certificate,
+                                      UA_String *applicationUri) {
+    if(applicationUri)
+        *applicationUri = UA_STRING_NULL;
+    if(!certificate || certificate->length == 0 || !certificate->data ||
+       !applicationUri)
+        return UA_STATUSCODE_BADINVALIDARGUMENT;
+    X509 *x509 = UA_OpenSSL_LoadCertificate(certificate, EVP_PKEY_NONE);
+    if(!x509)
+        return UA_STATUSCODE_BADCERTIFICATEINVALID;
+
+    /* NULL if the extension is missing or occurs more than once */
+    GENERAL_NAMES *names = (GENERAL_NAMES *)
+        X509_get_ext_d2i(x509, NID_subject_alt_name, NULL, NULL);
+    X509_free(x509);
+    if(!names)
+        return UA_STATUSCODE_BADCERTIFICATEURIINVALID;
+
+    /* The subjectAltName shall have exactly one URI (Part 6 §6.2.2) */
+    const ASN1_IA5STRING *uri = NULL;
+    size_t uriCount = 0;
+    for(int i = 0; i < sk_GENERAL_NAME_num(names); i++) {
+        const GENERAL_NAME *name = sk_GENERAL_NAME_value(names, i);
+        if(name->type != GEN_URI)
+            continue;
+        uri = name->d.uniformResourceIdentifier;
+        uriCount++;
+    }
+
+    UA_StatusCode res = UA_STATUSCODE_BADCERTIFICATEURIINVALID;
+    if(uriCount == 1 && ASN1_STRING_length(uri) > 0) {
+        size_t length = (size_t)ASN1_STRING_length(uri);
+        applicationUri->data = (UA_Byte*)UA_malloc(length);
+        if(applicationUri->data) {
+            memcpy(applicationUri->data, ASN1_STRING_get0_data(uri), length);
+            applicationUri->length = length;
+            res = UA_STATUSCODE_GOOD;
+        } else {
+            res = UA_STATUSCODE_BADOUTOFMEMORY;
+        }
+    }
+    sk_GENERAL_NAME_pop_free(names, GENERAL_NAME_free);
+    return res;
+}
+
+UA_StatusCode
 UA_CertificateUtils_getExpirationDate(UA_ByteString *certificate,
                                       UA_DateTime *expiryDateTime) {
     X509 *x509 = UA_OpenSSL_LoadCertificate(certificate, EVP_PKEY_NONE);
@@ -851,6 +897,151 @@ UA_CertificateUtils_getSubjectName(UA_ByteString *certificate,
     if(retval == UA_STATUSCODE_GOOD)
         *subjectName = result;
     return retval;
+}
+
+/* A value may be any printable character except the quote (Part 18 §4.4.3).
+ * Rejects the C0 and C1 control characters, DEL, the quote and encoded
+ * surrogates in the UTF-8 value. */
+static UA_Boolean
+x509SubjectValuePrintable(const UA_Byte *utf8, size_t length) {
+    if(length == 0)
+        return false;
+    for(size_t i = 0; i < length; i++) {
+        if(utf8[i] < 0x20 || utf8[i] == 0x7f || utf8[i] == '"')
+            return false;
+        /* U+0080 to U+009F are 0xC2 0x80 to 0xC2 0x9F, U+D800 to U+DFFF are
+         * 0xED 0xA0 0x80 to 0xED 0xBF 0xBF */
+        if(i + 1 < length &&
+           ((utf8[i] == 0xc2 && utf8[i + 1] < 0xa0) ||
+            (utf8[i] == 0xed && utf8[i + 1] >= 0xa0)))
+            return false;
+    }
+    return true;
+}
+
+/* Appends NAME="value", separated by a slash */
+static UA_StatusCode
+appendX509SubjectValue(UA_String *criteria, const char *name,
+                       const UA_String value) {
+    UA_String entry = UA_STRING_NULL;
+    UA_StatusCode res = UA_String_format(&entry, "%s%s=\"%S\"",
+                                         criteria->length > 0 ? "/" : "",
+                                         name, value);
+    if(res == UA_STATUSCODE_GOOD)
+        res = UA_String_append(criteria, entry);
+    UA_String_clear(&entry);
+    return res;
+}
+
+/* The string types of the names in Table 10, as in the mbedTLS plugin.
+ * PrintableString and IA5String are ASCII. OpenSSL would read other bytes as
+ * Latin-1. */
+static UA_Boolean
+x509SubjectStringType(const ASN1_STRING *value) {
+    switch(ASN1_STRING_type(value)) {
+    case V_ASN1_PRINTABLESTRING:
+    case V_ASN1_IA5STRING: {
+        const unsigned char *data = ASN1_STRING_get0_data(value);
+        int length = ASN1_STRING_length(value);
+        for(int i = 0; i < length; i++) {
+            if(data[i] >= 0x80)
+                return false;
+        }
+        return true;
+    }
+    case V_ASN1_UTF8STRING:
+    case V_ASN1_T61STRING:       /* Read as Latin-1 */
+    case V_ASN1_BMPSTRING:       /* UCS-2, without surrogate pairs */
+    case V_ASN1_UNIVERSALSTRING: /* UCS-4 */
+        return true;
+    default:
+        return false;
+    }
+}
+
+typedef struct {
+    int nid;
+    const char *name;
+} X509SubjectName;
+
+/* Appends the values of the name in the order of the certificate. Sets
+ * *usable to false if a value cannot be represented. */
+static UA_StatusCode
+appendX509SubjectName(const X509_NAME *dn, const X509SubjectName *name,
+                      UA_String *criteria, UA_Boolean *usable) {
+    int position = -1;
+    while((position = X509_NAME_get_index_by_NID(dn, name->nid,
+                                                  position)) >= 0) {
+        const X509_NAME_ENTRY *entry = X509_NAME_get_entry(dn, position);
+        const ASN1_STRING *data = X509_NAME_ENTRY_get_data(entry);
+        unsigned char *utf8 = NULL;
+        int length = -1;
+        if(x509SubjectStringType(data))
+            length = ASN1_STRING_to_UTF8(&utf8, data);
+        if(length < 0 ||
+           !x509SubjectValuePrintable(utf8, (size_t)length)) {
+            OPENSSL_free(utf8);
+            *usable = false;
+            return UA_STATUSCODE_GOOD;
+        }
+        UA_String value = {(size_t)length, utf8};
+        UA_StatusCode res = appendX509SubjectValue(criteria, name->name, value);
+        OPENSSL_free(utf8);
+        if(res != UA_STATUSCODE_GOOD)
+            return res;
+    }
+    return UA_STATUSCODE_GOOD;
+}
+
+/* Every value of the names in Table 10 is included, in the order of the table
+ * (Part 18 §4.4.3). If one cannot be represented, the criteria is empty and
+ * never matches. Leaving the value out would give different names the same
+ * criteria. */
+static UA_StatusCode
+x509SubjectCriteria(const X509_NAME *dn, UA_String *criteria) {
+    static const X509SubjectName names[] = {
+        {NID_commonName, "CN"},
+        {NID_organizationName, "O"},
+        {NID_organizationalUnitName, "OU"},
+        {NID_domainComponent, "DC"},
+        {NID_localityName, "L"},
+        {NID_stateOrProvinceName, "S"},
+        {NID_countryName, "C"},
+        {NID_dnQualifier, "dnQualifier"},
+        {NID_serialNumber, "serialNumber"}
+    };
+    UA_Boolean usable = true;
+    UA_StatusCode res = UA_STATUSCODE_GOOD;
+    for(size_t i = 0; usable && res == UA_STATUSCODE_GOOD &&
+            i < sizeof(names) / sizeof(names[0]); i++)
+        res = appendX509SubjectName(dn, &names[i], criteria, &usable);
+    if(!usable || res != UA_STATUSCODE_GOOD)
+        UA_String_clear(criteria);
+    return res;
+}
+
+UA_StatusCode
+UA_CertificateUtils_getX509SubjectCriteria(const UA_ByteString *certificate,
+                                           UA_String *subjectCriteria,
+                                           UA_String *issuerCriteria) {
+    if(subjectCriteria)
+        *subjectCriteria = UA_STRING_NULL;
+    if(issuerCriteria)
+        *issuerCriteria = UA_STRING_NULL;
+    if(!certificate || certificate->length == 0 || !certificate->data ||
+       !subjectCriteria || !issuerCriteria)
+        return UA_STATUSCODE_BADINVALIDARGUMENT;
+    X509 *x509 = UA_OpenSSL_LoadCertificate(certificate, EVP_PKEY_NONE);
+    if(!x509)
+        return UA_STATUSCODE_BADCERTIFICATEINVALID;
+    UA_StatusCode res =
+        x509SubjectCriteria(X509_get_subject_name(x509), subjectCriteria);
+    if(res == UA_STATUSCODE_GOOD)
+        res = x509SubjectCriteria(X509_get_issuer_name(x509), issuerCriteria);
+    X509_free(x509);
+    if(res != UA_STATUSCODE_GOOD)
+        UA_String_clear(subjectCriteria);
+    return res;
 }
 
 UA_StatusCode

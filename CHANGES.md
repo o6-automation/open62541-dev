@@ -19,6 +19,13 @@ now available with every `UA_ENABLE_ENCRYPTION` backend. They were limited to
 mbedTLS before. The PubSub security tests and the encrypted PubSub examples
 build with OpenSSL and LibreSSL as well.
 
+### Certificate identity helpers
+
+New `UA_CertificateUtils_getApplicationUri` (the only URI in the
+subjectAltName) and `UA_CertificateUtils_getX509SubjectCriteria` (the Part 18
+X509Subject criteria of the subject and the issuer of a Certificate). Without
+encryption support, both return `Bad_NotSupported`.
+
 ### PubSub security-policy nonce lengths
 
 Custom `UA_PubSubSecurityPolicy` implementations must initialize the new

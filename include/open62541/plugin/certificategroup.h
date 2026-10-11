@@ -77,6 +77,24 @@ UA_EXPORT UA_StatusCode
 UA_CertificateUtils_verifyApplicationUri(const UA_ByteString *certificate,
                                          const UA_String *applicationUri);
 
+/**
+ * Returns the ApplicationUri of the certificate, the URI in its
+ * subjectAltName extension. The certificate is DER or PEM encoded.
+ *
+ * Returns ``UA_STATUSCODE_BADCERTIFICATEURIINVALID`` unless the
+ * subjectAltName has exactly one URI and the URI is not empty (Part 6
+ * §6.2.2), ``UA_STATUSCODE_BADCERTIFICATEINVALID`` if the certificate cannot
+ * be decoded, ``UA_STATUSCODE_BADINVALIDARGUMENT`` for a NULL argument or an
+ * empty certificate, ``UA_STATUSCODE_BADOUTOFMEMORY`` if an allocation fails
+ * and ``UA_STATUSCODE_BADNOTSUPPORTED`` without encryption support.
+ *
+ * On success, the caller owns the newly allocated ApplicationUri and clears
+ * it. On error, the ApplicationUri is a null string. The function keeps no
+ * state and is thread-safe. */
+UA_EXPORT UA_StatusCode
+UA_CertificateUtils_getApplicationUri(const UA_ByteString *certificate,
+                                      UA_String *applicationUri);
+
 /* Get the expire date from certificate */
 UA_EXPORT UA_StatusCode
 UA_CertificateUtils_getExpirationDate(UA_ByteString *certificate,
@@ -85,6 +103,37 @@ UA_CertificateUtils_getExpirationDate(UA_ByteString *certificate,
 UA_EXPORT UA_StatusCode
 UA_CertificateUtils_getSubjectName(UA_ByteString *certificate,
                                    UA_String *subjectName);
+
+/**
+ * Returns the X509Subject identity mapping criteria (Part 18 §4.4.3) of the
+ * Subject and of the Issuer of the certificate. The certificate is DER or PEM
+ * encoded.
+ *
+ * The criteria has a ``NAME="value"`` pair for every value of the names in
+ * Part 18 Table 10 (CN, O, OU, DC, L, S, C, dnQualifier and serialNumber),
+ * separated by ``/``. The pairs are in the order of the table and repeated
+ * names in the order of the certificate. The values are UTF-8. For example:
+ * ``CN="Jörg Müller"/O="Müller GmbH"/C="DE"``. Other names, such as
+ * emailAddress, are ignored.
+ *
+ * A criteria is empty if the Subject (or Issuer) has no name of Table 10 or if
+ * one of the values cannot be represented: the value is empty, contains a
+ * control character or a quote, or is not a valid DirectoryString,
+ * PrintableString or IA5String. An empty criteria must never match an
+ * identity mapping rule.
+ *
+ * Returns ``UA_STATUSCODE_BADCERTIFICATEINVALID`` if the certificate cannot
+ * be decoded, ``UA_STATUSCODE_BADINVALIDARGUMENT`` for a NULL argument or an
+ * empty certificate, ``UA_STATUSCODE_BADOUTOFMEMORY`` if an allocation fails
+ * and ``UA_STATUSCODE_BADNOTSUPPORTED`` without encryption support.
+ *
+ * On success, the caller owns both newly allocated criteria and clears them.
+ * On error, both are null strings. The function keeps no state and is
+ * thread-safe. */
+UA_EXPORT UA_StatusCode
+UA_CertificateUtils_getX509SubjectCriteria(const UA_ByteString *certificate,
+                                           UA_String *subjectCriteria,
+                                           UA_String *issuerCriteria);
 
 UA_EXPORT UA_StatusCode
 UA_CertificateUtils_getThumbprint(UA_ByteString *certificate,
