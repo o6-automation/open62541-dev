@@ -327,6 +327,7 @@
     <opc:EnumeratedValue Name="AuthenticatedUser" Value="6" />
     <opc:EnumeratedValue Name="Application" Value="7" />
     <opc:EnumeratedValue Name="X509Subject" Value="8" />
+    <opc:EnumeratedValue Name="TrustedApplication" Value="9" />
   </opc:EnumeratedType>
 
   <opc:StructuredType Name="IdentityMappingRuleType" BaseType="ua:ExtensionObject">

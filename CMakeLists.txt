@@ -1027,13 +1027,6 @@ if(UA_ENABLE_DRIVER_GDS_RECEIVER)
 endif()
 
 if(UA_ENABLE_RBAC)
-    # RBAC uses the well-known TrustedApplication role and the matching
-    # IdentityCriteriaType value. Both are missing from tools/schema, which is
-    # an older revision than the ua-nodeset submodule used for FULL.
-    # TODO: lift the restriction by aligning tools/schema with that revision.
-    if(NOT UA_NAMESPACE_ZERO STREQUAL "FULL")
-        message(FATAL_ERROR "RBAC requires UA_NAMESPACE_ZERO=FULL")
-    endif()
     list(APPEND lib_sources ${PROJECT_SOURCE_DIR}/src/server/ua_server_rbac.c)
     list(APPEND lib_sources ${PROJECT_SOURCE_DIR}/src/server/ua_server_ns0_rbac.c)
     list(APPEND internal_headers ${PROJECT_SOURCE_DIR}/src/server/ua_server_rbac.h)
@@ -1449,6 +1442,13 @@ else()
     # Remote DataType discovery in the client also needs these types when the
     # optional type and member names (UA_ENABLE_TYPEDESCRIPTION) are disabled.
     list(APPEND UA_NS0_DATATYPES ${UA_SCHEMA_DIR}/datatypes_typedescription.txt)
+
+    if(UA_ENABLE_RBAC)
+        # Part 18 RoleSet, RoleType and the well-known Roles. MINIMAL and NONE
+        # use the data types only, the information model is bound if present.
+        list(APPEND UA_NS0_NODESETS Opc.Ua.NodeSet2.RbacMinimal.xml)
+        list(APPEND UA_NS0_DATATYPES ${UA_SCHEMA_DIR}/datatypes_rbac.txt)
+    endif()
 endif()
 
 set(UA_NS0_NODEIDS ${UA_SCHEMA_DIR}/NodeIds.csv)
