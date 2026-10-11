@@ -77,7 +77,34 @@ way.  No namespace has a default after startup.  To secure a server:
 - set ``allPermissionsForAnonymous = false`` before startup (every check
   reads it),
 - give every namespace, including Namespace Zero, a default,
-- map users to Roles, including a SecurityAdmin for remote administration.
+- map users to Roles, including a SecurityAdmin for remote administration,
+- require encryption with AccessRestrictions where needed.
+
+AccessRestrictions
+------------------
+
+AccessRestrictions (Part 3 §5.2.11) tie a Node to the channel security:
+``UA_ACCESSRESTRICTIONTYPE_SIGNINGREQUIRED`` and ``ENCRYPTIONREQUIRED``
+(else ``Bad_SecurityModeInsufficient``), ``SESSIONREQUIRED`` (else
+``Bad_UserAccessDenied``; every Session satisfies it, open62541 has no
+SessionlessInvoke).  Reading Value and RolePermissions, MonitoredItem
+sampling, Write, Call (Object and Method), HistoryRead, HistoryUpdate, the
+NodeManagement services (the new Node, both ends of a reference, every deleted
+Node), creating an Event MonitoredItem and Event delivery (EventType and
+SourceNode, unless null) enforce them.  Browse, TranslateBrowsePathsToNodeIds
+and reading the other attributes belong to the Browse permission (§8.55):
+signing and encryption apply there only with ``APPLYRESTRICTIONSTOBROWSE``
+(Browse then also hides restricted targets).  The local admin Session is
+exempt.
+
+Set them with ``UA_Server_setNodeAccessRestrictions`` or, for all Nodes
+without own value, ``UA_Server_setNamespaceDefaultAccessRestrictions`` (for
+Namespace Zero also published in ``OPCUANamespaceMetadata``).  An own value,
+also ``NONE``, overrides the default until
+``UA_Server_removeNodeAccessRestrictions``.  The AccessRestrictions attribute
+reads the effective value and cannot be written by clients.  The child Nodes
+of a new instance inherit the AccessRestrictions of their
+InstanceDeclarations, but not their RolePermissions.
 
 Auditing
 --------

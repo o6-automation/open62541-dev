@@ -45,6 +45,22 @@ ModifyUser, ChangePassword, GetSecurityKeys and SetSecurityKeys omit
 passwords, private keys, credential secrets and security keys. Method copies
 made with `copyMethodsOnInstances` are not covered.
 
+### RBAC: AccessRestrictions
+
+AccessRestrictions (Part 3 §5.2.11) are enforced by Read, Write, Call, the
+history and NodeManagement services, MonitoredItems and Event delivery.
+Browse, TranslateBrowsePathsToNodeIds and reading the attributes other than
+Value and RolePermissions check SigningRequired and EncryptionRequired only
+with `ApplyRestrictionsToBrowse`. RBAC builds return the effective
+AccessRestrictions attribute instead of `Bad_AttributeIdInvalid`. New API:
+`UA_Server_setNodeAccessRestrictions`, `UA_Server_removeNodeAccessRestrictions`,
+`UA_Server_getNodeAccessRestrictions`,
+`UA_Server_setNamespaceDefaultAccessRestrictions` and
+`UA_Server_getNamespaceDefaultAccessRestrictions`.
+
+`UA_Client_readAccessRestrictionsAttribute` accepts the UInt16 of the wire
+encoding. It returned `Bad_TypeMismatch` for every AccessRestrictions value.
+
 ### PubSub message security with OpenSSL and LibreSSL
 
 The PubSub SecurityPolicies `PubSub-Aes128-CTR` and `PubSub-Aes256-CTR`
