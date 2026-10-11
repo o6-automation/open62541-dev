@@ -6,10 +6,16 @@
  */
 
 /* AccessRestrictions (Part 3 §5.2.11): their storage next to the
- * RolePermissions of a Node, the API and the attribute */
+ * RolePermissions of a Node and their enforcement in the services for
+ * in-process Sessions on SecureChannels of every SecurityMode. */
 
 #include <open62541/server.h>
 #include <open62541/server_config_default.h>
+#ifdef UA_ENABLE_HISTORIZING
+#include <open62541/plugin/historydata/history_data_backend_memory.h>
+#include <open62541/plugin/historydata/history_data_gathering_default.h>
+#include <open62541/plugin/historydata/history_database_default.h>
+#endif
 #include <open62541/plugin/log_stdout.h>
 
 #include "test_helpers.h"
@@ -17,6 +23,7 @@
 #include "server/ua_server_rbac.h"
 
 #include <check.h>
+#include <stdio.h>
 #include <stdlib.h>
 
 #define ENC UA_ACCESSRESTRICTIONTYPE_ENCRYPTIONREQUIRED
@@ -24,12 +31,19 @@
 
 static UA_Server *server;
 static UA_SecureChannel channels[3]; /* None, Sign, SignAndEncrypt */
+#ifdef UA_ENABLE_HISTORIZING
+static UA_HistoryDataGathering gathering;
+#endif
 
 static void setup(void) {
     server = UA_Server_newForUnitTest();
     ck_assert_ptr_nonnull(server);
     UA_ServerConfig *config = UA_Server_getConfig(server);
     config->tcpEnabled = false;
+#ifdef UA_ENABLE_HISTORIZING
+    gathering = UA_HistoryDataGathering_Default(16);
+    config->historyDatabase = UA_HistoryDatabase_default(gathering);
+#endif
     ck_assert_uint_eq(UA_Server_run_startup(server), UA_STATUSCODE_GOOD);
     for(int i = 0; i < 3; i++)
         rbacChannelInit(server, &channels[i],
@@ -83,6 +97,20 @@ readAs(UA_Session *session, const UA_NodeId nodeId, UA_UInt32 attributeId) {
     UA_StatusCode res = dv.hasStatus ? dv.status : UA_STATUSCODE_GOOD;
     UA_DataValue_clear(&dv);
     return res;
+}
+
+static void
+browseAs(UA_Session *session, const UA_NodeId nodeId, UA_BrowseResult *br) {
+    UA_BrowseDescription bd;
+    UA_BrowseDescription_init(&bd);
+    bd.nodeId = nodeId;
+    bd.browseDirection = UA_BROWSEDIRECTION_FORWARD;
+    bd.resultMask = UA_BROWSERESULTMASK_ALL;
+    UA_UInt32 maxReferences = 0;
+    UA_BrowseResult_init(br);
+    lockServer(server);
+    Operation_Browse(server, session, &maxReferences, &bd, br);
+    unlockServer(server);
 }
 
 /****************************/
@@ -378,6 +406,576 @@ START_TEST(storage_presetUpdateReachesNodesWithAr) {
     }
 } END_TEST
 
+/****************************/
+/* Enforcement              */
+/****************************/
+
+/* The Nodes of one case. The AccessRestrictions are set on "restricted". */
+typedef struct {
+    UA_NodeId obj;    /* Object with an EventNotifier */
+    UA_NodeId var;    /* Historized Variable below obj */
+    UA_NodeId method; /* Method of obj */
+    UA_NodeId child;  /* Object below obj */
+} Nodes;
+
+static UA_StatusCode
+methodCallback(UA_Server *s, const UA_NodeId *sessionId, void *sessionContext,
+               const UA_NodeId *methodId, void *methodContext,
+               const UA_NodeId *objectId, void *objectContext,
+               size_t inputSize, const UA_Variant *input,
+               size_t outputSize, UA_Variant *output) {
+    return UA_STATUSCODE_GOOD;
+}
+
+static void
+addNodes(size_t caseIndex, Nodes *n) {
+    char name[32];
+    snprintf(name, sizeof(name), "Obj%u", (unsigned)caseIndex);
+    UA_ObjectAttributes oAttr = UA_ObjectAttributes_default;
+    oAttr.eventNotifier = UA_EVENTNOTIFIER_SUBSCRIBE_TO_EVENT;
+    n->obj = UA_NODEID_NUMERIC(1, (UA_UInt32)(1000 + 10 * caseIndex));
+    ck_assert_uint_eq(UA_Server_addObjectNode(server, n->obj, UA_NS0ID(OBJECTSFOLDER),
+                          UA_NS0ID(ORGANIZES), UA_QUALIFIEDNAME(1, name),
+                          UA_NS0ID(BASEOBJECTTYPE), oAttr, NULL, NULL),
+                      UA_STATUSCODE_GOOD);
+    UA_VariableAttributes vAttr = UA_VariableAttributes_default;
+    UA_Int32 value = 1;
+    UA_Variant_setScalar(&vAttr.value, &value, &UA_TYPES[UA_TYPES_INT32]);
+    vAttr.accessLevel = UA_ACCESSLEVELMASK_READ | UA_ACCESSLEVELMASK_WRITE |
+        UA_ACCESSLEVELMASK_HISTORYREAD | UA_ACCESSLEVELMASK_HISTORYWRITE;
+    vAttr.historizing = true;
+    n->var = UA_NODEID_NUMERIC(1, (UA_UInt32)(1001 + 10 * caseIndex));
+    ck_assert_uint_eq(UA_Server_addVariableNode(server, n->var, n->obj,
+                          UA_NS0ID(HASCOMPONENT), UA_QUALIFIEDNAME(1, "Var"),
+                          UA_NS0ID(BASEDATAVARIABLETYPE), vAttr, NULL, NULL),
+                      UA_STATUSCODE_GOOD);
+    UA_MethodAttributes mAttr = UA_MethodAttributes_default;
+    mAttr.executable = true;
+    n->method = UA_NODEID_NUMERIC(1, (UA_UInt32)(1002 + 10 * caseIndex));
+    ck_assert_uint_eq(UA_Server_addMethodNode(server, n->method, n->obj,
+                          UA_NS0ID(HASCOMPONENT), UA_QUALIFIEDNAME(1, "Method"),
+                          mAttr, methodCallback, 0, NULL, 0, NULL, NULL, NULL),
+                      UA_STATUSCODE_GOOD);
+    n->child = UA_NODEID_NUMERIC(1, (UA_UInt32)(1003 + 10 * caseIndex));
+    ck_assert_uint_eq(UA_Server_addObjectNode(server, n->child, n->obj,
+                          UA_NS0ID(HASCOMPONENT), UA_QUALIFIEDNAME(1, "Child"),
+                          UA_NS0ID(BASEOBJECTTYPE), UA_ObjectAttributes_default,
+                          NULL, NULL), UA_STATUSCODE_GOOD);
+#ifdef UA_ENABLE_HISTORIZING
+    UA_HistorizingNodeIdSettings setting;
+    memset(&setting, 0, sizeof(setting));
+    setting.historizingBackend = UA_HistoryDataBackend_Memory(1, 10);
+    setting.maxHistoryDataResponseSize = 10;
+    setting.historizingUpdateStrategy = UA_HISTORIZINGUPDATESTRATEGY_USER;
+    ck_assert_uint_eq(gathering.registerNodeId(server, gathering.context, &n->var,
+                                               setting), UA_STATUSCODE_GOOD);
+#endif
+}
+
+static UA_StatusCode
+opRead(UA_Session *s, const Nodes *n) {
+    return readAs(s, n->var, UA_ATTRIBUTEID_VALUE);
+}
+
+static UA_StatusCode
+opWrite(UA_Session *s, const Nodes *n) {
+    UA_Int32 value = 2;
+    UA_WriteValue wv;
+    UA_WriteValue_init(&wv);
+    wv.nodeId = n->var;
+    wv.attributeId = UA_ATTRIBUTEID_VALUE;
+    wv.value.hasValue = true;
+    UA_Variant_setScalar(&wv.value.value, &value, &UA_TYPES[UA_TYPES_INT32]);
+    UA_StatusCode res = UA_STATUSCODE_BADINTERNALERROR;
+    lockServer(server);
+    Operation_Write(server, s, &wv, &res);
+    unlockServer(server);
+    return res;
+}
+
+static UA_StatusCode
+opCall(UA_Session *s, const Nodes *n) {
+    return rbacCall(server, s, n->obj, n->method, 0, NULL);
+}
+
+static UA_StatusCode
+opBrowse(UA_Session *s, const Nodes *n) {
+    UA_BrowseResult br;
+    browseAs(s, n->obj, &br);
+    UA_StatusCode res = br.statusCode;
+    UA_BrowseResult_clear(&br);
+    return res;
+}
+
+static UA_StatusCode
+opTranslate(UA_Session *s, const Nodes *n) {
+    UA_RelativePathElement rpe;
+    UA_RelativePathElement_init(&rpe);
+    rpe.referenceTypeId = UA_NS0ID(HASCOMPONENT);
+    rpe.targetName = UA_QUALIFIEDNAME(1, "Var");
+    UA_BrowsePath bp;
+    UA_BrowsePath_init(&bp);
+    bp.startingNode = n->obj;
+    bp.relativePath.elements = &rpe;
+    bp.relativePath.elementsSize = 1;
+    UA_TranslateBrowsePathsToNodeIdsRequest request;
+    UA_TranslateBrowsePathsToNodeIdsRequest_init(&request);
+    request.browsePaths = &bp;
+    request.browsePathsSize = 1;
+    UA_TranslateBrowsePathsToNodeIdsResponse response;
+    UA_TranslateBrowsePathsToNodeIdsResponse_init(&response);
+    rbacService(server, s, Service_TranslateBrowsePathsToNodeIds, &request, &response);
+    ck_assert_uint_eq(response.resultsSize, 1);
+    UA_StatusCode res = response.results[0].statusCode;
+    UA_TranslateBrowsePathsToNodeIdsResponse_clear(&response);
+    return res;
+}
+
+static UA_StatusCode
+opAddNode(UA_Session *s, const Nodes *n) {
+    UA_ObjectAttributes attr = UA_ObjectAttributes_default;
+    UA_AddNodesItem item;
+    UA_AddNodesItem_init(&item);
+    item.parentNodeId.nodeId = n->obj;
+    item.referenceTypeId = UA_NS0ID(HASCOMPONENT);
+    item.requestedNewNodeId.nodeId = UA_NODEID_NUMERIC(1, 0);
+    item.browseName = UA_QUALIFIEDNAME(1, "Added");
+    item.nodeClass = UA_NODECLASS_OBJECT;
+    item.typeDefinition.nodeId = UA_NS0ID(BASEOBJECTTYPE);
+    UA_ExtensionObject_setValueNoDelete(&item.nodeAttributes, &attr,
+                                        &UA_TYPES[UA_TYPES_OBJECTATTRIBUTES]);
+    UA_AddNodesRequest request;
+    UA_AddNodesRequest_init(&request);
+    request.nodesToAdd = &item;
+    request.nodesToAddSize = 1;
+    UA_AddNodesResponse response;
+    UA_AddNodesResponse_init(&response);
+    rbacService(server, s, Service_AddNodes, &request, &response);
+    ck_assert_uint_eq(response.resultsSize, 1);
+    UA_StatusCode res = response.results[0].statusCode;
+    UA_AddNodesResponse_clear(&response);
+    return res;
+}
+
+static UA_StatusCode
+opAddReference(UA_Session *s, const Nodes *n) {
+    UA_AddReferencesItem item;
+    UA_AddReferencesItem_init(&item);
+    item.sourceNodeId = n->obj;
+    item.referenceTypeId = UA_NS0ID(ORGANIZES);
+    item.isForward = true;
+    item.targetNodeId.nodeId = UA_NS0ID(SERVER);
+    item.targetNodeClass = UA_NODECLASS_OBJECT;
+    UA_AddReferencesRequest request;
+    UA_AddReferencesRequest_init(&request);
+    request.referencesToAdd = &item;
+    request.referencesToAddSize = 1;
+    UA_AddReferencesResponse response;
+    UA_AddReferencesResponse_init(&response);
+    rbacService(server, s, Service_AddReferences, &request, &response);
+    ck_assert_uint_eq(response.resultsSize, 1);
+    UA_StatusCode res = response.results[0];
+    UA_AddReferencesResponse_clear(&response);
+    return res;
+}
+
+static UA_StatusCode
+opDeleteReference(UA_Session *s, const Nodes *n) {
+    UA_DeleteReferencesItem item;
+    UA_DeleteReferencesItem_init(&item);
+    item.sourceNodeId = n->obj;
+    item.referenceTypeId = UA_NS0ID(HASCOMPONENT);
+    item.isForward = true;
+    item.targetNodeId.nodeId = n->child;
+    item.deleteBidirectional = true;
+    UA_DeleteReferencesRequest request;
+    UA_DeleteReferencesRequest_init(&request);
+    request.referencesToDelete = &item;
+    request.referencesToDeleteSize = 1;
+    UA_DeleteReferencesResponse response;
+    UA_DeleteReferencesResponse_init(&response);
+    rbacService(server, s, Service_DeleteReferences, &request, &response);
+    ck_assert_uint_eq(response.resultsSize, 1);
+    UA_StatusCode res = response.results[0];
+    UA_DeleteReferencesResponse_clear(&response);
+    return res;
+}
+
+/* Deletes obj with its children. The restricted Node is the child. */
+static UA_StatusCode
+opDeleteNode(UA_Session *s, const Nodes *n) {
+    UA_DeleteNodesItem item;
+    UA_DeleteNodesItem_init(&item);
+    item.nodeId = n->obj;
+    item.deleteTargetReferences = true;
+    UA_DeleteNodesRequest request;
+    UA_DeleteNodesRequest_init(&request);
+    request.nodesToDelete = &item;
+    request.nodesToDeleteSize = 1;
+    UA_DeleteNodesResponse response;
+    UA_DeleteNodesResponse_init(&response);
+    rbacService(server, s, Service_DeleteNodes, &request, &response);
+    ck_assert_uint_eq(response.resultsSize, 1);
+    UA_StatusCode res = response.results[0];
+    UA_DeleteNodesResponse_clear(&response);
+    UA_NodeClass nc;
+    ck_assert_uint_eq(UA_Server_readNodeClass(server, n->child, &nc),
+                      res == UA_STATUSCODE_GOOD ?
+                      UA_STATUSCODE_BADNODEIDUNKNOWN : UA_STATUSCODE_GOOD);
+    return res;
+}
+
+#ifdef UA_ENABLE_HISTORIZING
+/* Reads the restricted Variable and the CurrentTime (without the HistoryRead
+ * AccessLevel). The results keep the order of the request. */
+static UA_StatusCode
+opHistoryRead(UA_Session *s, const Nodes *n) {
+    UA_ReadRawModifiedDetails details;
+    UA_ReadRawModifiedDetails_init(&details);
+    details.endTime = UA_DateTime_now();
+    details.numValuesPerNode = 1;
+    UA_HistoryReadValueId ids[2];
+    UA_HistoryReadValueId_init(&ids[0]);
+    UA_HistoryReadValueId_init(&ids[1]);
+    ids[0].nodeId = n->var;
+    ids[1].nodeId = UA_NS0ID(SERVER_SERVERSTATUS_CURRENTTIME);
+    UA_HistoryReadRequest request;
+    UA_HistoryReadRequest_init(&request);
+    request.historyReadDetails.encoding = UA_EXTENSIONOBJECT_DECODED;
+    request.historyReadDetails.content.decoded.type =
+        &UA_TYPES[UA_TYPES_READRAWMODIFIEDDETAILS];
+    request.historyReadDetails.content.decoded.data = &details;
+    request.timestampsToReturn = UA_TIMESTAMPSTORETURN_BOTH;
+    request.nodesToRead = ids;
+    request.nodesToReadSize = 2;
+    UA_HistoryReadResponse response;
+    UA_HistoryReadResponse_init(&response);
+    rbacService(server, s, Service_HistoryRead, &request, &response);
+    ck_assert_uint_eq(response.resultsSize, 2);
+    ck_assert_uint_eq(response.results[1].statusCode,
+                      UA_STATUSCODE_BADUSERACCESSDENIED);
+    UA_StatusCode res = response.results[0].statusCode;
+    UA_HistoryReadResponse_clear(&response);
+    return res;
+}
+
+static UA_StatusCode
+opHistoryUpdate(UA_Session *s, const Nodes *n) {
+    UA_DataValue dv;
+    UA_DataValue_init(&dv);
+    UA_Int32 value = 4;
+    UA_Variant_setScalar(&dv.value, &value, &UA_TYPES[UA_TYPES_INT32]);
+    dv.hasValue = true;
+    dv.sourceTimestamp = UA_DateTime_now();
+    dv.hasSourceTimestamp = true;
+    UA_UpdateDataDetails details;
+    UA_UpdateDataDetails_init(&details);
+    details.nodeId = n->var;
+    details.performInsertReplace = UA_PERFORMUPDATETYPE_INSERT;
+    details.updateValues = &dv;
+    details.updateValuesSize = 1;
+    UA_ExtensionObject eo;
+    eo.encoding = UA_EXTENSIONOBJECT_DECODED;
+    eo.content.decoded.type = &UA_TYPES[UA_TYPES_UPDATEDATADETAILS];
+    eo.content.decoded.data = &details;
+    UA_HistoryUpdateRequest request;
+    UA_HistoryUpdateRequest_init(&request);
+    request.historyUpdateDetails = &eo;
+    request.historyUpdateDetailsSize = 1;
+    UA_HistoryUpdateResponse response;
+    UA_HistoryUpdateResponse_init(&response);
+    rbacService(server, s, Service_HistoryUpdate, &request, &response);
+    ck_assert_uint_eq(response.resultsSize, 1);
+    UA_StatusCode res = response.results[0].statusCode;
+    UA_HistoryUpdateResponse_clear(&response);
+    return res;
+}
+#endif
+
+#ifdef UA_ENABLE_SUBSCRIPTIONS
+/* A write of the local admin samples the zero-interval MonitoredItem with the
+ * rights of the subscriber. Denied: no notification carries a value, neither
+ * the initial sample nor the sample of the write. Else the value arrives. */
+static UA_StatusCode
+opDataChange(UA_Session *s, const Nodes *n) {
+    UA_StatusCode res;
+    UA_MonitoredItem *mon = rbacMonitor(server, s, n->var, UA_ATTRIBUTEID_VALUE, NULL, &res);
+    ck_assert_uint_eq(res, UA_STATUSCODE_GOOD);
+    UA_Int32 value = 3;
+    UA_Variant v;
+    UA_Variant_setScalar(&v, &value, &UA_TYPES[UA_TYPES_INT32]);
+    ck_assert_uint_eq(UA_Server_writeValue(server, n->var, v), UA_STATUSCODE_GOOD);
+    lockServer(server);
+    ck_assert_uint_gt(mon->queueSize, 0);
+    size_t values = 0;
+    UA_Boolean written = false;
+    UA_Notification *notification;
+    res = UA_STATUSCODE_GOOD;
+    TAILQ_FOREACH(notification, &mon->queue, monEntry) {
+        UA_DataValue *dv = &notification->data.dataChange.value;
+        if(dv->hasValue) {
+            values++;
+            written = UA_Variant_hasScalarType(&dv->value, &UA_TYPES[UA_TYPES_INT32]) &&
+                *(UA_Int32*)dv->value.data == value;
+        } else if(dv->hasStatus) {
+            res = dv->status;
+        }
+    }
+    unlockServer(server);
+    if(res != UA_STATUSCODE_GOOD)
+        ck_assert_uint_eq(values, 0);
+    else
+        ck_assert(written);
+    return res;
+}
+
+#ifdef UA_ENABLE_SUBSCRIPTIONS_EVENTS
+static UA_StatusCode
+opEventItem(UA_Session *s, const Nodes *n) {
+    UA_StatusCode res;
+    rbacMonitor(server, s, n->obj, UA_ATTRIBUTEID_EVENTNOTIFIER, "Message", &res);
+    return res;
+}
+
+/* An Event whose SourceNode is restricted is not delivered: Bad_NotFound */
+static UA_StatusCode
+opEventDelivery(UA_Session *s, const Nodes *n) {
+    UA_StatusCode res;
+    UA_MonitoredItem *mon = rbacMonitor(server, s, UA_NS0ID(SERVER),
+                                        UA_ATTRIBUTEID_EVENTNOTIFIER, "Message", &res);
+    ck_assert_uint_eq(res, UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(UA_Server_createEvent(server, n->obj, UA_NS0ID(BASEEVENTTYPE),
+                                            100, UA_LOCALIZEDTEXT("", "event"),
+                                            NULL, NULL, NULL), UA_STATUSCODE_GOOD);
+    lockServer(server);
+    size_t delivered = mon->queueSize;
+    unlockServer(server);
+    ck_assert_uint_le(delivered, 1);
+    return delivered ? UA_STATUSCODE_GOOD : UA_STATUSCODE_BADNOTFOUND;
+}
+#endif
+#endif
+
+typedef enum {ON_OBJ, ON_VAR, ON_METHOD, ON_CHILD} Restricted;
+
+static const struct {
+    const char *name;
+    UA_StatusCode (*op)(UA_Session *s, const Nodes *n);
+    Restricted restricted;
+    UA_Boolean browse; /* Restricted only with ApplyRestrictionsToBrowse */
+    UA_StatusCode denied;
+} ops[] = {
+    {"Read", opRead, ON_VAR, false, UA_STATUSCODE_BADSECURITYMODEINSUFFICIENT},
+    {"Write", opWrite, ON_VAR, false, UA_STATUSCODE_BADSECURITYMODEINSUFFICIENT},
+    {"Call", opCall, ON_METHOD, false, UA_STATUSCODE_BADSECURITYMODEINSUFFICIENT},
+    {"Browse", opBrowse, ON_OBJ, true, UA_STATUSCODE_BADSECURITYMODEINSUFFICIENT},
+    {"TranslateBrowsePaths", opTranslate, ON_VAR, true, UA_STATUSCODE_BADNOMATCH},
+    {"AddNodes", opAddNode, ON_OBJ, false, UA_STATUSCODE_BADSECURITYMODEINSUFFICIENT},
+    {"AddReferences", opAddReference, ON_OBJ, false,
+     UA_STATUSCODE_BADSECURITYMODEINSUFFICIENT},
+    {"DeleteReferences", opDeleteReference, ON_CHILD, false,
+     UA_STATUSCODE_BADSECURITYMODEINSUFFICIENT},
+    {"DeleteNodes", opDeleteNode, ON_OBJ, false,
+     UA_STATUSCODE_BADSECURITYMODEINSUFFICIENT},
+    {"DeleteNodes (child)", opDeleteNode, ON_CHILD, false,
+     UA_STATUSCODE_BADSECURITYMODEINSUFFICIENT},
+#ifdef UA_ENABLE_HISTORIZING
+    {"HistoryRead", opHistoryRead, ON_VAR, false,
+     UA_STATUSCODE_BADSECURITYMODEINSUFFICIENT},
+    {"HistoryUpdate", opHistoryUpdate, ON_VAR, false,
+     UA_STATUSCODE_BADSECURITYMODEINSUFFICIENT},
+#endif
+#ifdef UA_ENABLE_SUBSCRIPTIONS
+    {"DataChange", opDataChange, ON_VAR, false,
+     UA_STATUSCODE_BADSECURITYMODEINSUFFICIENT},
+#ifdef UA_ENABLE_SUBSCRIPTIONS_EVENTS
+    {"EventItem", opEventItem, ON_OBJ, false,
+     UA_STATUSCODE_BADSECURITYMODEINSUFFICIENT},
+    {"EventDelivery", opEventDelivery, ON_OBJ, false, UA_STATUSCODE_BADNOTFOUND},
+#endif
+#endif
+};
+
+/* Each service with every AccessRestriction on a channel of every mode.
+ * SessionRequired is always satisfied by the in-process Session. */
+START_TEST(enforcement_perServiceAndChannelMode) {
+    const UA_AccessRestrictionType restrictions[] = {
+        UA_ACCESSRESTRICTIONTYPE_NONE, SIGN, ENC,
+        UA_ACCESSRESTRICTIONTYPE_SESSIONREQUIRED,
+        ENC | UA_ACCESSRESTRICTIONTYPE_APPLYRESTRICTIONSTOBROWSE};
+    size_t c = 0;
+    for(size_t r = 0; r < sizeof(restrictions) / sizeof(restrictions[0]); r++) {
+        UA_AccessRestrictionType ar = restrictions[r];
+        for(int mode = UA_MESSAGESECURITYMODE_NONE;
+            mode <= UA_MESSAGESECURITYMODE_SIGNANDENCRYPT; mode++, c++) {
+            Nodes n;
+            addNodes(c, &n);
+            const UA_NodeId *restricted[] = {&n.obj, &n.var, &n.method, &n.child};
+            ck_assert_uint_eq(UA_Server_setNodeAccessRestrictions(
+                                  server, *restricted[ops[_i].restricted], ar),
+                              UA_STATUSCODE_GOOD);
+            UA_Boolean applies = !ops[_i].browse ||
+                (ar & UA_ACCESSRESTRICTIONTYPE_APPLYRESTRICTIONSTOBROWSE);
+            UA_Boolean denied = applies &&
+                (((ar & ENC) && mode != UA_MESSAGESECURITYMODE_SIGNANDENCRYPT) ||
+                 ((ar & SIGN) && mode == UA_MESSAGESECURITYMODE_NONE));
+            UA_Session *session = rbacSession(server, &channels[mode - 1],
+                UA_NODEID_NUMERIC(0, UA_NS0ID_WELLKNOWNROLE_ANONYMOUS));
+            UA_StatusCode res = ops[_i].op(session, &n);
+            ck_assert_msg(res == (denied ? ops[_i].denied : UA_STATUSCODE_GOOD),
+                          "%s with AccessRestrictions %u on mode %d: %s",
+                          ops[_i].name, (unsigned)ar, mode, UA_StatusCode_name(res));
+        }
+    }
+} END_TEST
+
+/* The namespace default of the new Node applies to AddNodes */
+START_TEST(enforcement_addNodeInRestrictedNamespace) {
+    ck_assert_uint_eq(UA_Server_setNamespaceDefaultAccessRestrictions(server, 1, ENC),
+                      UA_STATUSCODE_GOOD);
+    for(int mode = UA_MESSAGESECURITYMODE_SIGN;
+        mode <= UA_MESSAGESECURITYMODE_SIGNANDENCRYPT; mode++) {
+        UA_Session *session = rbacSession(server, &channels[mode - 1],
+            UA_NODEID_NUMERIC(0, UA_NS0ID_WELLKNOWNROLE_ANONYMOUS));
+        Nodes n;
+        n.obj = UA_NS0ID(OBJECTSFOLDER);
+        ck_assert_uint_eq(opAddNode(session, &n),
+                          mode == UA_MESSAGESECURITYMODE_SIGN ?
+                          UA_STATUSCODE_BADSECURITYMODEINSUFFICIENT :
+                          UA_STATUSCODE_GOOD);
+    }
+} END_TEST
+
+/* Reading the attributes other than Value and RolePermissions is part of the
+ * Browse permission: restricted only with ApplyRestrictionsToBrowse */
+START_TEST(enforcement_readNonValueAttributes) {
+    const UA_AccessRestrictionType restrictions[2] =
+        {ENC, ENC | UA_ACCESSRESTRICTIONTYPE_APPLYRESTRICTIONSTOBROWSE};
+    UA_Session *session = rbacSession(server, &channels[0],
+        UA_NODEID_NUMERIC(0, UA_NS0ID_WELLKNOWNROLE_ANONYMOUS));
+    for(size_t r = 0; r < 2; r++) {
+        Nodes n;
+        addNodes(r, &n);
+        ck_assert_uint_eq(UA_Server_setNodeAccessRestrictions(server, n.var,
+                                                              restrictions[r]),
+                          UA_STATUSCODE_GOOD);
+        UA_StatusCode browseRead = (r == 0) ? UA_STATUSCODE_GOOD :
+            UA_STATUSCODE_BADSECURITYMODEINSUFFICIENT;
+        ck_assert_uint_eq(readAs(session, n.var, UA_ATTRIBUTEID_DISPLAYNAME),
+                          browseRead);
+        ck_assert_uint_eq(readAs(session, n.var, UA_ATTRIBUTEID_ACCESSRESTRICTIONS),
+                          browseRead);
+        ck_assert_uint_eq(readAs(session, n.var, UA_ATTRIBUTEID_VALUE),
+                          UA_STATUSCODE_BADSECURITYMODEINSUFFICIENT);
+        ck_assert_uint_eq(readAs(session, n.var, UA_ATTRIBUTEID_ROLEPERMISSIONS),
+                          UA_STATUSCODE_BADSECURITYMODEINSUFFICIENT);
+    }
+} END_TEST
+
+/* The local admin Session is exempt */
+START_TEST(enforcement_adminExempt) {
+    Nodes n;
+    addNodes(0, &n);
+    const UA_NodeId *restricted[] = {&n.obj, &n.var, &n.method, &n.child};
+    for(size_t i = 0; i < 4; i++)
+        ck_assert_uint_eq(UA_Server_setNodeAccessRestrictions(server, *restricted[i],
+                              ENC | SIGN | UA_ACCESSRESTRICTIONTYPE_SESSIONREQUIRED |
+                              UA_ACCESSRESTRICTIONTYPE_APPLYRESTRICTIONSTOBROWSE),
+                          UA_STATUSCODE_GOOD);
+    UA_Variant v;
+    ck_assert_uint_eq(UA_Server_readValue(server, n.var, &v), UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(UA_Server_writeValue(server, n.var, v), UA_STATUSCODE_GOOD);
+    UA_Variant_clear(&v);
+    UA_BrowseDescription bd;
+    UA_BrowseDescription_init(&bd);
+    bd.nodeId = n.obj;
+    bd.browseDirection = UA_BROWSEDIRECTION_FORWARD;
+    bd.resultMask = UA_BROWSERESULTMASK_ALL;
+    UA_BrowseResult br = UA_Server_browse(server, 0, &bd);
+    ck_assert_uint_eq(br.statusCode, UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(br.referencesSize, 4); /* TypeDefinition, Var, Method, Child */
+    UA_BrowseResult_clear(&br);
+    UA_CallMethodRequest call;
+    UA_CallMethodRequest_init(&call);
+    call.objectId = n.obj;
+    call.methodId = n.method;
+    UA_CallMethodResult cr = UA_Server_call(server, &call);
+    ck_assert_uint_eq(cr.statusCode, UA_STATUSCODE_GOOD);
+    UA_CallMethodResult_clear(&cr);
+    ck_assert_uint_eq(UA_Server_deleteNode(server, n.obj, true), UA_STATUSCODE_GOOD);
+} END_TEST
+
+/* The children of a deleted Node are checked without allowDeleteNode as well */
+START_TEST(enforcement_deleteChildWithoutCallback) {
+    UA_Server_getConfig(server)->accessControl.allowDeleteNode = NULL;
+    Nodes n;
+    addNodes(0, &n);
+    ck_assert_uint_eq(UA_Server_setNodeAccessRestrictions(server, n.child, ENC),
+                      UA_STATUSCODE_GOOD);
+    UA_Session *session = rbacSession(server, &channels[1],
+        UA_NODEID_NUMERIC(0, UA_NS0ID_WELLKNOWNROLE_ANONYMOUS));
+    ck_assert_uint_eq(opDeleteNode(session, &n),
+                      UA_STATUSCODE_BADSECURITYMODEINSUFFICIENT);
+} END_TEST
+
+#if defined(UA_ENABLE_SUBSCRIPTIONS) && defined(UA_ENABLE_SUBSCRIPTIONS_EVENTS)
+/* The number of Events delivered to a new subscriber on a None channel */
+static size_t
+deliveredEvents(const UA_NodeId sourceNode) {
+    UA_Session *session = rbacSession(server, &channels[0],
+        UA_NODEID_NUMERIC(0, UA_NS0ID_WELLKNOWNROLE_ANONYMOUS));
+    UA_StatusCode res;
+    UA_MonitoredItem *mon = rbacMonitor(server, session, UA_NS0ID(SERVER),
+                                        UA_ATTRIBUTEID_EVENTNOTIFIER, "Message", &res);
+    ck_assert_uint_eq(res, UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(UA_Server_createEvent(server, sourceNode, UA_NS0ID(BASEEVENTTYPE),
+                                            100, UA_LOCALIZEDTEXT("", "event"),
+                                            NULL, NULL, NULL), UA_STATUSCODE_GOOD);
+    lockServer(server);
+    size_t delivered = mon->queueSize;
+    unlockServer(server);
+    return delivered;
+}
+
+/* A null SourceNode is not checked. An unknown SourceNode gets the namespace
+ * default. */
+START_TEST(events_nullOrUnknownSourceNode) {
+    const UA_NodeId unknown = UA_NODEID_STRING(1, "Unknown");
+    ck_assert_uint_eq(deliveredEvents(UA_NODEID_NULL), 1);
+    ck_assert_uint_eq(deliveredEvents(unknown), 1);
+    ck_assert_uint_eq(UA_Server_setNamespaceDefaultAccessRestrictions(server, 1, ENC),
+                      UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(deliveredEvents(unknown), 0);
+    ck_assert_uint_eq(deliveredEvents(UA_NODEID_NULL), 1);
+} END_TEST
+#endif
+
+/* Browse leaves out the Targets the Session may not browse and the Targets
+ * hidden by ApplyRestrictionsToBrowse */
+START_TEST(browse_hidesTargets) {
+    Nodes n;
+    addNodes(0, &n);
+    UA_RolePermission browse = {UA_NODEID_NUMERIC(0, UA_NS0ID_WELLKNOWNROLE_OBSERVER),
+                                UA_PERMISSIONTYPE_BROWSE};
+    ck_assert_uint_eq(UA_Server_setNodeRolePermissions(server, n.child, 1, &browse,
+                                                       false, NULL), UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(UA_Server_setNodeAccessRestrictions(server, n.var,
+                          ENC | UA_ACCESSRESTRICTIONTYPE_APPLYRESTRICTIONSTOBROWSE),
+                      UA_STATUSCODE_GOOD);
+    UA_Session *session = rbacSession(server, &channels[1],
+        UA_NODEID_NUMERIC(0, UA_NS0ID_WELLKNOWNROLE_ANONYMOUS));
+
+    UA_BrowseResult br;
+    browseAs(session, n.obj, &br);
+    ck_assert_uint_eq(br.statusCode, UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(br.referencesSize, 2); /* TypeDefinition, Method */
+    for(size_t i = 0; i < br.referencesSize; i++) {
+        ck_assert(!UA_NodeId_equal(&br.references[i].nodeId.nodeId, &n.child));
+        ck_assert(!UA_NodeId_equal(&br.references[i].nodeId.nodeId, &n.var));
+    }
+    UA_BrowseResult_clear(&br);
+} END_TEST
+
 static Suite *testSuite_rbacAccessRestrictions(void) {
     Suite *s = suite_create("RBAC AccessRestrictions");
     TCase *tc = tcase_create("Storage");
@@ -399,6 +997,19 @@ static Suite *testSuite_rbacAccessRestrictions(void) {
     tcase_add_test(tc_preset, storage_presetUpdateReachesNodesWithAr);
     suite_add_tcase(s, tc_preset);
 
+    TCase *tc_enforce = tcase_create("Enforcement");
+    tcase_add_checked_fixture(tc_enforce, setup, teardown);
+    tcase_add_loop_test(tc_enforce, enforcement_perServiceAndChannelMode, 0,
+                        sizeof(ops) / sizeof(ops[0]));
+    tcase_add_test(tc_enforce, enforcement_addNodeInRestrictedNamespace);
+    tcase_add_test(tc_enforce, browse_hidesTargets);
+    tcase_add_test(tc_enforce, enforcement_readNonValueAttributes);
+    tcase_add_test(tc_enforce, enforcement_adminExempt);
+    tcase_add_test(tc_enforce, enforcement_deleteChildWithoutCallback);
+#if defined(UA_ENABLE_SUBSCRIPTIONS) && defined(UA_ENABLE_SUBSCRIPTIONS_EVENTS)
+    tcase_add_test(tc_enforce, events_nullOrUnknownSourceNode);
+#endif
+    suite_add_tcase(s, tc_enforce);
     return s;
 }
 

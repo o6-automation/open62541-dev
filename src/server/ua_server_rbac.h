@@ -48,6 +48,30 @@ UA_Server_evaluateSessionRoles(UA_Server *server,
 UA_AccessRestrictionType
 getNodeAccessRestrictions(UA_Server *server, const UA_Node *node);
 
+/* Like getNodeAccessRestrictions, an unknown Node gets the namespace default.
+ * Bad_UserAccessDenied for an invalid permission index. Lock held. */
+UA_StatusCode
+getEffectiveAccessRestrictions(UA_Server *server, const UA_NodeId *nodeId,
+                               UA_AccessRestrictionType *out);
+
+/* Check against the SecureChannel of the Session. forBrowse checks Signing and
+ * Encryption only with ApplyRestrictionsToBrowse. The local admin Session is
+ * exempt. Must be called with the server lock held. */
+UA_StatusCode
+checkAccessRestrictions(UA_Server *server, const UA_Session *session,
+                        UA_AccessRestrictionType ar, UA_Boolean forBrowse);
+
+/* The same for the AccessRestrictions of a Node. An invalid permission index
+ * fails closed (Bad_UserAccessDenied). Lock held. */
+UA_StatusCode
+checkNodeAccessRestrictions(UA_Server *server, const UA_Session *session,
+                            const UA_Node *node, UA_Boolean forBrowse);
+
+/* Not for Browse. An unknown Node passes, the service reports it. Lock held. */
+UA_StatusCode
+checkNodeIdAccessRestrictions(UA_Server *server, const UA_Session *session,
+                              const UA_NodeId *nodeId);
+
 /* Decrement the refCount of a role permission entry at the given index.
  * Used during node deletion to keep refcounts consistent. */
 void
