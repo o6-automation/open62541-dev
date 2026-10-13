@@ -794,7 +794,8 @@ disconnectDataSetReaderToDataSet(UA_Server *server, UA_NodeId dsrId);
 
 #ifdef UA_ENABLE_PUBSUB_SKS
 UA_StatusCode
-addSecurityGroupRepresentation(UA_Server *server, UA_SecurityGroup *securityGroup);
+addSecurityGroupRepresentation(UA_Server *server, UA_SecurityGroup *securityGroup,
+                               const UA_NodeId requestedNodeId);
 #endif /* UA_ENABLE_PUBSUB_SKS */
 
 #endif /* UA_ENABLE_PUBSUB_INFORMATIONMODEL */
