@@ -459,12 +459,50 @@ forceKeyRotationAction(UA_Server *server, const UA_NodeId *sessionId,
     return UA_STATUSCODE_GOOD;
 }
 
+/* Part 14 §8.5.1: the root SecurityGroupFolder lists the SecurityPolicyUris
+ * the SKS supports, the default first. These are the configured PubSub
+ * SecurityPolicies, which AddSecurityGroup accepts. */
+static UA_StatusCode
+addSupportedSecurityPolicyUris(UA_Server *server) {
+    UA_LOCK_ASSERT(&server->serviceMutex);
+
+    const UA_PubSubConfiguration *config = &server->config.pubSubConfig;
+    UA_String *uris = (UA_String*)
+        UA_Array_new(config->securityPoliciesSize, &UA_TYPES[UA_TYPES_STRING]);
+    if(!uris)
+        return UA_STATUSCODE_BADOUTOFMEMORY;
+    UA_StatusCode res = UA_STATUSCODE_GOOD;
+    for(size_t i = 0; i < config->securityPoliciesSize; i++)
+        res |= UA_String_copy(&config->securityPolicies[i].policyUri, &uris[i]);
+
+    if(res == UA_STATUSCODE_GOOD) {
+        UA_VariableAttributes attr = UA_VariableAttributes_default;
+        attr.displayName = UA_LOCALIZEDTEXT("", "SupportedSecurityPolicyUris");
+        attr.dataType = UA_TYPES[UA_TYPES_STRING].typeId;
+        attr.valueRank = UA_VALUERANK_ONE_DIMENSION;
+        UA_UInt32 arrayDimensions = 0;
+        attr.arrayDimensionsSize = 1;
+        attr.arrayDimensions = &arrayDimensions;
+        UA_Variant_setArray(&attr.value, uris, config->securityPoliciesSize,
+                            &UA_TYPES[UA_TYPES_STRING]);
+        res = addNode(server, UA_NODECLASS_VARIABLE,
+                      UA_NS0ID(PUBLISHSUBSCRIBE_SECURITYGROUPS_SUPPORTEDSECURITYPOLICYURIS),
+                      UA_NS0ID(PUBLISHSUBSCRIBE_SECURITYGROUPS), UA_NS0ID(HASPROPERTY),
+                      UA_QUALIFIEDNAME(0, "SupportedSecurityPolicyUris"),
+                      UA_NS0ID(PROPERTYTYPE), &attr,
+                      &UA_TYPES[UA_TYPES_VARIABLEATTRIBUTES], NULL, NULL);
+    }
+
+    UA_Array_delete(uris, config->securityPoliciesSize, &UA_TYPES[UA_TYPES_STRING]);
+    return res;
+}
+
 UA_StatusCode
 initPubSubNS0_SKS(UA_Server *server) {
     UA_LOCK_ASSERT(&server->serviceMutex);
 
-    UA_StatusCode retVal = UA_STATUSCODE_GOOD;
-    
+    UA_StatusCode retVal = addSupportedSecurityPolicyUris(server);
+
     if(server->config.pubSubConfig.enableInformationModelMethods) {
         /* Set SKS method callbacks */
         retVal |= setMethodNode_callback(server, UA_NS0ID(PUBLISHSUBSCRIBE_SETSECURITYKEYS), setSecurityKeysAction);
