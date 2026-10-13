@@ -421,6 +421,12 @@ UA_EXPORT UA_StatusCode UA_THREADSAFE
 UA_Server_deleteSessionAttribute(UA_Server *server, const UA_NodeId *sessionId,
                                  const UA_QualifiedName key);
 
+/* Returns the AuditEntryId from the RequestHeader of the
+ * request that is currently processed. If no request is active, returns
+ * UA_STATUSCODE_BADNOTFOUND. */
+UA_EXPORT UA_StatusCode UA_THREADSAFE
+UA_Server_getCurrentAuditEntryId(UA_Server *server, UA_String *outAuditEntryId);
+
 /**
  * Attribute Service Set
  * ---------------------

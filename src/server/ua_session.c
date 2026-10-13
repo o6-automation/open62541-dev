@@ -515,3 +515,14 @@ UA_Server_getSessionAttribute_scalar(UA_Server *server,
     unlockServer(server);
     return UA_STATUSCODE_GOOD;
 }
+
+UA_StatusCode
+UA_Server_getCurrentAuditEntryId(UA_Server *server, UA_String *outAuditEntryId) {
+    UA_String_init(outAuditEntryId);
+    lockServer(server);
+    UA_StatusCode res = UA_STATUSCODE_BADNOTFOUND;
+    if(server->currentRequest)
+        res = UA_String_copy(&server->currentRequest->auditEntryId, outAuditEntryId);
+    unlockServer(server);
+    return res;
+}
