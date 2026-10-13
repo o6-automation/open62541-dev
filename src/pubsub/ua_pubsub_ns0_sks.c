@@ -79,7 +79,8 @@ updateSecurityGroupProperties(UA_Server *server, UA_NodeId *securityGroupNodeId,
 }
 
 UA_StatusCode
-addSecurityGroupRepresentation(UA_Server *server, UA_SecurityGroup *securityGroup) {
+addSecurityGroupRepresentation(UA_Server *server, UA_SecurityGroup *securityGroup,
+                               const UA_NodeId requestedNodeId) {
     UA_LOCK_ASSERT(&server->serviceMutex);
     UA_StatusCode retval = UA_STATUSCODE_BAD;
 
@@ -99,7 +100,7 @@ addSecurityGroupRepresentation(UA_Server *server, UA_SecurityGroup *securityGrou
     object_attr.displayName.text = securityGroupConfig->securityGroupName;
     UA_NodeId refType = UA_NS0ID(HASCOMPONENT);
     UA_NodeId nodeType = UA_NS0ID(SECURITYGROUPTYPE);
-    retval = addNode(server, UA_NODECLASS_OBJECT, UA_NODEID_NULL,
+    retval = addNode(server, UA_NODECLASS_OBJECT, requestedNodeId,
                      securityGroup->securityGroupFolderId, refType,
                      browseName, nodeType, &object_attr,
                      &UA_TYPES[UA_TYPES_OBJECTATTRIBUTES], NULL,

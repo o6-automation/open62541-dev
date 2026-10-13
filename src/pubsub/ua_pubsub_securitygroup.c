@@ -392,6 +392,7 @@ clearSecurityGroupRuntime(UA_PubSubManager *psm, UA_SecurityGroup *sg) {
 static UA_StatusCode
 addSecurityGroup(UA_PubSubManager *psm, UA_NodeId securityGroupFolderNodeId,
                  const UA_SecurityGroupConfig *securityGroupConfig,
+                 const UA_NodeId requestedNodeId,
                  UA_NodeId *securityGroupNodeId) {
     if(!securityGroupConfig || !psm)
         return UA_STATUSCODE_BADINVALIDARGUMENT;
@@ -403,6 +404,10 @@ addSecurityGroup(UA_PubSubManager *psm, UA_NodeId securityGroupFolderNodeId,
         return UA_STATUSCODE_BADINVALIDARGUMENT;
 
     if(UA_SecurityGroup_findByName(psm, securityGroupConfig->securityGroupName))
+        return UA_STATUSCODE_BADNODEIDEXISTS;
+
+    if(!UA_NodeId_isNull(&requestedNodeId) &&
+       UA_SecurityGroup_find(psm, requestedNodeId))
         return UA_STATUSCODE_BADNODEIDEXISTS;
 
     UA_PubSubSecurityPolicy *policy =
@@ -445,7 +450,8 @@ addSecurityGroup(UA_PubSubManager *psm, UA_NodeId securityGroupFolderNodeId,
     }
 
 #ifdef UA_ENABLE_PUBSUB_INFORMATIONMODEL
-    retval = addSecurityGroupRepresentation(psm->drv.server, newSecurityGroup);
+    retval = addSecurityGroupRepresentation(psm->drv.server, newSecurityGroup,
+                                            requestedNodeId);
     if(retval != UA_STATUSCODE_GOOD) {
         UA_LOG_ERROR(psm->logging, UA_LOGCATEGORY_SERVER,
                      "Add SecurityGroup failed with error: %s.",
@@ -455,7 +461,15 @@ addSecurityGroup(UA_PubSubManager *psm, UA_NodeId securityGroupFolderNodeId,
         return retval;
     }
 #else
-    UA_PubSubManager_generateUniqueNodeId(psm, &newSecurityGroup->securityGroupNodeId);
+    if(UA_NodeId_isNull(&requestedNodeId))
+        UA_PubSubManager_generateUniqueNodeId(psm, &newSecurityGroup->securityGroupNodeId);
+    else
+        retval = UA_NodeId_copy(&requestedNodeId,
+                                &newSecurityGroup->securityGroupNodeId);
+    if(retval != UA_STATUSCODE_GOOD) {
+        UA_SecurityGroup_delete(newSecurityGroup);
+        return retval;
+    }
 #endif
 
     /* Only allocate keys and arm timers after the InformationModel
@@ -481,12 +495,23 @@ UA_StatusCode
 UA_Server_addSecurityGroup(UA_Server *server, UA_NodeId securityGroupFolderNodeId,
                            const UA_SecurityGroupConfig *securityGroupConfig,
                            UA_NodeId *securityGroupNodeId) {
+    return UA_Server_addSecurityGroupEx(server, securityGroupFolderNodeId,
+                                        securityGroupConfig, UA_NODEID_NULL,
+                                        securityGroupNodeId);
+}
+
+UA_StatusCode
+UA_Server_addSecurityGroupEx(UA_Server *server, UA_NodeId securityGroupFolderNodeId,
+                             const UA_SecurityGroupConfig *securityGroupConfig,
+                             const UA_NodeId requestedNodeId,
+                             UA_NodeId *securityGroupNodeId) {
     if(!server || !securityGroupConfig)
         return UA_STATUSCODE_BADINVALIDARGUMENT;
     lockServer(server);
     UA_PubSubManager *psm = getPSM(server);
     UA_StatusCode retval = addSecurityGroup(psm, securityGroupFolderNodeId,
-                                            securityGroupConfig, securityGroupNodeId);
+                                            securityGroupConfig, requestedNodeId,
+                                            securityGroupNodeId);
     unlockServer(server);
     return retval;
 }

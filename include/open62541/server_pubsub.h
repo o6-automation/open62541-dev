@@ -1027,6 +1027,15 @@ UA_Server_addSecurityGroup(UA_Server *server,
                            const UA_SecurityGroupConfig *securityGroupConfig,
                            UA_NodeId *securityGroupNodeId);
 
+/* As UA_Server_addSecurityGroup, but the new SecurityGroup takes the
+ * requestedNodeId unless it is null. */
+UA_EXPORT UA_StatusCode UA_THREADSAFE
+UA_Server_addSecurityGroupEx(UA_Server *server,
+                             UA_NodeId securityGroupFolderNodeId,
+                             const UA_SecurityGroupConfig *securityGroupConfig,
+                             const UA_NodeId requestedNodeId,
+                             UA_NodeId *securityGroupNodeId);
+
 /* Removes the SecurityGroup from PubSub Manager. It removes the KeyStorage
  * associated with the SecurityGroup from the server.
  *
