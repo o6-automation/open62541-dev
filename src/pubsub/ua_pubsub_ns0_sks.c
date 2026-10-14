@@ -385,7 +385,7 @@ getSecurityGroupAction(UA_Server *server, const UA_NodeId *sessionId,
     UA_SecurityGroup *sg = UA_SecurityGroup_findByName(
         getPSM(server), *(UA_String*)input[0].data);
     if(!sg)
-        return UA_STATUSCODE_BADNOTFOUND;
+        return UA_STATUSCODE_BADNOMATCH;
     return UA_Variant_setScalarCopy(&output[0], &sg->securityGroupNodeId,
                                     &UA_TYPES[UA_TYPES_NODEID]);
 }
