@@ -12,7 +12,7 @@
 #include <open62541/client_config_default.h>
 #include <open62541/client_highlevel.h>
 #include <open62541/plugin/certificategroup_default.h>
-#include <open62541/driver/gds_receiver.h>
+#include <open62541/driver/gds_push.h>
 
 #include "ua_server_internal.h"
 
@@ -22,7 +22,7 @@
 #include "certificates.h"
 
 UA_Server *server;
-UA_GDSReceiver *receiver;
+UA_GDSPushDriver *driver;
 UA_atomic(uintptr_t) running;
 THREAD_HANDLE server_thread;
 
@@ -82,9 +82,9 @@ static void setup(void) {
                                                           revocationList, revocationListSize);
     ck_assert(server != NULL);
 
-    receiver = UA_GDSReceiver_new();
-    ck_assert_ptr_nonnull(receiver);
-    UA_StatusCode res = UA_Server_addDriver(server, &receiver->drv);
+    driver = UA_GDSPushDriver_new(UA_KEYVALUEMAP_NULL);
+    ck_assert_ptr_nonnull(driver);
+    UA_StatusCode res = UA_Server_addDriver(server, &driver->drv);
     ck_assert_uint_eq(res, UA_STATUSCODE_GOOD);
 
     UA_ServerConfig *config = UA_Server_getConfig(server);

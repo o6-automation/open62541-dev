@@ -8,7 +8,7 @@
 #include <open62541/server_config_default.h>
 #include <open62541/plugin/log_stdout.h>
 #include <open62541/plugin/create_certificate.h>
-#include <open62541/driver/gds_receiver.h>
+#include <open62541/driver/gds_push.h>
 
 #include "ua_server_internal.h"
 
@@ -22,7 +22,7 @@
 #endif /* defined(__linux__) || defined(UA_ARCHITECTURE_WIN32) */
 
 UA_Server *server;
-UA_GDSReceiver *receiver;
+UA_GDSPushDriver *driver;
 
 static void setup(void) {
     /* Load certificate and private key */
@@ -37,9 +37,9 @@ static void setup(void) {
     server = UA_Server_newForUnitTestWithSecurityPolicies(4840, &certificate, &privateKey,
                                                           NULL, 0, NULL, 0, NULL, 0);
     ck_assert(server != NULL);
-    receiver = UA_GDSReceiver_new();
-    ck_assert_ptr_nonnull(receiver);
-    ck_assert_uint_eq(UA_Server_addDriver(server, &receiver->drv),
+    driver = UA_GDSPushDriver_new(UA_KEYVALUEMAP_NULL);
+    ck_assert_ptr_nonnull(driver);
+    ck_assert_uint_eq(UA_Server_addDriver(server, &driver->drv),
                       UA_STATUSCODE_GOOD);
     ck_assert_uint_eq(UA_Server_run_startup(server), UA_STATUSCODE_GOOD);
 }
@@ -64,9 +64,9 @@ static void setup2(void) {
         UA_Server_newForUnitTestWithSecurityPolicies_Filestore(4840, &certificate,
                                                                &privateKey, storePath);
     ck_assert(server != NULL);
-    receiver = UA_GDSReceiver_new();
-    ck_assert_ptr_nonnull(receiver);
-    ck_assert_uint_eq(UA_Server_addDriver(server, &receiver->drv),
+    driver = UA_GDSPushDriver_new(UA_KEYVALUEMAP_NULL);
+    ck_assert_ptr_nonnull(driver);
+    ck_assert_uint_eq(UA_Server_addDriver(server, &driver->drv),
                       UA_STATUSCODE_GOOD);
     ck_assert_uint_eq(UA_Server_run_startup(server), UA_STATUSCODE_GOOD);
 }
@@ -111,7 +111,7 @@ START_TEST(update_certificate) {
     UA_NodeId certTypRsaSha256 = UA_NODEID_NUMERIC(0, UA_NS0ID_RSASHA256APPLICATIONCERTIFICATETYPE);
 
     UA_StatusCode retval =
-            UA_GDSReceiver_updateCertificate(receiver, defaultApplicationGroup, certTypRsaSha256,
+            UA_GDSPushDriver_updateCertificate(driver, defaultApplicationGroup, certTypRsaSha256,
                                newCertificate, &newPrivateKey);
     ck_assert_uint_eq(retval, UA_STATUSCODE_GOOD);
 
@@ -134,7 +134,7 @@ START_TEST(update_certificate_wrongKey) {
     UA_NodeId certTypRsaSha256 = UA_NODEID_NUMERIC(0, UA_NS0ID_RSASHA256APPLICATIONCERTIFICATETYPE);
 
     UA_StatusCode retval =
-            UA_GDSReceiver_updateCertificate(receiver, defaultApplicationGroup, certTypRsaSha256,
+            UA_GDSPushDriver_updateCertificate(driver, defaultApplicationGroup, certTypRsaSha256,
                                         newCertificate, &wrongPrivateKey);
     ck_assert_uint_eq(retval, UA_STATUSCODE_BADNOTSUPPORTED);
 
@@ -152,7 +152,7 @@ START_TEST(update_certificate_noKey) {
     UA_NodeId certTypRsaSha256 = UA_NODEID_NUMERIC(0, UA_NS0ID_RSASHA256APPLICATIONCERTIFICATETYPE);
 
     UA_StatusCode retval =
-            UA_GDSReceiver_updateCertificate(receiver, defaultApplicationGroup, certTypRsaSha256,
+            UA_GDSPushDriver_updateCertificate(driver, defaultApplicationGroup, certTypRsaSha256,
                                         newCertificate, NULL);
     ck_assert_uint_eq(retval, UA_STATUSCODE_GOOD);
 }
@@ -232,7 +232,7 @@ START_TEST(update_certificate_eccCertAsRsa) {
     UA_ByteString certificate = {CERT_P256_DER_LENGTH, CERT_P256_DER_DATA};
     UA_ByteString privateKey = {KEY_P256_DER_LENGTH, KEY_P256_DER_DATA};
     UA_NodeId certTypRsaSha256 = UA_NODEID_NUMERIC(0, UA_NS0ID_RSASHA256APPLICATIONCERTIFICATETYPE);
-    ck_assert_uint_eq(UA_GDSReceiver_updateCertificate(receiver, UA_NODEID_NULL,
+    ck_assert_uint_eq(UA_GDSPushDriver_updateCertificate(driver, UA_NODEID_NULL,
                                                        certTypRsaSha256, certificate,
                                                        &privateKey),
                       UA_STATUSCODE_BADCERTIFICATEINVALID);
@@ -247,7 +247,7 @@ START_TEST(update_certificate_rsaMin_filestore) {
     UA_ByteString newPrivateKey = UA_BYTESTRING_NULL;
     generateCertificate(&newCertificate, &newPrivateKey);
     UA_NodeId certTypRsaMin = UA_NODEID_NUMERIC(0, UA_NS0ID_RSAMINAPPLICATIONCERTIFICATETYPE);
-    ck_assert_uint_eq(UA_GDSReceiver_updateCertificate(receiver, UA_NODEID_NULL,
+    ck_assert_uint_eq(UA_GDSPushDriver_updateCertificate(driver, UA_NODEID_NULL,
                                                        certTypRsaMin, newCertificate,
                                                        &newPrivateKey),
                       UA_STATUSCODE_GOOD);
@@ -257,8 +257,8 @@ START_TEST(update_certificate_rsaMin_filestore) {
 END_TEST
 #endif /* defined(__linux__) || defined(UA_ARCHITECTURE_WIN32) */
 
-START_TEST(addDriver_rejectsDuplicateGDSReceiver) {
-    UA_GDSReceiver *duplicate = UA_GDSReceiver_new();
+START_TEST(addDriver_rejectsDuplicateGDSPushDriver) {
+    UA_GDSPushDriver *duplicate = UA_GDSPushDriver_new(UA_KEYVALUEMAP_NULL);
     ck_assert_ptr_nonnull(duplicate);
 
     ck_assert_uint_eq(UA_Server_addDriver(server, &duplicate->drv),
@@ -305,8 +305,8 @@ START_TEST(update_certificate_preflightsAllEndpoints) {
 
     UA_NodeId defaultApplicationGroup = UA_NODEID_NUMERIC(
         0, UA_NS0ID_SERVERCONFIGURATION_CERTIFICATEGROUPS_DEFAULTAPPLICATIONGROUP);
-    UA_StatusCode res = UA_GDSReceiver_updateCertificate(
-        receiver, defaultApplicationGroup, certificateType,
+    UA_StatusCode res = UA_GDSPushDriver_updateCertificate(
+        driver, defaultApplicationGroup, certificateType,
         newCertificate, &newPrivateKey);
     ck_assert_uint_eq(res, UA_STATUSCODE_BADINTERNALERROR);
     ck_assert(UA_ByteString_equal(&policy->localCertificate, &oldCertificate));
@@ -341,8 +341,8 @@ START_TEST(update_certificate_noneEndpoint) {
         0, UA_NS0ID_SERVERCONFIGURATION_CERTIFICATEGROUPS_DEFAULTAPPLICATIONGROUP);
     UA_NodeId certTypRsaSha256 =
         UA_NODEID_NUMERIC(0, UA_NS0ID_RSASHA256APPLICATIONCERTIFICATETYPE);
-    ck_assert_uint_eq(UA_GDSReceiver_updateCertificate(
-                          receiver, defaultApplicationGroup, certTypRsaSha256,
+    ck_assert_uint_eq(UA_GDSPushDriver_updateCertificate(
+                          driver, defaultApplicationGroup, certTypRsaSha256,
                           newCertificate, &newPrivateKey),
                       UA_STATUSCODE_GOOD);
 
@@ -365,7 +365,7 @@ START_TEST(update_certificate_noKey_invalid) {
     UA_NodeId certTypRsaSha256 = UA_NODEID_NUMERIC(0, UA_NS0ID_RSASHA256APPLICATIONCERTIFICATETYPE);
 
     UA_StatusCode retval =
-            UA_GDSReceiver_updateCertificate(receiver, defaultApplicationGroup, certTypRsaSha256,
+            UA_GDSPushDriver_updateCertificate(driver, defaultApplicationGroup, certTypRsaSha256,
                                         newCertificate, NULL);
     ck_assert_uint_eq(retval, UA_STATUSCODE_BADCERTIFICATEINVALID);
 }
@@ -382,7 +382,7 @@ static Suite* testSuite_create_certificate(void) {
     tcase_add_test(tc_cert, certificate_types_configured);
     tcase_add_test(tc_cert, update_certificate_unconfiguredType);
     tcase_add_test(tc_cert, update_certificate_eccCertAsRsa);
-    tcase_add_test(tc_cert, addDriver_rejectsDuplicateGDSReceiver);
+    tcase_add_test(tc_cert, addDriver_rejectsDuplicateGDSPushDriver);
     tcase_add_test(tc_cert, update_certificate_preflightsAllEndpoints);
     tcase_add_test(tc_cert, update_certificate_noneEndpoint);
     tcase_add_test(tc_cert, update_certificate_noKey_invalid);
@@ -399,7 +399,7 @@ static Suite* testSuite_create_certificate(void) {
     tcase_add_test(tc_cert_filestore, certificate_types_configured_filestore);
     tcase_add_test(tc_cert_filestore, update_certificate_eccCertAsRsa);
     tcase_add_test(tc_cert_filestore, update_certificate_rsaMin_filestore);
-    tcase_add_test(tc_cert_filestore, addDriver_rejectsDuplicateGDSReceiver);
+    tcase_add_test(tc_cert_filestore, addDriver_rejectsDuplicateGDSPushDriver);
     tcase_add_test(tc_cert_filestore, update_certificate_preflightsAllEndpoints);
     tcase_add_test(tc_cert_filestore, update_certificate_noneEndpoint);
     tcase_add_test(tc_cert_filestore, update_certificate_noKey_invalid);

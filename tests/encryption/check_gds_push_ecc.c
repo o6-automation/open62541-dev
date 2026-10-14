@@ -5,11 +5,11 @@
  *    Copyright 2026 (c) o6 Automation GmbH (Author: Andreas Ebner)
  */
 
-/* The GDS Receiver with RSA and ECC application certificates (OPC UA Part 12,
+/* The GDS Push with RSA and ECC application certificates (OPC UA Part 12,
  * 7.8.4). The server has RSA endpoints and ECC endpoints with their own
  * certificates. */
 
-#include <open62541/driver/gds_receiver.h>
+#include <open62541/driver/gds_push.h>
 #include <open62541/plugin/create_certificate.h>
 #include <open62541/plugin/log_stdout.h>
 #include <open62541/server_config_default.h>
@@ -31,7 +31,7 @@
 #define TYPE(ID) UA_NODEID_NUMERIC(0, UA_NS0ID_##ID##APPLICATIONCERTIFICATETYPE)
 
 static UA_Server *server;
-static UA_GDSReceiver *receiver;
+static UA_GDSPushDriver *driver;
 
 static void
 setup(void) {
@@ -63,9 +63,9 @@ setup(void) {
 #endif
     ck_assert_uint_eq(UA_ServerConfig_addAllEndpoints(config), UA_STATUSCODE_GOOD);
 
-    receiver = UA_GDSReceiver_new();
-    ck_assert_ptr_nonnull(receiver);
-    ck_assert_uint_eq(UA_Server_addDriver(server, &receiver->drv),
+    driver = UA_GDSPushDriver_new(UA_KEYVALUEMAP_NULL);
+    ck_assert_ptr_nonnull(driver);
+    ck_assert_uint_eq(UA_Server_addDriver(server, &driver->drv),
                       UA_STATUSCODE_GOOD);
     ck_assert_uint_eq(UA_Server_run_startup(server), UA_STATUSCODE_GOOD);
 }
@@ -75,7 +75,7 @@ teardown(void) {
     UA_Server_run_shutdown(server);
     UA_Server_delete(server);
     server = NULL;
-    receiver = NULL;
+    driver = NULL;
 }
 
 /* The first SecurityPolicy with the certificate type */
@@ -181,7 +181,7 @@ START_TEST(update_ecc_certificate) {
     UA_ByteString certificate, privateKey;
     createCertificate("prime256v1", &certificate, &privateKey);
     UA_ByteString *snapshot = snapshotCertificates();
-    ck_assert_uint_eq(UA_GDSReceiver_updateCertificate(receiver, UA_NODEID_NULL,
+    ck_assert_uint_eq(UA_GDSPushDriver_updateCertificate(driver, UA_NODEID_NULL,
                                                        TYPE(ECCNISTP256), certificate,
                                                        &privateKey),
                       UA_STATUSCODE_GOOD);
@@ -204,21 +204,21 @@ START_TEST(update_wrong_key_type) {
 
     UA_ByteString *snapshot = snapshotCertificates();
     /* Another curve, another curve of the same size, RSA for ECC */
-    ck_assert_uint_eq(UA_GDSReceiver_updateCertificate(receiver, UA_NODEID_NULL,
+    ck_assert_uint_eq(UA_GDSPushDriver_updateCertificate(driver, UA_NODEID_NULL,
                                                        TYPE(ECCNISTP256), p384, &p384Key),
                       UA_STATUSCODE_BADCERTIFICATEINVALID);
-    ck_assert_uint_eq(UA_GDSReceiver_updateCertificate(receiver, UA_NODEID_NULL,
+    ck_assert_uint_eq(UA_GDSPushDriver_updateCertificate(driver, UA_NODEID_NULL,
                                                        TYPE(ECCNISTP256), bp256, &bp256Key),
                       UA_STATUSCODE_BADCERTIFICATEINVALID);
-    ck_assert_uint_eq(UA_GDSReceiver_updateCertificate(receiver, UA_NODEID_NULL,
+    ck_assert_uint_eq(UA_GDSPushDriver_updateCertificate(driver, UA_NODEID_NULL,
                                                        TYPE(ECCNISTP256), rsa, &rsaKey),
                       UA_STATUSCODE_BADCERTIFICATEINVALID);
     /* ECC for RSA */
-    ck_assert_uint_eq(UA_GDSReceiver_updateCertificate(receiver, UA_NODEID_NULL,
+    ck_assert_uint_eq(UA_GDSPushDriver_updateCertificate(driver, UA_NODEID_NULL,
                                                        TYPE(RSASHA256), p256, &p256Key),
                       UA_STATUSCODE_BADCERTIFICATEINVALID);
     /* No endpoint uses the type */
-    ck_assert_uint_eq(UA_GDSReceiver_updateCertificate(receiver, UA_NODEID_NULL,
+    ck_assert_uint_eq(UA_GDSPushDriver_updateCertificate(driver, UA_NODEID_NULL,
                                                        TYPE(ECCBRAINPOOLP256R1), bp256,
                                                        &bp256Key),
                       UA_STATUSCODE_BADINVALIDARGUMENT);
@@ -228,14 +228,14 @@ START_TEST(update_wrong_key_type) {
 /* Without a private key, the certificate must belong to a known key */
 START_TEST(update_without_private_key) {
     UA_ByteString p256 = {CERT_P256_DER_LENGTH, CERT_P256_DER_DATA};
-    ck_assert_uint_eq(UA_GDSReceiver_updateCertificate(receiver, UA_NODEID_NULL,
+    ck_assert_uint_eq(UA_GDSPushDriver_updateCertificate(driver, UA_NODEID_NULL,
                                                        TYPE(ECCNISTP256), p256, NULL),
                       UA_STATUSCODE_GOOD);
 
     UA_ByteString certificate, privateKey;
     createCertificate("prime256v1", &certificate, &privateKey);
     UA_ByteString *snapshot = snapshotCertificates();
-    ck_assert_uint_eq(UA_GDSReceiver_updateCertificate(receiver, UA_NODEID_NULL,
+    ck_assert_uint_eq(UA_GDSPushDriver_updateCertificate(driver, UA_NODEID_NULL,
                                                        TYPE(ECCNISTP256), certificate,
                                                        NULL),
                       UA_STATUSCODE_BADSECURITYCHECKSFAILED);
@@ -292,7 +292,7 @@ createSigningRequest(UA_Boolean regenerateKey) {
     memset(nonceData, 0x2a, sizeof(nonceData));
     UA_ByteString nonce = {sizeof(nonceData), nonceData};
     UA_ByteString csr = UA_BYTESTRING_NULL;
-    ck_assert_uint_eq(UA_GDSReceiver_createSigningRequest(receiver, UA_NODEID_NULL,
+    ck_assert_uint_eq(UA_GDSPushDriver_createSigningRequest(driver, UA_NODEID_NULL,
                                                           TYPE(ECCNISTP256), NULL,
                                                           &regenerateKey, &nonce,
                                                           &csr),
@@ -310,7 +310,7 @@ START_TEST(signing_request_new_key) {
               UA_STATUSCODE_GOOD);
 
     UA_ByteString *snapshot = snapshotCertificates();
-    ck_assert_uint_eq(UA_GDSReceiver_updateCertificate(receiver, UA_NODEID_NULL,
+    ck_assert_uint_eq(UA_GDSPushDriver_updateCertificate(driver, UA_NODEID_NULL,
                                                        TYPE(ECCNISTP256), certificate,
                                                        NULL),
                       UA_STATUSCODE_GOOD);
@@ -326,7 +326,7 @@ START_TEST(signing_request_discarded) {
     UA_ByteString plainCsr = createSigningRequest(false);
 
     UA_ByteString *snapshot = snapshotCertificates();
-    ck_assert_uint_eq(UA_GDSReceiver_updateCertificate(receiver, UA_NODEID_NULL,
+    ck_assert_uint_eq(UA_GDSPushDriver_updateCertificate(driver, UA_NODEID_NULL,
                                                        TYPE(ECCNISTP256), certificate,
                                                        NULL),
                       UA_STATUSCODE_BADSECURITYCHECKSFAILED);
@@ -428,7 +428,7 @@ START_TEST(update_many_endpoints) {
 
     UA_ByteString certificate, privateKey;
     createCertificate("prime256v1", &certificate, &privateKey);
-    ck_assert_uint_eq(UA_GDSReceiver_updateCertificate(receiver, UA_NODEID_NULL,
+    ck_assert_uint_eq(UA_GDSPushDriver_updateCertificate(driver, UA_NODEID_NULL,
                                                        TYPE(ECCNISTP256), certificate,
                                                        &privateKey),
                       UA_STATUSCODE_GOOD);
@@ -444,7 +444,7 @@ START_TEST(update_many_endpoints) {
 
 int
 main(void) {
-    Suite *suite = suite_create("GDS Receiver ECC");
+    Suite *suite = suite_create("GDS Push ECC");
     TCase *tc = tcase_create("ECC");
     tcase_add_checked_fixture(tc, setup, teardown);
     tcase_add_test(tc, certificate_types);

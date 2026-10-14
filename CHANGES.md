@@ -3,6 +3,24 @@ refactorings and bug fixes are not reported here.
 
 # Development
 
+### GDS PushManagement is the GDS Push driver
+
+The server side of OPC UA PushManagement (Part 12) is the GDS Push driver. It
+replaces the build option `UA_ENABLE_GDS_PUSHMANAGEMENT` of 1.5 and the GDS
+Receiver driver of the development branch:
+
+| Before | Now |
+|---|---|
+| `UA_ENABLE_GDS_PUSHMANAGEMENT`, `UA_ENABLE_DRIVER_GDS_RECEIVER` | `UA_ENABLE_DRIVER_GDS_PUSH` |
+| `<open62541/driver/gds_receiver.h>` | `<open62541/driver/gds_push.h>` |
+| `UA_GDSReceiver`, `UA_GDSReceiver_new()` | `UA_GDSPushDriver`, `UA_GDSPushDriver_new(UA_KEYVALUEMAP_NULL)` |
+| `UA_Server_updateCertificate`, `UA_GDSReceiver_updateCertificate` | `UA_GDSPushDriver_updateCertificate` |
+| `UA_Server_createSigningRequest`, `UA_GDSReceiver_createSigningRequest` | `UA_GDSPushDriver_createSigningRequest` |
+| `UA_DRIVERTYPE_GDS_RECEIVER` | `UA_DRIVERTYPE_GDS_PUSH` |
+
+Create the driver and add it with `UA_Server_addDriver` before the server
+starts.
+
 ### Blocking and asynchronous server shutdown
 
 `UA_Server_run_shutdown` now waits for shutdown to complete even with an external

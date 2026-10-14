@@ -51,7 +51,7 @@ jobs:
             -DMBEDTLS_FOLDER_INCLUDE=${{ runner.temp }}/mbedtls/include \
             -DMBEDTLS_FOLDER_LIBRARY=${{ runner.temp }}/mbedtls/lib \
             -DUA_BUILD_UNIT_TESTS=ON \
-            -DUA_ENABLE_DRIVER_GDS_RECEIVER=ON \
+            -DUA_ENABLE_DRIVER_GDS_PUSH=ON \
             -DUA_ENABLE_ENCRYPTION=MBEDTLS \
             -DUA_ENABLE_JSON_ENCODING=ON \
             -DUA_ENABLE_LWS=ON \

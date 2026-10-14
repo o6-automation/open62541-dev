@@ -11,7 +11,7 @@
 #include <open62541/plugin/certificategroup_default.h>
 #include <open62541/plugin/create_certificate.h>
 #include <open62541/plugin/log_stdout.h>
-#include <open62541/driver/gds_receiver.h>
+#include <open62541/driver/gds_push.h>
 
 #include <check.h>
 #include <thread_wrapper.h>
@@ -36,7 +36,7 @@
     UA_NS0ID_SERVERCONFIGURATION_CERTIFICATEGROUPS_DEFAULTUSERTOKENGROUP_TRUSTLIST
 
 static UA_Server *server;
-static UA_GDSReceiver *receiver;
+static UA_GDSPushDriver *driver;
 static UA_ByteString serverCertificate, serverKey;
 static UA_ByteString clientCertificate, clientKey;
 static UA_atomic(uintptr_t) running;
@@ -98,9 +98,9 @@ setup(void) {
     UA_ServerConfig *sc = UA_Server_getConfig(server);
     UA_String_clear(&sc->applicationDescription.applicationUri);
     sc->applicationDescription.applicationUri = UA_STRING_ALLOC(APPLICATION_URI);
-    receiver = UA_GDSReceiver_new();
-    ck_assert_ptr_nonnull(receiver);
-    ck_assert_uint_eq(UA_Server_addDriver(server, &receiver->drv), UA_STATUSCODE_GOOD);
+    driver = UA_GDSPushDriver_new(UA_KEYVALUEMAP_NULL);
+    ck_assert_ptr_nonnull(driver);
+    ck_assert_uint_eq(UA_Server_addDriver(server, &driver->drv), UA_STATUSCODE_GOOD);
 #ifdef UA_ENABLE_RBAC
     grantAnonymousSecurityAdmin();
 #endif
@@ -564,8 +564,8 @@ START_TEST(set_position_uint64) {
 START_TEST(accept_all_pki) {
     server = UA_Server_newForUnitTest();
     ck_assert_ptr_nonnull(server);
-    UA_GDSReceiver *plainReceiver = UA_GDSReceiver_new();
-    ck_assert_uint_eq(UA_Server_addDriver(server, &plainReceiver->drv),
+    UA_GDSPushDriver *plainDriver = UA_GDSPushDriver_new(UA_KEYVALUEMAP_NULL);
+    ck_assert_uint_eq(UA_Server_addDriver(server, &plainDriver->drv),
                       UA_STATUSCODE_GOOD);
     ck_assert_uint_eq(UA_Server_run_startup(server), UA_STATUSCODE_GOOD);
     createCertificate(APPLICATION_URI, &clientCertificate, &clientKey);
@@ -844,7 +844,7 @@ START_TEST(transaction_of_another_session) {
 
 static Suite *
 testSuite_pushManagement(void) {
-    Suite *s = suite_create("GDS Receiver PushManagement");
+    Suite *s = suite_create("GDS Push PushManagement");
     TCase *tc = tcase_create("Local");
     tcase_add_checked_fixture(tc, setup, teardown);
     tcase_add_test(tc, open_modes);

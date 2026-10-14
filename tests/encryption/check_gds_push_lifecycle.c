@@ -2,7 +2,7 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#include <open62541/driver/gds_receiver.h>
+#include <open62541/driver/gds_push.h>
 #include <open62541/server_config_default.h>
 
 #include <check.h>
@@ -10,7 +10,7 @@
 #include "certificates.h"
 
 static UA_Server *server;
-static UA_GDSReceiver *receiver;
+static UA_GDSPushDriver *driver;
 static UA_Boolean serverStarted;
 
 static UA_NodeId defaultApplicationGroup;
@@ -29,9 +29,9 @@ setup(void) {
         4840, &certificate, &privateKey, NULL, 0, NULL, 0, NULL, 0);
     ck_assert_ptr_nonnull(server);
 
-    receiver = UA_GDSReceiver_new();
-    ck_assert_ptr_nonnull(receiver);
-    ck_assert_uint_eq(UA_Server_addDriver(server, &receiver->drv),
+    driver = UA_GDSPushDriver_new(UA_KEYVALUEMAP_NULL);
+    ck_assert_ptr_nonnull(driver);
+    ck_assert_uint_eq(UA_Server_addDriver(server, &driver->drv),
                       UA_STATUSCODE_GOOD);
     serverStarted = false;
 }
@@ -47,23 +47,23 @@ static void
 startup(void) {
     ck_assert_uint_eq(UA_Server_run_startup(server), UA_STATUSCODE_GOOD);
     serverStarted = true;
-    ck_assert_uint_eq(receiver->drv.state, UA_LIFECYCLESTATE_STARTED);
+    ck_assert_uint_eq(driver->drv.state, UA_LIFECYCLESTATE_STARTED);
 }
 
 static UA_StatusCode
 updateCertificate(void) {
     UA_ByteString certificate = {CERT_DER_LENGTH, CERT_DER_DATA};
     UA_ByteString privateKey = {KEY_DER_LENGTH, KEY_DER_DATA};
-    return UA_GDSReceiver_updateCertificate(
-        receiver, defaultApplicationGroup, rsaSha256CertificateType,
+    return UA_GDSPushDriver_updateCertificate(
+        driver, defaultApplicationGroup, rsaSha256CertificateType,
         certificate, &privateKey);
 }
 
 static UA_StatusCode
 createSigningRequest(void) {
     UA_ByteString csr = UA_BYTESTRING_NULL;
-    UA_StatusCode res = UA_GDSReceiver_createSigningRequest(
-        receiver, defaultApplicationGroup, rsaSha256CertificateType,
+    UA_StatusCode res = UA_GDSPushDriver_createSigningRequest(
+        driver, defaultApplicationGroup, rsaSha256CertificateType,
         NULL, NULL, NULL, &csr);
     UA_ByteString_clear(&csr);
     return res;
@@ -134,11 +134,11 @@ stageAndApplyCertificateUpdate(void) {
 START_TEST(shutdownWhileApplyChangesPending) {
     startup();
     ck_assert_uint_eq(stageAndApplyCertificateUpdate(), UA_STATUSCODE_GOOD);
-    ck_assert_uint_eq(receiver->drv.state, UA_LIFECYCLESTATE_STARTED);
+    ck_assert_uint_eq(driver->drv.state, UA_LIFECYCLESTATE_STARTED);
 
     ck_assert_uint_eq(UA_Server_run_shutdown(server), UA_STATUSCODE_GOOD);
     serverStarted = false;
-    ck_assert_uint_eq(receiver->drv.state, UA_LIFECYCLESTATE_STOPPED);
+    ck_assert_uint_eq(driver->drv.state, UA_LIFECYCLESTATE_STOPPED);
 } END_TEST
 
 /* The transaction is discarded when the queued ApplyChanges runs. An update
@@ -158,11 +158,11 @@ START_TEST(rejectUpdateWhileApplyChangesQueued) {
 START_TEST(shutdownWhileCertificateClosurePending) {
     startup();
     ck_assert_uint_eq(updateCertificate(), UA_STATUSCODE_GOOD);
-    ck_assert_uint_eq(receiver->drv.state, UA_LIFECYCLESTATE_STARTED);
+    ck_assert_uint_eq(driver->drv.state, UA_LIFECYCLESTATE_STARTED);
 
     ck_assert_uint_eq(UA_Server_run_shutdown(server), UA_STATUSCODE_GOOD);
     serverStarted = false;
-    ck_assert_uint_eq(receiver->drv.state, UA_LIFECYCLESTATE_STOPPED);
+    ck_assert_uint_eq(driver->drv.state, UA_LIFECYCLESTATE_STOPPED);
 } END_TEST
 
 /* Part 12, 7.10.5: a null CertificateGroupId selects the
@@ -184,8 +184,8 @@ START_TEST(updateCertificateArguments) {
                       UA_STATUSCODE_GOOD);
 } END_TEST
 
-START_TEST(rejectDuplicateReceiver) {
-    UA_GDSReceiver *duplicate = UA_GDSReceiver_new();
+START_TEST(rejectDuplicateDriver) {
+    UA_GDSPushDriver *duplicate = UA_GDSPushDriver_new(UA_KEYVALUEMAP_NULL);
     ck_assert_ptr_nonnull(duplicate);
     ck_assert_uint_eq(UA_Server_addDriver(server, &duplicate->drv),
                       UA_STATUSCODE_BADALREADYEXISTS);
@@ -196,17 +196,17 @@ START_TEST(rejectDuplicateReceiver) {
 START_TEST(helpersBeforeStartupAndDuringShutdown) {
     UA_ByteString certificate = {CERT_DER_LENGTH, CERT_DER_DATA};
     UA_ByteString privateKey = {KEY_DER_LENGTH, KEY_DER_DATA};
-    ck_assert_uint_eq(UA_GDSReceiver_updateCertificate(
+    ck_assert_uint_eq(UA_GDSPushDriver_updateCertificate(
                           NULL, defaultApplicationGroup,
                           rsaSha256CertificateType, certificate, &privateKey),
                       UA_STATUSCODE_BADINVALIDARGUMENT);
-    ck_assert_uint_eq(UA_GDSReceiver_updateCertificate(
-                          receiver, defaultApplicationGroup,
+    ck_assert_uint_eq(UA_GDSPushDriver_updateCertificate(
+                          driver, defaultApplicationGroup,
                           rsaSha256CertificateType, UA_BYTESTRING_NULL,
                           &privateKey),
                       UA_STATUSCODE_BADINVALIDARGUMENT);
-    ck_assert_uint_eq(UA_GDSReceiver_createSigningRequest(
-                          receiver, defaultApplicationGroup,
+    ck_assert_uint_eq(UA_GDSPushDriver_createSigningRequest(
+                          driver, defaultApplicationGroup,
                           rsaSha256CertificateType, NULL, NULL, NULL, NULL),
                       UA_STATUSCODE_BADINVALIDARGUMENT);
     ck_assert_uint_eq(updateCertificate(), UA_STATUSCODE_BADINVALIDSTATE);
@@ -224,15 +224,15 @@ START_TEST(helpersBeforeStartupAndDuringShutdown) {
     ck_assert_uint_eq(UA_Server_run_shutdown(server), UA_STATUSCODE_GOOD);
     serverStarted = false;
     ck_assert(callbackCalled);
-    ck_assert_uint_eq(receiver->drv.state, UA_LIFECYCLESTATE_STOPPED);
+    ck_assert_uint_eq(driver->drv.state, UA_LIFECYCLESTATE_STOPPED);
 } END_TEST
 
-START_TEST(removeStoppedReceiver) {
+START_TEST(removeStoppedDriver) {
     startup();
     ck_assert_uint_eq(UA_Server_run_shutdown(server), UA_STATUSCODE_GOOD);
     serverStarted = false;
-    ck_assert_uint_eq(receiver->drv.state, UA_LIFECYCLESTATE_STOPPED);
-    void *methodContext = receiver;
+    ck_assert_uint_eq(driver->drv.state, UA_LIFECYCLESTATE_STOPPED);
+    void *methodContext = driver;
     ck_assert_uint_eq(UA_Server_getNodeContext(
                           server,
                           UA_NODEID_NUMERIC(
@@ -240,14 +240,14 @@ START_TEST(removeStoppedReceiver) {
                           &methodContext),
                       UA_STATUSCODE_GOOD);
     ck_assert_ptr_null(methodContext);
-    ck_assert_uint_eq(UA_Server_removeDriver(server, &receiver->drv),
+    ck_assert_uint_eq(UA_Server_removeDriver(server, &driver->drv),
                       UA_STATUSCODE_GOOD);
-    ck_assert_uint_eq(receiver->drv.free(&receiver->drv), UA_STATUSCODE_GOOD);
-    receiver = NULL;
+    ck_assert_uint_eq(driver->drv.free(&driver->drv), UA_STATUSCODE_GOOD);
+    driver = NULL;
 
-    receiver = UA_GDSReceiver_new();
-    ck_assert_ptr_nonnull(receiver);
-    ck_assert_uint_eq(UA_Server_addDriver(server, &receiver->drv),
+    driver = UA_GDSPushDriver_new(UA_KEYVALUEMAP_NULL);
+    ck_assert_ptr_nonnull(driver);
+    ck_assert_uint_eq(UA_Server_addDriver(server, &driver->drv),
                       UA_STATUSCODE_GOOD);
     startup();
     methodContext = NULL;
@@ -257,7 +257,7 @@ START_TEST(removeStoppedReceiver) {
                               0, UA_NS0ID_SERVERCONFIGURATION_APPLYCHANGES),
                           &methodContext),
                       UA_STATUSCODE_GOOD);
-    ck_assert_ptr_eq(methodContext, receiver);
+    ck_assert_ptr_eq(methodContext, driver);
 } END_TEST
 
 /* Without an RSA endpoint, no certificate type can be updated. The
@@ -265,12 +265,12 @@ START_TEST(removeStoppedReceiver) {
 START_TEST(noUpdatableCertificateType) {
     UA_Server *plainServer = UA_Server_newForUnitTest();
     ck_assert_ptr_nonnull(plainServer);
-    UA_GDSReceiver *plainReceiver = UA_GDSReceiver_new();
-    ck_assert_ptr_nonnull(plainReceiver);
-    ck_assert_uint_eq(UA_Server_addDriver(plainServer, &plainReceiver->drv),
+    UA_GDSPushDriver *plainDriver = UA_GDSPushDriver_new(UA_KEYVALUEMAP_NULL);
+    ck_assert_ptr_nonnull(plainDriver);
+    ck_assert_uint_eq(UA_Server_addDriver(plainServer, &plainDriver->drv),
                       UA_STATUSCODE_GOOD);
     ck_assert_uint_eq(UA_Server_run_startup(plainServer), UA_STATUSCODE_GOOD);
-    ck_assert_uint_eq(plainReceiver->drv.state, UA_LIFECYCLESTATE_STARTED);
+    ck_assert_uint_eq(plainDriver->drv.state, UA_LIFECYCLESTATE_STARTED);
 
     UA_Variant value;
     UA_Variant_init(&value);
@@ -288,7 +288,7 @@ START_TEST(noUpdatableCertificateType) {
                               0, UA_NS0ID_SERVERCONFIGURATION_APPLYCHANGES),
                           &methodContext),
                       UA_STATUSCODE_GOOD);
-    ck_assert_ptr_eq(methodContext, plainReceiver);
+    ck_assert_ptr_eq(methodContext, plainDriver);
 
     ck_assert_uint_eq(UA_Server_run_shutdown(plainServer), UA_STATUSCODE_GOOD);
     UA_Server_delete(plainServer);
@@ -297,7 +297,7 @@ START_TEST(noUpdatableCertificateType) {
 #ifdef UA_ENABLE_RBAC
 /* Only the role setup needs the CertificateGroups folder. Without it, the role
  * setup fails. This is only logged, as the AccessControl can restrict the
- * methods as well. The receiver starts with its push methods. */
+ * methods as well. The driver starts with its push methods. */
 START_TEST(failedRoleSetupKeepsMethods) {
     const UA_NodeId folder = UA_NODEID_NUMERIC(
         0, UA_NS0ID_SERVERCONFIGURATION_CERTIFICATEGROUPS);
@@ -317,7 +317,7 @@ START_TEST(failedRoleSetupKeepsMethods) {
 
     ck_assert_uint_eq(UA_Server_run_startup(server), UA_STATUSCODE_GOOD);
     serverStarted = true;
-    ck_assert_uint_eq(receiver->drv.state, UA_LIFECYCLESTATE_STARTED);
+    ck_assert_uint_eq(driver->drv.state, UA_LIFECYCLESTATE_STARTED);
 
     void *methodContext = NULL;
     ck_assert_uint_eq(UA_Server_getNodeContext(
@@ -326,23 +326,23 @@ START_TEST(failedRoleSetupKeepsMethods) {
                               0, UA_NS0ID_SERVERCONFIGURATION_UPDATECERTIFICATE),
                           &methodContext),
                       UA_STATUSCODE_GOOD);
-    ck_assert_ptr_eq(methodContext, receiver);
+    ck_assert_ptr_eq(methodContext, driver);
     ck_assert_uint_eq(stageAndApplyCertificateUpdate(), UA_STATUSCODE_GOOD);
 } END_TEST
 #endif
 
 int
 main(void) {
-    Suite *suite = suite_create("GDS Receiver lifecycle");
+    Suite *suite = suite_create("GDS Push lifecycle");
     TCase *tc = tcase_create("lifecycle");
     tcase_add_checked_fixture(tc, setup, teardown);
     tcase_add_test(tc, shutdownWhileApplyChangesPending);
     tcase_add_test(tc, rejectUpdateWhileApplyChangesQueued);
     tcase_add_test(tc, shutdownWhileCertificateClosurePending);
     tcase_add_test(tc, updateCertificateArguments);
-    tcase_add_test(tc, rejectDuplicateReceiver);
+    tcase_add_test(tc, rejectDuplicateDriver);
     tcase_add_test(tc, helpersBeforeStartupAndDuringShutdown);
-    tcase_add_test(tc, removeStoppedReceiver);
+    tcase_add_test(tc, removeStoppedDriver);
 #ifdef UA_ENABLE_RBAC
     tcase_add_test(tc, failedRoleSetupKeepsMethods);
 #endif

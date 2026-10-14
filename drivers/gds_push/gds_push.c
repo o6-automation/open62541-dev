@@ -8,9 +8,9 @@
  */
 
 #include <open62541/plugin/certificategroup_default.h>
-#include "gds_receiver_internal.h"
+#include "gds_push_internal.h"
 
-#ifdef UA_ENABLE_DRIVER_GDS_RECEIVER
+#ifdef UA_ENABLE_DRIVER_GDS_PUSH
 
 #include "open62541_queue.h"
 
@@ -67,7 +67,7 @@ typedef struct ChannelMetadata {
     UA_ByteString certificate;
 } ChannelMetadata;
 
-struct UA_GDSReceiverContext {
+struct UA_GDSPushContext {
     UA_Driver drv;
     UA_Boolean initialized;
     UA_GDSTransaction transaction;
@@ -76,7 +76,7 @@ struct UA_GDSReceiverContext {
     UA_UInt64 checkSessionCallbackId;
     size_t pendingDelayedCallbacks;
     /* The CertificateType slots of the DefaultApplicationGroup. They are
-     * updated when the receiver starts. */
+     * updated when the driver starts. */
     size_t serverSlotsSize;
     UA_GDSCertificateSlot *serverSlots;
 };
@@ -117,13 +117,13 @@ UA_GDSCertificateSlots_delete(UA_GDSCertificateSlot *slots, size_t slotsSize) {
 }
 
 UA_GDSCertificateSlot *
-UA_GDSReceiver_serverSlots(UA_GDSReceiverContext *ctx, size_t *slotsSize) {
+UA_GDSPush_serverSlots(UA_GDSPushContext *ctx, size_t *slotsSize) {
     *slotsSize = ctx->serverSlotsSize;
     return ctx->serverSlots;
 }
 
 static UA_StatusCode
-UA_GDSReceiver_applyChanges(UA_GDSReceiverContext *ctx);
+UA_GDSPush_applyChanges(UA_GDSPushContext *ctx);
 
 static UA_FileContext*
 getFileContext(UA_FileInfo *fileInfo, const UA_NodeId *sessionId,
@@ -414,7 +414,7 @@ UA_GDSTransaction_clear(UA_GDSTransaction *transaction) {
 /********************/
 
 static UA_FileInfo *
-UA_GDSReceiver_getFileInfo(UA_GDSReceiverContext *ctx,
+UA_GDSPush_getFileInfo(UA_GDSPushContext *ctx,
                           UA_NodeId certificateGroupId) {
     UA_FileInfo *fi = (UA_FileInfo*)ctx->fileInfos;
     while(fi) {
@@ -443,7 +443,7 @@ isWriteHandle(const UA_FileContext *fileContext) {
 /* Is a TrustList open for writing? A NULL fileInfo checks all TrustLists, a
  * NULL sessionId all Sessions. */
 static UA_Boolean
-hasWriteHandle(UA_GDSReceiverContext *ctx, const UA_FileInfo *fileInfo,
+hasWriteHandle(UA_GDSPushContext *ctx, const UA_FileInfo *fileInfo,
                const UA_NodeId *sessionId) {
     for(UA_FileInfo *fi = ctx->fileInfos; fi; fi = fi->next) {
         if(fileInfo && fi != fileInfo)
@@ -460,7 +460,7 @@ hasWriteHandle(UA_GDSReceiverContext *ctx, const UA_FileInfo *fileInfo,
 
 /* Close the write handles of a Session. Their data is discarded. */
 static void
-closeSessionWriteHandles(UA_GDSReceiverContext *ctx, const UA_NodeId *sessionId) {
+closeSessionWriteHandles(UA_GDSPushContext *ctx, const UA_NodeId *sessionId) {
     for(UA_FileInfo *fi = ctx->fileInfos; fi; fi = fi->next) {
         UA_Boolean closed = false;
         UA_FileContext *fileContext, *fileContextTmp;
@@ -471,22 +471,22 @@ closeSessionWriteHandles(UA_GDSReceiverContext *ctx, const UA_NodeId *sessionId)
             UA_FileContext_delete(fi, fileContext);
             closed = true;
         }
-        UA_CertificateGroup *certGroup = getCertGroup(ctx->drv.server,
+        UA_CertificateGroup *certGroup = UA_GDSPush_getCertGroup(ctx->drv.server,
                                                       &fi->certificateGroupId);
         if(closed && certGroup)
-            writeOpenCountVariable(ctx, certGroup);
+            UA_GDSPush_writeOpenCount(ctx, certGroup);
     }
 }
 
 /* Close a write handle and discard its data (Part 12, 7.8.2.5). A transaction
  * without staged changes and without other write handles is closed. */
 static void
-closeWriteHandle(UA_GDSReceiverContext *ctx, UA_CertificateGroup *certGroup,
+closeWriteHandle(UA_GDSPushContext *ctx, UA_CertificateGroup *certGroup,
                  UA_FileInfo *fileInfo, UA_FileContext *fileContext) {
     UA_NodeId sessionId;
     UA_StatusCode res = UA_NodeId_copy(&fileContext->sessionId, &sessionId);
     UA_FileContext_delete(fileInfo, fileContext);
-    writeOpenCountVariable(ctx, certGroup);
+    UA_GDSPush_writeOpenCount(ctx, certGroup);
     if(res != UA_STATUSCODE_GOOD)
         return;
     UA_GDSTransaction *transaction = &ctx->transaction;
@@ -500,7 +500,7 @@ closeWriteHandle(UA_GDSReceiverContext *ctx, UA_CertificateGroup *certGroup,
 }
 
 UA_StatusCode
-UA_GDSReceiver_checkTransaction(UA_GDSReceiverContext *ctx,
+UA_GDSPush_checkTransaction(UA_GDSPushContext *ctx,
                                 const UA_NodeId *sessionId) {
     /* One transaction for one Session at a time (Part 12, 7.10.2) */
     UA_GDSTransaction *transaction = &ctx->transaction;
@@ -517,7 +517,7 @@ UA_GDSReceiver_checkTransaction(UA_GDSReceiverContext *ctx,
  * safely. The plugins report RevocationUnknown and UseNotAllowed before the
  * trust in the Certificate is established. */
 static UA_StatusCode
-verifyCertificate(UA_GDSReceiverContext *ctx, UA_CertificateGroup *group,
+verifyCertificate(UA_GDSPushContext *ctx, UA_CertificateGroup *group,
                   const UA_ByteString *certificate) {
     UA_StatusCode res = group->verifyCertificate(group, certificate);
     if(res == UA_STATUSCODE_BADCERTIFICATETIMEINVALID ||
@@ -532,7 +532,7 @@ verifyCertificate(UA_GDSReceiverContext *ctx, UA_CertificateGroup *group,
 }
 
 UA_StatusCode
-UA_GDSReceiver_validateCertificate(UA_GDSReceiverContext *ctx,
+UA_GDSPush_validateCertificate(UA_GDSPushContext *ctx,
                                    const UA_NodeId *sessionId,
                                    UA_CertificateGroup *certGroup,
                                    const UA_ByteString *certificate) {
@@ -568,7 +568,7 @@ UA_GDSReceiver_validateCertificate(UA_GDSReceiverContext *ctx,
  * Certificates. CA Certificates cannot be verified with the plugin interface.
  * Issuer Certificates are not trusted by themselves. */
 static UA_StatusCode
-verifyTrustList(UA_GDSReceiverContext *ctx, UA_CertificateGroup *group) {
+verifyTrustList(UA_GDSPushContext *ctx, UA_CertificateGroup *group) {
     UA_TrustListDataType trustList;
     UA_TrustListDataType_init(&trustList);
     trustList.specifiedLists = UA_TRUSTLISTMASKS_ALL;
@@ -617,7 +617,7 @@ filterTrustList(UA_TrustListDataType *trustList, UA_UInt32 mask) {
 }
 
 UA_StatusCode
-UA_GDSReceiver_initFileInfos(UA_GDSReceiverContext *ctx, UA_UtcTime lastUpdateTime) {
+UA_GDSPush_initFileInfos(UA_GDSPushContext *ctx, UA_UtcTime lastUpdateTime) {
     UA_FileInfo *fi = (UA_FileInfo*)UA_calloc(1, sizeof(UA_FileInfo));
     if(!fi)
         return UA_STATUSCODE_BADOUTOFMEMORY;
@@ -640,11 +640,11 @@ UA_GDSReceiver_initFileInfos(UA_GDSReceiverContext *ctx, UA_UtcTime lastUpdateTi
 }
 
 UA_StatusCode
-UA_GDSReceiver_getFileInfoMetadata(UA_GDSReceiverContext *ctx,
+UA_GDSPush_getFileInfoMetadata(UA_GDSPushContext *ctx,
                                   const UA_NodeId certificateGroupId,
                                   UA_UInt16 *openCount,
                                   UA_UtcTime *lastUpdateTime) {
-    UA_FileInfo *fi = UA_GDSReceiver_getFileInfo(ctx, certificateGroupId);
+    UA_FileInfo *fi = UA_GDSPush_getFileInfo(ctx, certificateGroupId);
     if(!fi)
         return UA_STATUSCODE_BADNOTFOUND;
     *openCount = fi->openCount;
@@ -653,12 +653,12 @@ UA_GDSReceiver_getFileInfoMetadata(UA_GDSReceiverContext *ctx,
 }
 
 UA_Boolean
-UA_GDSReceiver_transactionPending(UA_GDSReceiverContext *ctx) {
+UA_GDSPush_transactionPending(UA_GDSPushContext *ctx) {
     return ctx->transaction.state != UA_GDSTRANSACTIONSTATE_FRESH;
 }
 
 UA_StatusCode
-UA_GDSReceiver_applyChangesForSession(UA_GDSReceiverContext *ctx,
+UA_GDSPush_applyChangesForSession(UA_GDSPushContext *ctx,
                                      const UA_NodeId *sessionId) {
     /* Part 12, 7.10.9 */
     UA_GDSTransaction *transaction = &ctx->transaction;
@@ -669,11 +669,11 @@ UA_GDSReceiver_applyChangesForSession(UA_GDSReceiverContext *ctx,
         return UA_STATUSCODE_BADNOTHINGTODO;
     if(!UA_NodeId_equal(&transaction->sessionId, sessionId))
         return UA_STATUSCODE_BADSESSIONIDINVALID;
-    return UA_GDSReceiver_applyChanges(ctx);
+    return UA_GDSPush_applyChanges(ctx);
 }
 
 UA_StatusCode
-UA_GDSReceiver_cancelChangesForSession(UA_GDSReceiverContext *ctx,
+UA_GDSPush_cancelChangesForSession(UA_GDSPushContext *ctx,
                                       const UA_NodeId *sessionId) {
     /* Part 12, 7.10.11 */
     UA_GDSTransaction *transaction = &ctx->transaction;
@@ -697,7 +697,7 @@ checkSessionActive(UA_Server *server, void *data) {
     UA_EventLoop *el = sc->eventLoop;
     el->lock(el);
 
-    UA_GDSReceiverContext *ctx = (UA_GDSReceiverContext*)data;
+    UA_GDSPushContext *ctx = (UA_GDSPushContext*)data;
     UA_GDSTransaction *transaction = &ctx->transaction;
     UA_Boolean removingCallback = false;
     if(transaction->state != UA_GDSTRANSACTIONSTATE_FRESH) {
@@ -725,7 +725,7 @@ checkSessionActive(UA_Server *server, void *data) {
         removingCallback = false;
 
         UA_CertificateGroup *certGroup =
-            getCertGroup(server, &fi->certificateGroupId);
+            UA_GDSPush_getCertGroup(server, &fi->certificateGroupId);
         if(!certGroup)
             continue;
 
@@ -750,7 +750,7 @@ checkSessionActive(UA_Server *server, void *data) {
             UA_free(fileContext);
 
             /* Updating OpenCount Variable in the information model */
-            writeOpenCountVariable(ctx, certGroup);
+            UA_GDSPush_writeOpenCount(ctx, certGroup);
         }
     }
 
@@ -763,12 +763,12 @@ checkSessionActive(UA_Server *server, void *data) {
 }
 
 UA_StatusCode
-UA_GDSReceiver_getPositionTrustList(UA_GDSReceiverContext *ctx, UA_CertificateGroup *certGroup,
+UA_GDSPush_getPositionTrustList(UA_GDSPushContext *ctx, UA_CertificateGroup *certGroup,
                                    const UA_NodeId *sessionId, UA_UInt32 fileHandle,
                                    UA_Variant *output) {
     UA_assert(certGroup != NULL);
     UA_FileInfo *fileInfo =
-        UA_GDSReceiver_getFileInfo(ctx, certGroup->certificateGroupId);
+        UA_GDSPush_getFileInfo(ctx, certGroup->certificateGroupId);
     if(!fileInfo)
         return UA_STATUSCODE_BADINTERNALERROR;
 
@@ -781,12 +781,12 @@ UA_GDSReceiver_getPositionTrustList(UA_GDSReceiverContext *ctx, UA_CertificateGr
 }
 
 UA_StatusCode
-UA_GDSReceiver_setPositionTrustList(UA_GDSReceiverContext *ctx, UA_CertificateGroup *certGroup,
+UA_GDSPush_setPositionTrustList(UA_GDSPushContext *ctx, UA_CertificateGroup *certGroup,
                                    const UA_NodeId *sessionId, UA_UInt32 fileHandle,
                                    UA_UInt64 position) {
     UA_assert(certGroup != NULL);
     UA_FileInfo *fileInfo =
-        UA_GDSReceiver_getFileInfo(ctx, certGroup->certificateGroupId);
+        UA_GDSPush_getFileInfo(ctx, certGroup->certificateGroupId);
     if(!fileInfo)
         return UA_STATUSCODE_BADINTERNALERROR;
 
@@ -804,7 +804,7 @@ UA_GDSReceiver_setPositionTrustList(UA_GDSReceiverContext *ctx, UA_CertificateGr
 }
 
 UA_StatusCode
-UA_GDSReceiver_writeTrustList(UA_GDSReceiverContext *ctx, UA_CertificateGroup *certGroup,
+UA_GDSPush_writeTrustList(UA_GDSPushContext *ctx, UA_CertificateGroup *certGroup,
                              const UA_NodeId *sessionId, UA_UInt32 fileHandle,
                              const UA_ByteString data) {
     UA_assert(certGroup != NULL);
@@ -812,7 +812,7 @@ UA_GDSReceiver_writeTrustList(UA_GDSReceiverContext *ctx, UA_CertificateGroup *c
     UA_ServerConfig *sc = UA_Server_getConfig(server);
 
     UA_FileInfo *fileInfo =
-        UA_GDSReceiver_getFileInfo(ctx, certGroup->certificateGroupId);
+        UA_GDSPush_getFileInfo(ctx, certGroup->certificateGroupId);
     if(!fileInfo)
         return UA_STATUSCODE_BADINTERNALERROR;
 
@@ -837,7 +837,7 @@ UA_GDSReceiver_writeTrustList(UA_GDSReceiverContext *ctx, UA_CertificateGroup *c
 }
 
 UA_StatusCode
-UA_GDSReceiver_closeAndUpdateTrustList(UA_GDSReceiverContext *ctx,
+UA_GDSPush_closeAndUpdateTrustList(UA_GDSPushContext *ctx,
                                       UA_CertificateGroup *certGroup,
                                       const UA_NodeId *sessionId,
                                       UA_UInt32 fileHandle,
@@ -847,7 +847,7 @@ UA_GDSReceiver_closeAndUpdateTrustList(UA_GDSReceiverContext *ctx,
 
     UA_GDSTransaction *transaction = &ctx->transaction;
     UA_FileInfo *fileInfo =
-        UA_GDSReceiver_getFileInfo(ctx, certGroup->certificateGroupId);
+        UA_GDSPush_getFileInfo(ctx, certGroup->certificateGroupId);
     if(!fileInfo)
         return UA_STATUSCODE_BADINTERNALERROR;
 
@@ -905,7 +905,7 @@ UA_GDSReceiver_closeAndUpdateTrustList(UA_GDSReceiverContext *ctx,
     UA_TrustListDataType_clear(&trustList);
 
     UA_FileContext_delete(fileInfo, fileContext);
-    writeOpenCountVariable(ctx, certGroup);
+    UA_GDSPush_writeOpenCount(ctx, certGroup);
 
     /* Output arg, indicates that the ApplyChanges Method shall be called before
      * the new trust list will be used. */
@@ -926,14 +926,14 @@ UA_GDSReceiver_closeAndUpdateTrustList(UA_GDSReceiverContext *ctx,
 }
 
 UA_StatusCode
-UA_GDSReceiver_closeTrustList(UA_GDSReceiverContext *ctx,
+UA_GDSPush_closeTrustList(UA_GDSPushContext *ctx,
                              UA_CertificateGroup *certGroup,
                              const UA_NodeId *sessionId,
                              UA_UInt32 fileHandle) {
     UA_assert(certGroup != NULL);
 
     UA_FileInfo *fileInfo =
-        UA_GDSReceiver_getFileInfo(ctx, certGroup->certificateGroupId);
+        UA_GDSPush_getFileInfo(ctx, certGroup->certificateGroupId);
     if(!fileInfo)
         return UA_STATUSCODE_BADINTERNALERROR;
 
@@ -949,18 +949,18 @@ UA_GDSReceiver_closeTrustList(UA_GDSReceiverContext *ctx,
     }
 
     UA_FileContext_delete(fileInfo, fileContext);
-    writeOpenCountVariable(ctx, certGroup);
+    UA_GDSPush_writeOpenCount(ctx, certGroup);
     return UA_STATUSCODE_GOOD;
 }
 
 UA_StatusCode
-UA_GDSReceiver_readTrustList(UA_GDSReceiverContext *ctx, UA_CertificateGroup *certGroup,
+UA_GDSPush_readTrustList(UA_GDSPushContext *ctx, UA_CertificateGroup *certGroup,
                             const UA_NodeId *sessionId, UA_UInt32 fileHandle,
                             UA_Int32 length, UA_Variant *output) {
     UA_assert(certGroup != NULL);
 
     UA_FileInfo *fileInfo =
-        UA_GDSReceiver_getFileInfo(ctx, certGroup->certificateGroupId);
+        UA_GDSPush_getFileInfo(ctx, certGroup->certificateGroupId);
     if(!fileInfo)
         return UA_STATUSCODE_BADINTERNALERROR;
 
@@ -994,7 +994,7 @@ UA_GDSReceiver_readTrustList(UA_GDSReceiverContext *ctx, UA_CertificateGroup *ce
 
 /* TODO: Handle isTrustedCertificate */
 UA_StatusCode
-UA_GDSReceiver_addCertificate(UA_GDSReceiverContext *ctx,
+UA_GDSPush_addCertificate(UA_GDSPushContext *ctx,
                              UA_CertificateGroup *certGroup,
                              UA_ByteString *certificate,
                              const UA_Boolean *isTrustedCertificate) {
@@ -1017,7 +1017,7 @@ UA_GDSReceiver_addCertificate(UA_GDSReceiverContext *ctx,
     /* This method cannot be called if the containing TrustList Object is open
      * (Part 12, 7.8.2.6) */
     UA_FileInfo *fileInfo =
-        UA_GDSReceiver_getFileInfo(ctx, certGroup->certificateGroupId);
+        UA_GDSPush_getFileInfo(ctx, certGroup->certificateGroupId);
     if(!fileInfo)
         return UA_STATUSCODE_BADINTERNALERROR;
     if(hasWriteHandle(ctx, fileInfo, NULL))
@@ -1053,7 +1053,7 @@ UA_GDSReceiver_addCertificate(UA_GDSReceiverContext *ctx,
 
     /* Updating LastUpdateTime Variable in the information model */
     fileInfo->lastUpdateTime = UA_DateTime_now();
-    writeLastUpdateVariable(ctx, certGroup);
+    UA_GDSPush_writeLastUpdateTime(ctx, certGroup);
     return UA_STATUSCODE_GOOD;
 }
 
@@ -1076,7 +1076,7 @@ matchesCurrentKey(UA_ServerConfig *sc, const UA_NodeId *certificateTypeId,
 }
 
 UA_StatusCode
-UA_GDSReceiver_stageCertificateUpdate(UA_GDSReceiverContext *ctx,
+UA_GDSPush_stageCertificateUpdate(UA_GDSPushContext *ctx,
                                 const UA_NodeId *sessionId,
                                 const UA_NodeId *certificateGroupId,
                                 const UA_NodeId *certificateTypeId,
@@ -1087,7 +1087,7 @@ UA_GDSReceiver_stageCertificateUpdate(UA_GDSReceiverContext *ctx,
     UA_ServerConfig *sc = UA_Server_getConfig(server);
 
     /* Another Session has a transaction (Part 12, 7.10.5) */
-    UA_StatusCode retval = UA_GDSReceiver_checkTransaction(ctx, sessionId);
+    UA_StatusCode retval = UA_GDSPush_checkTransaction(ctx, sessionId);
     if(retval != UA_STATUSCODE_GOOD)
         return retval;
 
@@ -1111,7 +1111,7 @@ UA_GDSReceiver_stageCertificateUpdate(UA_GDSReceiverContext *ctx,
         return UA_STATUSCODE_BADCERTIFICATEINVALID;
 
     /* The key of the certificate must fit the certificate type */
-    retval = UA_GDSReceiver_checkCertificateType(certificateTypeId, certificate);
+    retval = UA_GDSPush_checkCertificateType(certificateTypeId, certificate);
     if(retval != UA_STATUSCODE_GOOD)
         return retval;
 
@@ -1157,15 +1157,15 @@ UA_GDSReceiver_stageCertificateUpdate(UA_GDSReceiverContext *ctx,
     }
 
     /* Validate the Certificate with the TrustList (Part 12, 7.10.5) */
-    UA_CertificateGroup *certGroup = getCertGroup(server, certificateGroupId);
+    UA_CertificateGroup *certGroup = UA_GDSPush_getCertGroup(server, certificateGroupId);
     if(!certGroup)
         return UA_STATUSCODE_BADINVALIDARGUMENT;
-    retval = UA_GDSReceiver_validateCertificate(ctx, sessionId, certGroup,
+    retval = UA_GDSPush_validateCertificate(ctx, sessionId, certGroup,
                                                 certificate);
     if(retval != UA_STATUSCODE_GOOD)
         return retval;
 
-    /* A queued ApplyChanges is refused by UA_GDSReceiver_checkTransaction
+    /* A queued ApplyChanges is refused by UA_GDSPush_checkTransaction
      * above, so the change cannot be dropped silently */
     UA_GDSTransaction *transaction = &ctx->transaction;
     UA_Boolean created = false;
@@ -1222,7 +1222,7 @@ String_equal_ignorecase(const UA_String *s1, const UA_String *s2) {
 }
 
 UA_StatusCode
-UA_GDSReceiver_removeCertificate(UA_GDSReceiverContext *ctx,
+UA_GDSPush_removeCertificate(UA_GDSPushContext *ctx,
                                 UA_CertificateGroup *certGroup,
                                 const UA_NodeId *sessionId,
                                 const UA_String *thumbprint,
@@ -1242,7 +1242,7 @@ UA_GDSReceiver_removeCertificate(UA_GDSReceiverContext *ctx,
     /* This Method cannot be called if the containing TrustList Object is open
      * (Part 12, 7.8.2.7) */
     UA_FileInfo *fileInfo =
-        UA_GDSReceiver_getFileInfo(ctx, certGroup->certificateGroupId);
+        UA_GDSPush_getFileInfo(ctx, certGroup->certificateGroupId);
     if(!fileInfo)
         return UA_STATUSCODE_BADINTERNALERROR;
     if(hasWriteHandle(ctx, fileInfo, NULL))
@@ -1372,7 +1372,7 @@ UA_GDSReceiver_removeCertificate(UA_GDSReceiverContext *ctx,
     }
 
     /* Apply */
-    retval = UA_GDSReceiver_applyChanges(ctx);
+    retval = UA_GDSPush_applyChanges(ctx);
 
 cleanup:
     UA_free(validBefore);
@@ -1384,7 +1384,7 @@ cleanup:
 }
 
 UA_StatusCode
-UA_GDSReceiver_getRejectedList(UA_GDSReceiverContext *ctx, size_t outputSize,
+UA_GDSPush_getRejectedList(UA_GDSPushContext *ctx, size_t outputSize,
                               UA_Variant *output) {
     if(outputSize < 1)
         return UA_STATUSCODE_BADARGUMENTSMISSING;
@@ -1493,7 +1493,7 @@ createFileHandleId(UA_FileInfo *fileInfo, UA_UInt32 *fileHandle) {
 }
 
 UA_StatusCode
-UA_GDSReceiver_openTrustListWithMask(UA_GDSReceiverContext *ctx, UA_CertificateGroup *certGroup,
+UA_GDSPush_openTrustListWithMask(UA_GDSPushContext *ctx, UA_CertificateGroup *certGroup,
                                     const UA_NodeId *sessionId, UA_UInt32 mask,
                                     UA_Variant *output) {
     UA_assert(certGroup != NULL);
@@ -1505,7 +1505,7 @@ UA_GDSReceiver_openTrustListWithMask(UA_GDSReceiverContext *ctx, UA_CertificateG
     /* Reading is possible during a transaction, but not while the TrustList is
      * open for writing (Part 12, 7.8.2.5 and Part 20) */
     UA_FileInfo *fileInfo =
-        UA_GDSReceiver_getFileInfo(ctx, certGroup->certificateGroupId);
+        UA_GDSPush_getFileInfo(ctx, certGroup->certificateGroupId);
     if(!fileInfo)
         return UA_STATUSCODE_BADINTERNALERROR;
     if(hasWriteHandle(ctx, fileInfo, NULL))
@@ -1570,7 +1570,7 @@ UA_GDSReceiver_openTrustListWithMask(UA_GDSReceiverContext *ctx, UA_CertificateG
     fileInfo->openCount += 1;
 
     /* Updating OpenCount Variable in the information model */
-    writeOpenCountVariable(ctx, certGroup);
+    UA_GDSPush_writeOpenCount(ctx, certGroup);
 
     LIST_INSERT_HEAD(&fileInfo->fileContext, fileContext, listEntry);
 
@@ -1578,7 +1578,7 @@ UA_GDSReceiver_openTrustListWithMask(UA_GDSReceiverContext *ctx, UA_CertificateG
 }
 
 UA_StatusCode
-UA_GDSReceiver_openTrustList(UA_GDSReceiverContext *ctx, UA_CertificateGroup *certGroup,
+UA_GDSPush_openTrustList(UA_GDSPushContext *ctx, UA_CertificateGroup *certGroup,
                             const UA_NodeId *sessionId, UA_Byte fileOpenMode,
                             UA_Variant *output) {
     UA_assert(certGroup != NULL);
@@ -1593,7 +1593,7 @@ UA_GDSReceiver_openTrustList(UA_GDSReceiverContext *ctx, UA_CertificateGroup *ce
         return UA_STATUSCODE_BADNOTSUPPORTED;
 
     UA_FileInfo *fileInfo =
-        UA_GDSReceiver_getFileInfo(ctx, certGroup->certificateGroupId);
+        UA_GDSPush_getFileInfo(ctx, certGroup->certificateGroupId);
     if(!fileInfo)
         return UA_STATUSCODE_BADINTERNALERROR;
 
@@ -1607,7 +1607,7 @@ UA_GDSReceiver_openTrustList(UA_GDSReceiverContext *ctx, UA_CertificateGroup *ce
     } else {
         /* Continue the transaction of the Session or create a new one
          * (Part 12, 7.8.2.2) */
-        retval = UA_GDSReceiver_checkTransaction(ctx, sessionId);
+        retval = UA_GDSPush_checkTransaction(ctx, sessionId);
         if(retval != UA_STATUSCODE_GOOD)
             return retval;
         if(fileInfo->openCount != 0)
@@ -1664,7 +1664,7 @@ UA_GDSReceiver_openTrustList(UA_GDSReceiverContext *ctx, UA_CertificateGroup *ce
     LIST_INSERT_HEAD(&fileInfo->fileContext, fileContext, listEntry);
 
     /* Updating OpenCount Variable in the information model */
-    writeOpenCountVariable(ctx, certGroup);
+    UA_GDSPush_writeOpenCount(ctx, certGroup);
     return UA_STATUSCODE_GOOD;
 
  errout:
@@ -1681,7 +1681,7 @@ UA_GDSReceiver_openTrustList(UA_GDSReceiverContext *ctx, UA_CertificateGroup *ce
 
 static void
 secureChannel_delayedClose(void *application, void *context) {
-    UA_GDSReceiverContext *ctx = (UA_GDSReceiverContext*)context;
+    UA_GDSPushContext *ctx = (UA_GDSPushContext*)context;
     UA_Server *server = ctx->drv.server;
     UA_ServerConfig *sc = UA_Server_getConfig(server);
     UA_GDSTransactionChanges *changes = (UA_GDSTransactionChanges*)application;
@@ -1745,7 +1745,7 @@ getSecPolicyByUri(UA_ServerConfig *sc, const UA_String *securityPolicyUri) {
     return NULL;
 }
 
-/* The ApplicationCertificateTypes the receiver can update, in the order of
+/* The ApplicationCertificateTypes the driver can update, in the order of
  * the CertificateTypes Property (Part 12, 7.8.4) */
 static const UA_UInt32 knownCertificateTypes[] = {
     UA_NS0ID_RSAMINAPPLICATIONCERTIFICATETYPE,
@@ -1759,7 +1759,7 @@ static const UA_UInt32 knownCertificateTypes[] = {
 };
 
 UA_StatusCode
-UA_GDSReceiver_checkCertificateType(const UA_NodeId *certificateTypeId,
+UA_GDSPush_checkCertificateType(const UA_NodeId *certificateTypeId,
                                     const UA_ByteString *certificate) {
     UA_StatusCode res =
         UA_CertificateUtils_checkCertificateType(certificate, certificateTypeId);
@@ -1790,7 +1790,7 @@ endpointUsesCertificateType(UA_ServerConfig *sc,
  * an endpoint uses. Pending signing requests of the remaining types are
  * kept. */
 static UA_StatusCode
-updateServerSlots(UA_GDSReceiverContext *ctx) {
+updateServerSlots(UA_GDSPushContext *ctx) {
     UA_ServerConfig *sc = UA_Server_getConfig(ctx->drv.server);
     const size_t knownSize =
         sizeof(knownCertificateTypes) / sizeof(knownCertificateTypes[0]);
@@ -1965,14 +1965,14 @@ commitCertificateUpdate(UA_ServerConfig *sc, UA_GDSCertificateUpdate *update,
 
 typedef struct {
     UA_DelayedCallback dc;
-    UA_GDSReceiverContext *ctx;
+    UA_GDSPushContext *ctx;
     UA_NodeId certificateTypeId;
 } CloseChannelsCallback;
 
 static void
 closeChannelsAfterCertificateUpdate(void *application, void *context) {
     CloseChannelsCallback *ccb = (CloseChannelsCallback*)context;
-    UA_GDSReceiverContext *ctx = ccb->ctx;
+    UA_GDSPushContext *ctx = ccb->ctx;
     ChannelMetadata *cm, *cmTmp;
     LIST_FOREACH_SAFE(cm, &ctx->secureChannels, pointers, cmTmp) {
         if(!UA_NodeId_equal(&cm->certificateTypeId, &ccb->certificateTypeId))
@@ -1990,12 +1990,12 @@ closeChannelsAfterCertificateUpdate(void *application, void *context) {
 }
 
 static UA_StatusCode
-updateCertificateLocked(UA_GDSReceiver *receiver,
+updateCertificateLocked(UA_GDSPushDriver *driver,
                         const UA_NodeId certificateGroupId,
                         const UA_NodeId certificateTypeId,
                         const UA_ByteString certificate,
                         const UA_ByteString *privateKey) {
-    UA_GDSReceiverContext *ctx = (UA_GDSReceiverContext*)receiver;
+    UA_GDSPushContext *ctx = (UA_GDSPushContext*)driver;
     if(ctx->drv.state != UA_LIFECYCLESTATE_STARTED)
         return UA_STATUSCODE_BADINVALIDSTATE;
     if(ctx->transaction.state == UA_GDSTRANSACTIONSTATE_PENDING)
@@ -2015,7 +2015,7 @@ updateCertificateLocked(UA_GDSReceiver *receiver,
                                     &certificateTypeId))
         return UA_STATUSCODE_BADINVALIDARGUMENT;
     UA_StatusCode typeRes =
-        UA_GDSReceiver_checkCertificateType(&certificateTypeId, &certificate);
+        UA_GDSPush_checkCertificateType(&certificateTypeId, &certificate);
     if(typeRes != UA_STATUSCODE_GOOD)
         return typeRes;
 
@@ -2032,7 +2032,7 @@ updateCertificateLocked(UA_GDSReceiver *receiver,
             return UA_STATUSCODE_BADCERTIFICATEINVALID;
     }
 
-    UA_Server *server = receiver->drv.server;
+    UA_Server *server = driver->drv.server;
     UA_ServerConfig *sc = UA_Server_getConfig(server);
     CloseChannelsCallback *ccb =
         (CloseChannelsCallback*)UA_calloc(1, sizeof(CloseChannelsCallback));
@@ -2064,19 +2064,19 @@ updateCertificateLocked(UA_GDSReceiver *receiver,
 }
 
 UA_StatusCode
-UA_GDSReceiver_updateCertificate(UA_GDSReceiver *receiver,
+UA_GDSPushDriver_updateCertificate(UA_GDSPushDriver *driver,
                                  const UA_NodeId certificateGroupId,
                                  const UA_NodeId certificateTypeId,
                                  const UA_ByteString certificate,
                                  const UA_ByteString *privateKey) {
-    if(!receiver || certificate.length == 0)
+    if(!driver || certificate.length == 0)
         return UA_STATUSCODE_BADINVALIDARGUMENT;
-    if(!receiver->drv.server)
+    if(!driver->drv.server)
         return UA_STATUSCODE_BADINVALIDSTATE;
 
-    UA_ServerConfig *sc = UA_Server_getConfig(receiver->drv.server);
+    UA_ServerConfig *sc = UA_Server_getConfig(driver->drv.server);
     sc->eventLoop->lock(sc->eventLoop);
-    UA_StatusCode res = updateCertificateLocked(receiver, certificateGroupId,
+    UA_StatusCode res = updateCertificateLocked(driver, certificateGroupId,
                                                 certificateTypeId, certificate,
                                                 privateKey);
     sc->eventLoop->unlock(sc->eventLoop);
@@ -2084,14 +2084,14 @@ UA_GDSReceiver_updateCertificate(UA_GDSReceiver *receiver,
 }
 
 static UA_StatusCode
-createSigningRequestLocked(UA_GDSReceiver *receiver,
+createSigningRequestLocked(UA_GDSPushDriver *driver,
                            const UA_NodeId certificateGroupId,
                            const UA_NodeId certificateTypeId,
                            const UA_String *subjectName,
                            const UA_Boolean *regenerateKey,
                            const UA_ByteString *nonce,
                            UA_ByteString *csr) {
-    UA_GDSReceiverContext *ctx = (UA_GDSReceiverContext*)receiver;
+    UA_GDSPushContext *ctx = (UA_GDSPushContext*)driver;
     if(ctx->drv.state != UA_LIFECYCLESTATE_STARTED)
         return UA_STATUSCODE_BADINVALIDSTATE;
 
@@ -2105,7 +2105,7 @@ createSigningRequestLocked(UA_GDSReceiver *receiver,
 
     /* Without a SecurityPolicy for the certificate type, no CSR would be
      * created */
-    UA_ServerConfig *sc = UA_Server_getConfig(receiver->drv.server);
+    UA_ServerConfig *sc = UA_Server_getConfig(driver->drv.server);
     UA_GDSCertificateSlot *slot =
         UA_GDSCertificateSlots_find(ctx->serverSlots, ctx->serverSlotsSize,
                                     &certificateTypeId);
@@ -2180,29 +2180,29 @@ cleanup:
 }
 
 UA_StatusCode
-UA_GDSReceiver_createSigningRequest(UA_GDSReceiver *receiver,
+UA_GDSPushDriver_createSigningRequest(UA_GDSPushDriver *driver,
                                     const UA_NodeId certificateGroupId,
                                     const UA_NodeId certificateTypeId,
                                     const UA_String *subjectName,
                                     const UA_Boolean *regenerateKey,
                                     const UA_ByteString *nonce,
                                     UA_ByteString *csr) {
-    if(!receiver || !csr)
+    if(!driver || !csr)
         return UA_STATUSCODE_BADINVALIDARGUMENT;
-    if(!receiver->drv.server)
+    if(!driver->drv.server)
         return UA_STATUSCODE_BADINVALIDSTATE;
 
-    UA_ServerConfig *sc = UA_Server_getConfig(receiver->drv.server);
+    UA_ServerConfig *sc = UA_Server_getConfig(driver->drv.server);
     sc->eventLoop->lock(sc->eventLoop);
     UA_StatusCode res = createSigningRequestLocked(
-        receiver, certificateGroupId, certificateTypeId, subjectName,
+        driver, certificateGroupId, certificateTypeId, subjectName,
         regenerateKey, nonce, csr);
     sc->eventLoop->unlock(sc->eventLoop);
     return res;
 }
 
 static UA_StatusCode
-UA_GDSReceiver_applyChanges(UA_GDSReceiverContext *ctx) {
+UA_GDSPush_applyChanges(UA_GDSPushContext *ctx) {
     UA_Server *server = ctx->drv.server;
     UA_ServerConfig *sc = UA_Server_getConfig(server);
     UA_GDSTransaction *transaction = &ctx->transaction;
@@ -2220,12 +2220,12 @@ UA_GDSReceiver_applyChanges(UA_GDSReceiverContext *ctx) {
     for(size_t i = 0; i < transaction->certificateInfosSize; i++) {
         UA_GDSCertificateInfo *certInfo = &transaction->certificateInfos[i];
         UA_CertificateGroup *liveGroup =
-            getCertGroup(server, &certInfo->certificateGroup);
+            UA_GDSPush_getCertGroup(server, &certInfo->certificateGroup);
         if(!liveGroup) {
             UA_GDSTransaction_clear(transaction);
             return UA_STATUSCODE_BADINTERNALERROR;
         }
-        retval = UA_GDSReceiver_validateCertificate(ctx, &transaction->sessionId,
+        retval = UA_GDSPush_validateCertificate(ctx, &transaction->sessionId,
                                                     liveGroup, &certInfo->certificate);
         if(retval != UA_STATUSCODE_GOOD) {
             UA_LOG_WARNING(sc->logging, UA_LOGCATEGORY_SERVER,
@@ -2286,7 +2286,7 @@ UA_GDSReceiver_applyChanges(UA_GDSReceiverContext *ctx) {
      * all trust-list changes if any subsequent operation fails. */
     for(size_t i = 0; i < groupsSize; i++) {
         UA_CertificateGroup *stagedGroup = &transaction->certGroups[i];
-        groups[i] = getCertGroup(server, &stagedGroup->certificateGroupId);
+        groups[i] = UA_GDSPush_getCertGroup(server, &stagedGroup->certificateGroupId);
         if(!groups[i]) {
             retval = UA_STATUSCODE_BADINTERNALERROR;
             goto cleanup;
@@ -2341,10 +2341,10 @@ UA_GDSReceiver_applyChanges(UA_GDSReceiverContext *ctx) {
     /* Publish metadata only after the complete transaction has succeeded. */
     for(size_t i = 0; i < groupsSize; i++) {
         UA_FileInfo *fileInfo =
-            UA_GDSReceiver_getFileInfo(ctx, groups[i]->certificateGroupId);
+            UA_GDSPush_getFileInfo(ctx, groups[i]->certificateGroupId);
         UA_assert(fileInfo != NULL);
         fileInfo->lastUpdateTime = UA_DateTime_now();
-        writeLastUpdateVariable(ctx, groups[i]);
+        UA_GDSPush_writeLastUpdateTime(ctx, groups[i]);
     }
 
     /* Add to the delayed callback list. Will be cleaned up in the next
@@ -2376,7 +2376,7 @@ rollback:
             groups[appliedGroups], &oldTrustLists[appliedGroups]);
         if(rollbackRes != UA_STATUSCODE_GOOD)
             UA_LOG_ERROR(sc->logging, UA_LOGCATEGORY_SERVER,
-                         "Could not roll back a GDS Receiver trust-list update");
+                         "Could not roll back a GDS Push trust-list update");
     }
 
 cleanup:
@@ -2405,7 +2405,7 @@ static void
 secureChannelNotificationCallback(UA_Driver *drv,
                                   UA_ApplicationNotificationType type,
                                   const UA_KeyValueMap payload) {
-    UA_GDSReceiverContext *ctx = (UA_GDSReceiverContext*)drv;
+    UA_GDSPushContext *ctx = (UA_GDSPushContext*)drv;
     if(type == UA_APPLICATIONNOTIFICATIONTYPE_SECURECHANNEL_OPENED) {
         UA_UInt32 channelId = *(const UA_UInt32*)
             UA_KeyValueMap_getScalar(&payload,
@@ -2459,10 +2459,10 @@ secureChannelNotificationCallback(UA_Driver *drv,
 }
 
 static UA_StatusCode
-UA_GDSReceiver_start(UA_Driver *drv) {
-    UA_GDSReceiverContext *ctx = (UA_GDSReceiverContext*)drv;
+UA_GDSPush_start(UA_Driver *drv) {
+    UA_GDSPushContext *ctx = (UA_GDSPushContext*)drv;
 
-    /* The certificate types of the endpoints can change while the receiver is
+    /* The certificate types of the endpoints can change while the driver is
      * stopped */
     UA_StatusCode slotRes = updateServerSlots(ctx);
     if(slotRes != UA_STATUSCODE_GOOD)
@@ -2470,7 +2470,7 @@ UA_GDSReceiver_start(UA_Driver *drv) {
 
     /* Initialize ns0 entries only once */
     if(!ctx->initialized) {
-        UA_StatusCode res = initNS0PushManagement(ctx);
+        UA_StatusCode res = UA_GDSPush_initNS0(ctx);
         if(res != UA_STATUSCODE_GOOD)
             return res;
 #ifdef UA_ENABLE_RBAC
@@ -2478,7 +2478,7 @@ UA_GDSReceiver_start(UA_Driver *drv) {
          * ns0 GDS nodes have been created so the permissions can be applied.
          * The AccessControl plugin can restrict the methods as well. So a
          * failure is only logged. */
-        res = initGDSRolePermissions(drv->server);
+        res = UA_GDSPush_initRolePermissions(drv->server);
         if(res != UA_STATUSCODE_GOOD) {
             UA_ServerConfig *sc = UA_Server_getConfig(drv->server);
             UA_LOG_WARNING(sc->logging, UA_LOGCATEGORY_SERVER,
@@ -2489,7 +2489,7 @@ UA_GDSReceiver_start(UA_Driver *drv) {
 #endif
         ctx->initialized = true;
     } else {
-        UA_StatusCode res = writeServerCertificateTypes(ctx);
+        UA_StatusCode res = UA_GDSPush_writeCertificateTypes(ctx);
         if(res != UA_STATUSCODE_GOOD)
             return res;
     }
@@ -2500,10 +2500,10 @@ UA_GDSReceiver_start(UA_Driver *drv) {
 }
 
 static void
-UA_GDSReceiver_stop(UA_Driver *drv) {
-    UA_GDSReceiverContext *ctx = (UA_GDSReceiverContext*)drv;
+UA_GDSPush_stop(UA_Driver *drv) {
+    UA_GDSPushContext *ctx = (UA_GDSPushContext*)drv;
     if(ctx->initialized) {
-        clearNS0PushManagement(ctx);
+        UA_GDSPush_clearNS0(ctx);
         ctx->initialized = false;
     }
     if(ctx->checkSessionCallbackId != 0) {
@@ -2529,18 +2529,18 @@ UA_GDSReceiver_stop(UA_Driver *drv) {
 }
 
 static UA_StatusCode
-UA_GDSReceiver_free(UA_Driver *drv) {
+UA_GDSPush_free(UA_Driver *drv) {
     if(drv->state != UA_LIFECYCLESTATE_STOPPED) {
         if(drv->server) {
             UA_ServerConfig *sc = UA_Server_getConfig(drv->server);
             UA_LOG_ERROR(sc->logging, UA_LOGCATEGORY_SERVER,
-                         "Cannot delete the GDS Receiver driver because "
+                         "Cannot delete the GDS Push driver because "
                          "it is not stopped");
         }
         return UA_STATUSCODE_BADINTERNALERROR;
     }
 
-    UA_GDSReceiverContext *ctx = (UA_GDSReceiverContext*)drv;
+    UA_GDSPushContext *ctx = (UA_GDSPushContext*)drv;
     ctx->checkSessionCallbackId = 0;
     UA_GDSTransaction_clear(&ctx->transaction);
     UA_GDSCertificateSlots_delete(ctx->serverSlots, ctx->serverSlotsSize);
@@ -2575,26 +2575,31 @@ UA_GDSReceiver_free(UA_Driver *drv) {
         UA_free(cm);
     }
 
+    UA_KeyValueMap_clear(&drv->params);
     UA_free(drv);
     return UA_STATUSCODE_GOOD;
 }
 
-UA_GDSReceiver *
-UA_GDSReceiver_new(void) {
-    UA_GDSReceiverContext *ctx = (UA_GDSReceiverContext*)UA_calloc(1, sizeof(UA_GDSReceiverContext));
+UA_GDSPushDriver *
+UA_GDSPushDriver_new(const UA_KeyValueMap params) {
+    UA_GDSPushContext *ctx = (UA_GDSPushContext*)UA_calloc(1, sizeof(UA_GDSPushContext));
     if(!ctx)
         return NULL;
+    if(UA_KeyValueMap_copy(&params, &ctx->drv.params) != UA_STATUSCODE_GOOD) {
+        UA_free(ctx);
+        return NULL;
+    }
 
-    ctx->drv.driverType = UA_DRIVERTYPE_GDS_RECEIVER;
-    ctx->drv.name = UA_STRING("gds-receiver");
-    ctx->drv.start = UA_GDSReceiver_start;
-    ctx->drv.stop = UA_GDSReceiver_stop;
-    ctx->drv.free = UA_GDSReceiver_free;
+    ctx->drv.driverType = UA_DRIVERTYPE_GDS_PUSH;
+    ctx->drv.name = UA_STRING("gds-push");
+    ctx->drv.start = UA_GDSPush_start;
+    ctx->drv.stop = UA_GDSPush_stop;
+    ctx->drv.free = UA_GDSPush_free;
 
     ctx->drv.notificationCallback = secureChannelNotificationCallback;
     ctx->drv.notificationFilter = UA_APPLICATIONNOTIFICATIONTYPE_SECURECHANNEL;
 
-    return (UA_GDSReceiver*)ctx;
+    return (UA_GDSPushDriver*)ctx;
 }
 
 #endif

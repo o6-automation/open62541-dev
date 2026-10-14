@@ -158,8 +158,8 @@ option(UA_ENABLE_INLINABLE_EXPORT "Export 'static inline' methods as regular API
 mark_as_advanced(UA_ENABLE_INLINABLE_EXPORT)
 
 # Drivers
-option(UA_ENABLE_DRIVER_GDS_RECEIVER "Enable the GDS Receiver driver" OFF)
-mark_as_advanced(UA_ENABLE_DRIVER_GDS_RECEIVER)
+option(UA_ENABLE_DRIVER_GDS_PUSH "Enable the GDS Push driver" OFF)
+mark_as_advanced(UA_ENABLE_DRIVER_GDS_PUSH)
 option(UA_ENABLE_DRIVER_MDNS_AVAHI "Enable the Avahi mDNS discovery driver" OFF)
 mark_as_advanced(UA_ENABLE_DRIVER_MDNS_AVAHI)
 set(UA_ENABLE_DISCOVERY_MULTICAST_MDNSD OFF)
@@ -1003,14 +1003,14 @@ set(lib_sources ${PROJECT_SOURCE_DIR}/src/ua_types.c
                 ${PROJECT_SOURCE_DIR}/src/server/ua_services_securechannel.c
                 ${PROJECT_SOURCE_DIR}/src/server/ua_services_nodemanagement.c)
 
-if(UA_ENABLE_DRIVER_GDS_RECEIVER)
+if(UA_ENABLE_DRIVER_GDS_PUSH)
     list(APPEND exported_headers
-         ${PROJECT_SOURCE_DIR}/include/open62541/driver/gds_receiver.h)
+         ${PROJECT_SOURCE_DIR}/include/open62541/driver/gds_push.h)
     list(APPEND lib_headers
-         ${PROJECT_SOURCE_DIR}/drivers/gds_receiver/gds_receiver_internal.h)
+         ${PROJECT_SOURCE_DIR}/drivers/gds_push/gds_push_internal.h)
     list(APPEND lib_sources
-         ${PROJECT_SOURCE_DIR}/drivers/gds_receiver/gds_receiver.c
-         ${PROJECT_SOURCE_DIR}/drivers/gds_receiver/gds_receiver_ns0.c)
+         ${PROJECT_SOURCE_DIR}/drivers/gds_push/gds_push.c
+         ${PROJECT_SOURCE_DIR}/drivers/gds_push/gds_push_ns0.c)
 endif()
 
 if(UA_ENABLE_RBAC)
@@ -1562,7 +1562,7 @@ else()
         list(APPEND UA_NS0_DATATYPES ${UA_SCHEMA_DIR}/datatypes_diagnostics.txt)
     endif()
 
-    if(UA_ENABLE_DRIVER_GDS_RECEIVER)
+    if(UA_ENABLE_DRIVER_GDS_PUSH)
         if(NOT UA_NAMESPACE_ZERO STREQUAL "FULL")
             message(FATAL_ERROR "PushManagement needs the full Namespace Zero")
         endif()

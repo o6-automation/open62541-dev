@@ -621,7 +621,7 @@ START_TEST(ReceiveEvents_grantedOnBothPropagates) {
 }
 END_TEST
 
-#if defined(UA_ENABLE_DRIVER_GDS_RECEIVER) && defined(UA_ENABLE_METHODCALLS) && \
+#if defined(UA_ENABLE_DRIVER_GDS_PUSH) && defined(UA_ENABLE_METHODCALLS) && \
     defined(UA_NS0ID_SERVERCONFIGURATION_CERTIFICATEGROUPS_DEFAULTAPPLICATIONGROUP_TRUSTLIST_OPEN)
 /* Applies the SecurityAdmin GDS RolePermissions. In a running server this is
  * invoked from the GDS driver start; the unit test applies it directly. */
@@ -1055,7 +1055,7 @@ static Suite *testSuite(void) {
     tcase_add_test(tc_evt, ReceiveEvents_grantedOnBothPropagates);
     suite_add_tcase(s, tc_evt);
 
-#if defined(UA_ENABLE_DRIVER_GDS_RECEIVER) && defined(UA_ENABLE_METHODCALLS) && \
+#if defined(UA_ENABLE_DRIVER_GDS_PUSH) && defined(UA_ENABLE_METHODCALLS) && \
     defined(UA_NS0ID_SERVERCONFIGURATION_CERTIFICATEGROUPS_DEFAULTAPPLICATIONGROUP_TRUSTLIST_OPEN)
     TCase *tc_gds = tcase_create("GDS SecurityAdmin permissions");
     tcase_add_unchecked_fixture(tc_gds, setup, teardown);

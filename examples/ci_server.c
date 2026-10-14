@@ -8,8 +8,8 @@
 #include <open62541/plugin/securitypolicy.h>
 #include <open62541/server.h>
 
-#ifdef UA_ENABLE_DRIVER_GDS_RECEIVER
-# include <open62541/driver/gds_receiver.h>
+#ifdef UA_ENABLE_DRIVER_GDS_PUSH
+# include <open62541/driver/gds_push.h>
 #endif
 
 #include <stdlib.h>
@@ -457,10 +457,10 @@ int main(int argc, char* argv[]) {
     UA_StatusCode retval = 0;
 
     UA_Server *server = UA_Server_new();
-#ifdef UA_ENABLE_DRIVER_GDS_RECEIVER
-    UA_GDSReceiver *gds_receiver = UA_GDSReceiver_new();
-    if (gds_receiver) {
-        UA_Server_addDriver(server, &gds_receiver->drv);
+#ifdef UA_ENABLE_DRIVER_GDS_PUSH
+    UA_GDSPushDriver *gds_push = UA_GDSPushDriver_new(UA_KEYVALUEMAP_NULL);
+    if (gds_push) {
+        UA_Server_addDriver(server, &gds_push->drv);
     }
 #endif
     UA_ServerConfig *config = UA_Server_getConfig(server);
