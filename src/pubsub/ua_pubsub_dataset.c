@@ -809,7 +809,16 @@ addSubscribedDataSet(UA_PubSubManager *psm,
     psm->subscribedDataSetsSize++;
 
 #ifdef UA_ENABLE_PUBSUB_INFORMATIONMODEL
-    addSubscribedDataSetRepresentation(psm->drv.server, newSubscribedDataSet);
+    /* Without its node the SubscribedDataSet has no valid NodeId */
+    res = addSubscribedDataSetRepresentation(psm->drv.server, newSubscribedDataSet);
+    if(res != UA_STATUSCODE_GOOD) {
+        UA_LOG_ERROR(psm->logging, UA_LOGCATEGORY_PUBSUB,
+                     "SubscribedDataSet creation failed. Adding the "
+                     "information model representation failed with %s",
+                     UA_StatusCode_name(res));
+        UA_SubscribedDataSet_remove(psm, newSubscribedDataSet);
+        return res;
+    }
 #else
     UA_PubSubManager_generateUniqueNodeId(psm, &newSubscribedDataSet->head.identifier);
 #endif
@@ -820,20 +829,27 @@ addSubscribedDataSet(UA_PubSubManager *psm,
     return UA_STATUSCODE_GOOD;
 }
 
-void
+UA_StatusCode
 UA_SubscribedDataSet_remove(UA_PubSubManager *psm, UA_SubscribedDataSet *sds) {
-    /* Search for referenced readers */
-    UA_PubSubConnection *conn;
-    TAILQ_FOREACH(conn, &psm->connections, listEntry) {
-        UA_ReaderGroup *rg;
-        LIST_FOREACH(rg, &conn->readerGroups, listEntry) {
-            UA_DataSetReader *dsr, *tmpReader;
-            LIST_FOREACH_SAFE(dsr, &rg->readers, listEntry, tmpReader) {
-                /* TODO: What if the reader is still operational?
-                 * This should be checked before calling _remove. */
-                if(dsr == sds->connectedReader)
-                    UA_DataSetReader_remove(psm, dsr);
-            }
+    /* The connected DataSetReader is removed with the SubscribedDataSet. It can
+     * only be removed while its ReaderGroup is disabled. The SubscribedDataSet
+     * must not be freed while the reader still points to it. */
+    UA_DataSetReader *dsr = sds->connectedReader;
+    if(dsr) {
+        if(UA_PubSubState_isEnabled(dsr->linkedReaderGroup->head.state)) {
+            UA_LOG_WARNING_PUBSUB(psm->logging, sds,
+                                  "Cannot remove the SubscribedDataSet while "
+                                  "the ReaderGroup of the connected "
+                                  "DataSetReader is enabled");
+            return UA_STATUSCODE_BADINVALIDSTATE;
+        }
+        UA_StatusCode res = UA_DataSetReader_remove(psm, dsr);
+        if(res != UA_STATUSCODE_GOOD) {
+            UA_LOG_WARNING_PUBSUB(psm->logging, sds,
+                                  "Cannot remove the SubscribedDataSet. "
+                                  "Removing the connected DataSetReader "
+                                  "failed with %s", UA_StatusCode_name(res));
+            return res;
         }
     }
 
@@ -849,6 +865,7 @@ UA_SubscribedDataSet_remove(UA_PubSubManager *psm, UA_SubscribedDataSet *sds) {
     UA_SubscribedDataSetConfig_clear(&sds->config);
     UA_PubSubComponentHead_clear(&sds->head);
     UA_free(sds);
+    return UA_STATUSCODE_GOOD;
 }
 
 /**************/
@@ -974,11 +991,8 @@ UA_Server_removeSubscribedDataSet(UA_Server *server, const UA_NodeId sdsId) {
     lockServer(server);
     UA_PubSubManager *psm = getPSM(server);
     UA_SubscribedDataSet *sds = UA_SubscribedDataSet_find(psm, sdsId);
-    UA_StatusCode res = UA_STATUSCODE_BADNOTFOUND;
-    if(sds) {
-        UA_SubscribedDataSet_remove(psm, sds);
-        res = UA_STATUSCODE_GOOD;
-    }
+    UA_StatusCode res = (sds) ?
+        UA_SubscribedDataSet_remove(psm, sds) : UA_STATUSCODE_BADNOTFOUND;
     unlockServer(server);
     return res;
 }
