@@ -3,6 +3,17 @@ refactorings and bug fixes are not reported here.
 
 # Development
 
+### AddDataSetReader no longer creates target Variables
+
+The `ReaderGroupType.AddDataSetReader` information model method maps the
+`TargetVariables` of the new DataSetReader to existing Variables, as defined in
+Part 14. It returns `Bad_NodeIdUnknown` for a target that does not exist and
+`Bad_NodeClassInvalid` for a target that is no Variable, and no reader is
+created then. Before, it added a folder for the DataSet to the Objects folder
+and created the missing target Variables in it. Create the target Variables
+before the reader. The same applies to the readers of
+`PublishSubscribe.AddConnection`.
+
 ### Blocking and asynchronous server shutdown
 
 `UA_Server_run_shutdown` now waits for shutdown to complete even with an external
