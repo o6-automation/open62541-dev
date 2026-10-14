@@ -738,12 +738,11 @@ UA_Server_removeDataSetWriter(UA_Server *server, const UA_NodeId dswId);
  *
  * The SubscribedDataSet has two sub-types called the TargetVariablesType and
  * SubscribedDataSetMirrorType. SubscribedDataSetMirrorType is currently not
- * supported. SubscribedDataSet is set to TargetVariablesType and then the list
- * of target Variables are created in the Subscriber AddressSpace.
- * TargetVariables are a list of variables that are to be added in the
- * Subscriber AddressSpace. It defines a list of Variable mappings between
- * received DataSet fields and added Variables in the Subscriber
- * AddressSpace. */
+ * supported. TargetVariables define a list of mappings between the received
+ * DataSet fields and existing Variables in the Subscriber AddressSpace. The
+ * target Variables are not created by the SDK. The AddDataSetReader method of
+ * the information model rejects targets that do not exist or are no
+ * Variables. */
 
 typedef enum {
     UA_PUBSUB_SDS_TARGET,

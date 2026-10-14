@@ -21,6 +21,7 @@
 #include "check.h"
 #include "thread_wrapper.h"
 
+#include <stdio.h>
 #include <string.h>
 #include <math.h>
 #include <stdlib.h>
@@ -145,6 +146,88 @@ static UA_NodeId addPubSubConnection(void){
     UA_CallMethodRequest_clear(&callMethodRequest);
     UA_CallMethodResult_clear(&result);
     return connectionId;
+}
+
+/* Adds a Variable under the Objects folder as a target for the TargetVariables */
+static void
+addTargetVariable(UA_NodeId id) {
+    char name[32];
+    snprintf(name, sizeof(name), "Target %u", (unsigned)id.identifier.numeric);
+    UA_VariableAttributes attr = UA_VariableAttributes_default;
+    attr.displayName = UA_LOCALIZEDTEXT("", name);
+    attr.accessLevel = UA_ACCESSLEVELMASK_READ | UA_ACCESSLEVELMASK_WRITE;
+    UA_StatusCode res =
+        UA_Server_addVariableNode(server, id, UA_NS0ID(OBJECTSFOLDER),
+                                  UA_NS0ID(ORGANIZES), UA_QUALIFIEDNAME(1, name),
+                                  UA_NS0ID(BASEDATAVARIABLETYPE), attr, NULL, NULL);
+    ck_assert_int_eq(res, UA_STATUSCODE_GOOD);
+}
+
+static UA_NodeId
+addReaderGroup(void) {
+    UA_NodeId connectionId = addPubSubConnection();
+    UA_ReaderGroupConfig config;
+    memset(&config, 0, sizeof(config));
+    config.name = UA_STRING("ReaderGroup");
+    UA_NodeId readerGroupId;
+    UA_StatusCode res =
+        UA_Server_addReaderGroup(server, connectionId, &config, &readerGroupId);
+    ck_assert_int_eq(res, UA_STATUSCODE_GOOD);
+    return readerGroupId;
+}
+
+static size_t
+getReadersCount(UA_NodeId readerGroupId) {
+    lockServer(server);
+    UA_ReaderGroup *rg = UA_ReaderGroup_find(getPSM(server), readerGroupId);
+    size_t readersCount = rg ? rg->readersCount : 0;
+    unlockServer(server);
+    return readersCount;
+}
+
+/* Calls ReaderGroupType.AddDataSetReader for a reader with a single Int32
+ * field and the given SubscribedDataSet */
+static UA_StatusCode
+callAddDataSetReader(UA_NodeId readerGroupId, UA_ExtensionObject subscribedDataSet,
+                     UA_NodeId *readerId) {
+    UA_FieldMetaData field;
+    UA_FieldMetaData_init(&field);
+    field.name = UA_STRING("Counter");
+    field.dataType = UA_TYPES[UA_TYPES_INT32].typeId;
+    field.builtInType = UA_NS0ID_INT32;
+    field.valueRank = UA_VALUERANK_SCALAR;
+
+    UA_UInt16 publisherId = 2234;
+    UA_DataSetReaderDataType reader;
+    UA_DataSetReaderDataType_init(&reader);
+    reader.name = UA_STRING("DataSetReader");
+    UA_Variant_setScalar(&reader.publisherId, &publisherId, &UA_TYPES[UA_TYPES_UINT16]);
+    reader.writerGroupId = 100;
+    reader.dataSetWriterId = 62541;
+    reader.dataSetMetaData.name = UA_STRING("Mapped DataSet");
+    reader.dataSetMetaData.fieldsSize = 1;
+    reader.dataSetMetaData.fields = &field;
+    reader.subscribedDataSet = subscribedDataSet;
+
+    UA_Variant input;
+    UA_Variant_setScalar(&input, &reader, &UA_TYPES[UA_TYPES_DATASETREADERDATATYPE]);
+    UA_CallMethodRequest request;
+    UA_CallMethodRequest_init(&request);
+    request.objectId = readerGroupId;
+    request.methodId = UA_NS0ID(READERGROUPTYPE_ADDDATASETREADER);
+    request.inputArgumentsSize = 1;
+    request.inputArguments = &input;
+
+    UA_CallMethodResult result = UA_Server_call(server, &request);
+    UA_StatusCode res = result.statusCode;
+    if(res == UA_STATUSCODE_GOOD) {
+        ck_assert_uint_eq(result.outputArgumentsSize, 1);
+        ck_assert(UA_Variant_hasScalarType(&result.outputArguments[0],
+                                           &UA_TYPES[UA_TYPES_NODEID]));
+        UA_NodeId_copy((UA_NodeId*)result.outputArguments[0].data, readerId);
+    }
+    UA_CallMethodResult_clear(&result);
+    return res;
 }
 
 START_TEST(AddConnectionValidatesScalarInput) {
@@ -1383,6 +1466,11 @@ START_TEST(AddNewPubSubConnectionWithReaderGroupandDataSetReader){
         pMetaData->fields[3].builtInType = UA_NS0ID_BOOLEAN;
         pMetaData->fields[3].name =  UA_STRING ("BoolToggle");
         pMetaData->fields[3].valueRank = -1; /* scalar */
+        /* TargetVariables map the fields to existing Variables. Create one
+         * Variable per field. Keep the target ids outside the dynamic PubSub
+         * node-id range. */
+        for(size_t i = 0; i < pMetaData->fieldsSize; i++)
+            addTargetVariable(UA_NODEID_NUMERIC(1, (UA_UInt32)i + 60000));
         /* Start with one target more than the metadata describes. This used to
          * read past the fields array while constructing the target nodes. */
         targetVars.targetVariablesSize = 5;
@@ -1390,12 +1478,8 @@ START_TEST(AddNewPubSubConnectionWithReaderGroupandDataSetReader){
             UA_calloc(targetVars.targetVariablesSize, sizeof(UA_FieldTargetDataType));
         UA_ExtensionObject extensionObjectTargetVars;
         for(size_t i = 0; i < targetVars.targetVariablesSize; i++) {
-            /* For creating Targetvariables */
             UA_FieldTargetDataType_init(&targetVars.targetVariables[i]);
             targetVars.targetVariables[i].attributeId  = UA_ATTRIBUTEID_VALUE;
-            /* Keep the explicit target ids outside the dynamic PubSub node-id
-             * range. The old implementation ignored BadNodeIdExists here and
-             * made this test pass with missing target nodes. */
             targetVars.targetVariables[i].targetNodeId =
                 UA_NODEID_NUMERIC(1, (UA_UInt32)i + 60000);
             extensionObjectTargetVars.encoding = UA_EXTENSIONOBJECT_DECODED;
@@ -1446,7 +1530,7 @@ START_TEST(AddNewPubSubConnectionWithReaderGroupandDataSetReader){
 
         /* Retrying the same configuration with matching sizes must succeed.
          * This also verifies that the rejected method call left no partial
-         * connection, group, reader, or target nodes behind. */
+         * connection, group or reader behind. */
         targetVars.targetVariablesSize = pMetaData->fieldsSize;
         response = UA_Client_Service_call(client, callMethodRequestFromClient);
         ck_assert_uint_eq(1, response.results->outputArgumentsSize);
@@ -1511,6 +1595,21 @@ START_TEST(AddNewPubSubConnectionWithReaderGroupandDataSetReader){
                 readerConfig.messageSettings.content.decoded.data;
         ck_assert_uint_eq(storedMessageSettings->dataSetMessageContentMask,
                           UA_UADPDATASETMESSAGECONTENTMASK_SEQUENCENUMBER);
+
+        /* The reader maps to the existing Variables. No folder is created for
+         * the DataSet in the Objects folder. */
+        ck_assert_uint_eq(readerConfig.subscribedDataSet.target.targetVariablesSize,
+                          pMetaData->fieldsSize);
+        for(size_t i = 0; i < pMetaData->fieldsSize; i++) {
+            UA_NodeId expected = UA_NODEID_NUMERIC(1, (UA_UInt32)i + 60000);
+            ck_assert(UA_NodeId_equal(
+                &readerConfig.subscribedDataSet.target.targetVariables[i].targetNodeId,
+                &expected));
+        }
+        UA_NodeId dataSetFolder = findSingleChildNode(
+            UA_QUALIFIEDNAME(1, "DataSet 1"), UA_NS0ID(ORGANIZES),
+            UA_NS0ID(OBJECTSFOLDER));
+        ck_assert(UA_NodeId_isNull(&dataSetFolder));
         UA_DataSetReaderConfig_clear(&readerConfig);
         UA_NodeId_clear(&readerGroupId);
         UA_NodeId_clear(&dataSetReaderId);
@@ -2710,6 +2809,80 @@ START_TEST(RemovalMethodsEnforceParentOwnership) {
     }
 } END_TEST
 
+START_TEST(AddDataSetReaderMapsExistingTargets) {
+    UA_NodeId readerGroupId = addReaderGroup();
+    UA_NodeId targetId = UA_NODEID_NUMERIC(1, 61000);
+    addTargetVariable(targetId);
+
+    UA_FieldTargetDataType target;
+    UA_FieldTargetDataType_init(&target);
+    target.targetNodeId = targetId;
+    target.attributeId = UA_ATTRIBUTEID_VALUE;
+    UA_TargetVariablesDataType targetVars = {1, &target};
+    UA_ExtensionObject subscribedDataSet;
+    UA_ExtensionObject_setValueNoDelete(&subscribedDataSet, &targetVars,
+                                        &UA_TYPES[UA_TYPES_TARGETVARIABLESDATATYPE]);
+
+    UA_NodeId readerId;
+    ck_assert_int_eq(callAddDataSetReader(readerGroupId, subscribedDataSet, &readerId),
+                     UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(getReadersCount(readerGroupId), 1);
+
+    /* The reader writes to the existing Variable */
+    UA_DataSetReaderConfig readerConfig;
+    memset(&readerConfig, 0, sizeof(readerConfig));
+    ck_assert_int_eq(UA_Server_getDataSetReaderConfig(server, readerId, &readerConfig),
+                     UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(readerConfig.subscribedDataSet.target.targetVariablesSize, 1);
+    ck_assert(UA_NodeId_equal(
+        &readerConfig.subscribedDataSet.target.targetVariables[0].targetNodeId,
+        &targetId));
+    UA_DataSetReaderConfig_clear(&readerConfig);
+
+    /* No folder for the DataSet was added to the Objects folder */
+    UA_NodeId dataSetFolder = findSingleChildNode(
+        UA_QUALIFIEDNAME(1, "Mapped DataSet"), UA_NS0ID(ORGANIZES),
+        UA_NS0ID(OBJECTSFOLDER));
+    ck_assert(UA_NodeId_isNull(&dataSetFolder));
+
+    UA_NodeId_clear(&readerId);
+    UA_NodeId_clear(&readerGroupId);
+} END_TEST
+
+START_TEST(AddDataSetReaderRejectsInvalidTargets) {
+    UA_NodeId readerGroupId = addReaderGroup();
+
+    UA_FieldTargetDataType target;
+    UA_FieldTargetDataType_init(&target);
+    target.attributeId = UA_ATTRIBUTEID_VALUE;
+    UA_TargetVariablesDataType targetVars = {1, &target};
+    UA_ExtensionObject subscribedDataSet;
+    UA_ExtensionObject_setValueNoDelete(&subscribedDataSet, &targetVars,
+                                        &UA_TYPES[UA_TYPES_TARGETVARIABLESDATATYPE]);
+
+    /* A missing target is not created */
+    target.targetNodeId = UA_NODEID_NUMERIC(1, 61999);
+    UA_NodeId readerId = UA_NODEID_NULL;
+    ck_assert_int_eq(callAddDataSetReader(readerGroupId, subscribedDataSet, &readerId),
+                     UA_STATUSCODE_BADNODEIDUNKNOWN);
+    ck_assert_uint_eq(getReadersCount(readerGroupId), 0);
+    UA_NodeClass nodeClass;
+    ck_assert_int_eq(UA_Server_readNodeClass(server, target.targetNodeId, &nodeClass),
+                     UA_STATUSCODE_BADNODEIDUNKNOWN);
+
+    /* The target must be a Variable */
+    target.targetNodeId = UA_NS0ID(OBJECTSFOLDER);
+    ck_assert_int_eq(callAddDataSetReader(readerGroupId, subscribedDataSet, &readerId),
+                     UA_STATUSCODE_BADNODECLASSINVALID);
+    ck_assert_uint_eq(getReadersCount(readerGroupId), 0);
+
+    UA_NodeId dataSetFolder = findSingleChildNode(
+        UA_QUALIFIEDNAME(1, "Mapped DataSet"), UA_NS0ID(ORGANIZES),
+        UA_NS0ID(OBJECTSFOLDER));
+    ck_assert(UA_NodeId_isNull(&dataSetFolder));
+    UA_NodeId_clear(&readerGroupId);
+} END_TEST
+
 int main(void) {
     TCase *tc_add_pubsub_informationmodel_methods_connection = tcase_create("PubSub connection delete and creation using the information model methods");
     tcase_add_checked_fixture(tc_add_pubsub_informationmodel_methods_connection, setup, teardown);
@@ -2729,6 +2902,8 @@ int main(void) {
     tcase_add_test(tc_add_pubsub_informationmodel_methods_connection, AddandRemoveNewPubSubConnectionWithWriterGroup);
     tcase_add_test(tc_add_pubsub_informationmodel_methods_connection, AddNewPubSubConnectionWithWriterGroupAndDataSetWriter);
     tcase_add_test(tc_add_pubsub_informationmodel_methods_connection, AddNewPubSubConnectionWithReaderGroupandDataSetReader);
+    tcase_add_test(tc_add_pubsub_informationmodel_methods_connection, AddDataSetReaderMapsExistingTargets);
+    tcase_add_test(tc_add_pubsub_informationmodel_methods_connection, AddDataSetReaderRejectsInvalidTargets);
     tcase_add_test(tc_add_pubsub_informationmodel_methods_connection,
                    AddConnectionRejectsRemotelyReplacedInputArguments);
     tcase_add_test(tc_add_pubsub_informationmodel_methods_connection,
