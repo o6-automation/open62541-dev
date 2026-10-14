@@ -208,6 +208,11 @@ UA_StatusCode
 UA_SubscribedDataSetConfig_copy(const UA_SubscribedDataSetConfig *src,
                                 UA_SubscribedDataSetConfig *dst);
 
+UA_StatusCode
+UA_SubscribedDataSet_create(UA_PubSubManager *psm,
+                            const UA_SubscribedDataSetConfig *sdsConfig,
+                            UA_NodeId *sdsIdentifier);
+
 UA_SubscribedDataSet *
 UA_SubscribedDataSet_find(UA_PubSubManager *psm, const UA_NodeId id);
 

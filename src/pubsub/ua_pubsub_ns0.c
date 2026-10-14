@@ -1836,6 +1836,112 @@ addSubscribedDataSetRepresentation(UA_Server *server,
     return ret;
 }
 
+static UA_StatusCode
+addSubscribedDataSetAction(UA_Server *server,
+                           const UA_NodeId *sessionId, void *sessionContext,
+                           const UA_NodeId *methodId, void *methodContext,
+                           const UA_NodeId *objectId, void *objectContext,
+                           size_t inputSize, const UA_Variant *input,
+                           size_t outputSize, UA_Variant *output) {
+    UA_LOCK_ASSERT(&server->serviceMutex);
+
+    UA_StatusCode res = checkMethodArgumentCounts(inputSize, 1, outputSize, 1);
+    if(res != UA_STATUSCODE_GOOD)
+        return res;
+    if(!UA_Variant_hasScalarType(
+           &input[0], &UA_TYPES[UA_TYPES_STANDALONESUBSCRIBEDDATASETDATATYPE]))
+        return UA_STATUSCODE_BADTYPEMISMATCH;
+    const UA_StandaloneSubscribedDataSetDataType *sdsParams =
+        (const UA_StandaloneSubscribedDataSetDataType*)input[0].data;
+
+    UA_PubSubManager *psm = getPSM(server);
+    if(!psm)
+        return UA_STATUSCODE_BADINTERNALERROR;
+
+    /* The name is the BrowseName of the new Object. The DataSetReaders
+     * reference the SubscribedDataSet by its name. */
+    if(sdsParams->name.length == 0 || sdsParams->name.length > 512)
+        return UA_STATUSCODE_BADINVALIDARGUMENT;
+    if(UA_SubscribedDataSet_findByName(psm, sdsParams->name))
+        return UA_STATUSCODE_BADBROWSENAMEDUPLICATED;
+
+    /* Only the TargetVariables are supported, not the SubscribedDataSetMirror */
+    const UA_ExtensionObject *subscribed = &sdsParams->subscribedDataSet;
+    if(UA_ExtensionObject_hasDecodedType(
+           subscribed, &UA_TYPES[UA_TYPES_SUBSCRIBEDDATASETMIRRORDATATYPE]))
+        return UA_STATUSCODE_BADNOTSUPPORTED;
+    if(!UA_ExtensionObject_hasDecodedType(
+           subscribed, &UA_TYPES[UA_TYPES_TARGETVARIABLESDATATYPE]))
+        return UA_STATUSCODE_BADTYPEMISMATCH;
+    const UA_TargetVariablesDataType *targetVars =
+        (const UA_TargetVariablesDataType*)subscribed->content.decoded.data;
+
+    /* Every field needs a target, as in UA_Server_updateSubscribedDataSetConfig */
+    if(targetVars->targetVariablesSize != sdsParams->dataSetMetaData.fieldsSize)
+        return UA_STATUSCODE_BADINVALIDARGUMENT;
+    res = validateTargetVariables(server, &sdsParams->dataSetMetaData, targetVars);
+    if(res != UA_STATUSCODE_GOOD)
+        return res;
+
+    /* The DataSetFolder path is not used. The SubscribedDataSet is always
+     * added to the SubscribedDataSets folder of PublishSubscribe. */
+    UA_SubscribedDataSetConfig config;
+    memset(&config, 0, sizeof(UA_SubscribedDataSetConfig));
+    config.name = sdsParams->name;
+    config.subscribedDataSetType = UA_PUBSUB_SDS_TARGET;
+    config.subscribedDataSet.target = *targetVars;
+    config.dataSetMetaData = sdsParams->dataSetMetaData;
+    UA_NodeId sdsId;
+    res = UA_SubscribedDataSet_create(psm, &config, &sdsId);
+    if(res != UA_STATUSCODE_GOOD)
+        return res;
+
+    /* Don't keep a SubscribedDataSet whose NodeId the client never receives */
+    res = UA_Variant_setScalarCopy(output, &sdsId, &UA_TYPES[UA_TYPES_NODEID]);
+    if(res != UA_STATUSCODE_GOOD) {
+        UA_SubscribedDataSet *sds = UA_SubscribedDataSet_find(psm, sdsId);
+        if(sds)
+            UA_SubscribedDataSet_remove(psm, sds);
+    }
+    return res;
+}
+
+static UA_StatusCode
+removeSubscribedDataSetAction(UA_Server *server,
+                              const UA_NodeId *sessionId, void *sessionContext,
+                              const UA_NodeId *methodId, void *methodContext,
+                              const UA_NodeId *objectId, void *objectContext,
+                              size_t inputSize, const UA_Variant *input,
+                              size_t outputSize, UA_Variant *output) {
+    UA_LOCK_ASSERT(&server->serviceMutex);
+
+    UA_StatusCode res = checkMethodArgumentCounts(inputSize, 1, outputSize, 0);
+    if(res != UA_STATUSCODE_GOOD)
+        return res;
+    if(!UA_Variant_hasScalarType(&input[0], &UA_TYPES[UA_TYPES_NODEID]))
+        return UA_STATUSCODE_BADTYPEMISMATCH;
+    const UA_NodeId *sdsId = (const UA_NodeId*)input[0].data;
+
+    UA_PubSubManager *psm = getPSM(server);
+    if(!psm)
+        return UA_STATUSCODE_BADINTERNALERROR;
+
+    /* Bad_NodeIdUnknown if the node does not exist, Bad_NodeIdInvalid if it is
+     * no standalone SubscribedDataSet of this folder (Part 14, 9.1.9.4.3) */
+    UA_SubscribedDataSet *sds = UA_SubscribedDataSet_find(psm, *sdsId);
+    if(!sds || !isDirectlyReferencedBy(server, objectId, sdsId,
+                                       UA_NS0ID_HASCOMPONENT)) {
+        const UA_Node *node = UA_NODESTORE_GET(server, sdsId);
+        if(!node)
+            return UA_STATUSCODE_BADNODEIDUNKNOWN;
+        UA_NODESTORE_RELEASE(server, node);
+        return UA_STATUSCODE_BADNODEIDINVALID;
+    }
+
+    /* Removes the connected DataSetReader as well */
+    return UA_SubscribedDataSet_remove(psm, sds);
+}
+
 /**********************************************/
 /*               WriterGroup                  */
 /**********************************************/
@@ -2662,6 +2768,10 @@ initPubSubNS0(UA_Server *server) {
                          UA_NS0ID(HASCOMPONENT), UA_NS0ID(DATASETFOLDERTYPE_REMOVEPUBLISHEDDATASET), true);
         retVal |= addRef(server, UA_NS0ID(PUBLISHSUBSCRIBE_PUBLISHEDDATASETS),
                          UA_NS0ID(HASCOMPONENT), UA_NS0ID(DATASETFOLDERTYPE_REMOVEDATASETFOLDER), true);
+        retVal |= addRef(server, UA_NS0ID(PUBLISHSUBSCRIBE_SUBSCRIBEDDATASETS), UA_NS0ID(HASCOMPONENT),
+                         UA_NS0ID(SUBSCRIBEDDATASETFOLDERTYPE_ADDSUBSCRIBEDDATASET), true);
+        retVal |= addRef(server, UA_NS0ID(PUBLISHSUBSCRIBE_SUBSCRIBEDDATASETS), UA_NS0ID(HASCOMPONENT),
+                         UA_NS0ID(SUBSCRIBEDDATASETFOLDERTYPE_REMOVESUBSCRIBEDDATASET), true);
         retVal |= addRef(server, UA_NS0ID(PUBLISHSUBSCRIBE_STATUS),
                          UA_NS0ID(HASCOMPONENT), UA_NS0ID(PUBSUBSTATUSTYPE_ENABLE), true);
         retVal |= addRef(server, UA_NS0ID(PUBLISHSUBSCRIBE_STATUS),
@@ -2679,6 +2789,8 @@ initPubSubNS0(UA_Server *server) {
         retVal |= setMethodNode_callback(server, UA_NS0ID(DATASETFOLDERTYPE_REMOVEPUBLISHEDDATASET), removePublishedDataSetAction);
         retVal |= setMethodNode_callback(server, UA_NS0ID(PUBLISHEDDATAITEMSTYPE_ADDVARIABLES), addVariablesAction);
         retVal |= setMethodNode_callback(server, UA_NS0ID(PUBLISHEDDATAITEMSTYPE_REMOVEVARIABLES), removeVariablesAction);
+        retVal |= setMethodNode_callback(server, UA_NS0ID(SUBSCRIBEDDATASETFOLDERTYPE_ADDSUBSCRIBEDDATASET), addSubscribedDataSetAction);
+        retVal |= setMethodNode_callback(server, UA_NS0ID(SUBSCRIBEDDATASETFOLDERTYPE_REMOVESUBSCRIBEDDATASET), removeSubscribedDataSetAction);
         retVal |= setMethodNode_callback(server, UA_NS0ID(PUBSUBCONNECTIONTYPE_ADDWRITERGROUP), addWriterGroupAction);
         retVal |= setMethodNode_callback(server, UA_NS0ID(PUBSUBCONNECTIONTYPE_ADDREADERGROUP), addReaderGroupAction);
         retVal |= setMethodNode_callback(server, UA_NS0ID(PUBSUBCONNECTIONTYPE_REMOVEGROUP), removeGroupAction);

@@ -742,7 +742,14 @@ UA_Server_removeDataSetWriter(UA_Server *server, const UA_NodeId dswId);
  * DataSet fields and existing Variables in the Subscriber AddressSpace. The
  * target Variables are not created by the SDK. The AddDataSetReader method of
  * the information model rejects targets that do not exist or are no
- * Variables. */
+ * Variables.
+ *
+ * With the information model methods enabled, the SubscribedDataSets folder of
+ * PublishSubscribe provides the AddSubscribedDataSet and
+ * RemoveSubscribedDataSet methods. AddSubscribedDataSet accepts TargetVariables
+ * with one existing target Variable per field. The DataSetFolder path of the
+ * argument is not used, the SubscribedDataSet is always added to the
+ * SubscribedDataSets folder. */
 
 typedef enum {
     UA_PUBSUB_SDS_TARGET,
