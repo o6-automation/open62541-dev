@@ -475,6 +475,15 @@ UA_GDSPull_applyPendingCertificate(UA_GDSPullContext *ctx,
     return res;
 }
 
+/* Timed callbacks run on the monotonic clock of the EventLoop. It can differ
+ * from UA_DateTime_nowMonotonic (on macOS after a sleep, or with a custom
+ * clock source). */
+static UA_DateTime
+UA_GDSPull_deadline(UA_GDSPullContext *ctx, UA_UInt32 delayMs) {
+    UA_EventLoop *el = UA_Server_getConfig(ctx->drv.server)->eventLoop;
+    return el->dateTime_nowMonotonic(el) + (UA_DateTime)delayMs * UA_DATETIME_MSEC;
+}
+
 /* Defined below. The dispatch loop is cyclic: a workflow step schedules this
  * callback and the callback dispatches the next step. */
 static void
@@ -488,8 +497,7 @@ UA_GDSPull_scheduleDispatch(UA_GDSPullContext *ctx, UA_UInt32 delayMs) {
         return UA_STATUSCODE_BADINVALIDSTATE;
     return UA_Server_addTimedCallback(
         ctx->drv.server, UA_GDSPull_dispatchCallback, ctx,
-        UA_DateTime_nowMonotonic() + (UA_DateTime)delayMs * UA_DATETIME_MSEC,
-        &ctx->dispatchCallbackId);
+        UA_GDSPull_deadline(ctx, delayMs), &ctx->dispatchCallbackId);
 }
 
 static UA_StatusCode
@@ -1949,8 +1957,7 @@ UA_GDSPull_runWorkflow(UA_Server *server, UA_GDSPullContext *ctx) {
     /* The client has not connected yet and can be deleted right away */
     res = UA_Server_addTimedCallback(
         server, UA_GDSPull_cycleTimeoutCallback, ctx,
-        UA_DateTime_nowMonotonic() +
-            (UA_DateTime)ctx->conf.cycleTimeout * UA_DATETIME_MSEC,
+        UA_GDSPull_deadline(ctx, ctx->conf.cycleTimeout),
         &ctx->cycleTimeoutCallbackId);
     if(res != UA_STATUSCODE_GOOD) {
         UA_Client_delete(ctx->client);
