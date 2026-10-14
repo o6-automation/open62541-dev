@@ -230,6 +230,81 @@ callAddDataSetReader(UA_NodeId readerGroupId, UA_ExtensionObject subscribedDataS
     return res;
 }
 
+static size_t
+getSubscribedDataSetsSize(void) {
+    lockServer(server);
+    UA_PubSubManager *psm = getPSM(server);
+    size_t subscribedDataSetsSize = psm ? psm->subscribedDataSetsSize : 0;
+    unlockServer(server);
+    return subscribedDataSetsSize;
+}
+
+/* Calls a method of the SubscribedDataSets folder */
+static UA_StatusCode
+callSubscribedDataSetsMethod(UA_NodeId methodId, UA_Variant input, UA_NodeId *out) {
+    UA_CallMethodRequest request;
+    UA_CallMethodRequest_init(&request);
+    request.objectId = UA_NS0ID(PUBLISHSUBSCRIBE_SUBSCRIBEDDATASETS);
+    request.methodId = methodId;
+    request.inputArgumentsSize = 1;
+    request.inputArguments = &input;
+
+    UA_CallMethodResult result = UA_Server_call(server, &request);
+    UA_StatusCode res = result.statusCode;
+    if(res == UA_STATUSCODE_GOOD && out) {
+        ck_assert_uint_eq(result.outputArgumentsSize, 1);
+        ck_assert(UA_Variant_hasScalarType(&result.outputArguments[0],
+                                           &UA_TYPES[UA_TYPES_NODEID]));
+        UA_NodeId_copy((UA_NodeId*)result.outputArguments[0].data, out);
+    }
+    UA_CallMethodResult_clear(&result);
+    return res;
+}
+
+/* Calls AddSubscribedDataSet with Int32 fields. A target NodeId that is not
+ * null maps all fields to it. */
+static UA_StatusCode
+callAddSubscribedDataSet(const char *name, size_t fieldsSize, size_t targetsSize,
+                         UA_NodeId targetId, UA_NodeId *sdsId) {
+    UA_FieldMetaData fields[2];
+    UA_FieldTargetDataType targets[2];
+    ck_assert(fieldsSize <= 2 && targetsSize <= 2);
+    for(size_t i = 0; i < 2; i++) {
+        UA_FieldMetaData_init(&fields[i]);
+        fields[i].name = UA_STRING("Counter");
+        fields[i].dataType = UA_TYPES[UA_TYPES_INT32].typeId;
+        fields[i].builtInType = UA_NS0ID_INT32;
+        fields[i].valueRank = UA_VALUERANK_SCALAR;
+        UA_FieldTargetDataType_init(&targets[i]);
+        targets[i].targetNodeId = targetId;
+        targets[i].attributeId = UA_ATTRIBUTEID_VALUE;
+    }
+    UA_TargetVariablesDataType targetVars = {targetsSize, targets};
+
+    UA_StandaloneSubscribedDataSetDataType sds;
+    UA_StandaloneSubscribedDataSetDataType_init(&sds);
+    sds.name = UA_STRING((char*)(uintptr_t)name);
+    sds.dataSetMetaData.name = sds.name;
+    sds.dataSetMetaData.fieldsSize = fieldsSize;
+    sds.dataSetMetaData.fields = fields;
+    UA_ExtensionObject_setValueNoDelete(&sds.subscribedDataSet, &targetVars,
+                                        &UA_TYPES[UA_TYPES_TARGETVARIABLESDATATYPE]);
+
+    UA_Variant input;
+    UA_Variant_setScalar(&input, &sds,
+                         &UA_TYPES[UA_TYPES_STANDALONESUBSCRIBEDDATASETDATATYPE]);
+    return callSubscribedDataSetsMethod(
+        UA_NS0ID(SUBSCRIBEDDATASETFOLDERTYPE_ADDSUBSCRIBEDDATASET), input, sdsId);
+}
+
+static UA_StatusCode
+callRemoveSubscribedDataSet(UA_NodeId sdsId) {
+    UA_Variant input;
+    UA_Variant_setScalar(&input, &sdsId, &UA_TYPES[UA_TYPES_NODEID]);
+    return callSubscribedDataSetsMethod(
+        UA_NS0ID(SUBSCRIBEDDATASETFOLDERTYPE_REMOVESUBSCRIBEDDATASET), input, NULL);
+}
+
 START_TEST(AddConnectionValidatesScalarInput) {
     /* Keep all backing storage valid: these checks exercise the callback's
      * input contract directly, without a network request or invalid memory. */
@@ -2883,6 +2958,110 @@ START_TEST(AddDataSetReaderRejectsInvalidTargets) {
     UA_NodeId_clear(&readerGroupId);
 } END_TEST
 
+START_TEST(AddAndRemoveSubscribedDataSetUsingServer) {
+    UA_NodeId targetId = UA_NODEID_NUMERIC(1, 62000);
+    addTargetVariable(targetId);
+
+    UA_NodeId sdsId;
+    ck_assert_int_eq(callAddSubscribedDataSet("Incoming", 1, 1, targetId, &sdsId),
+                     UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(getSubscribedDataSetsSize(), 1);
+    UA_NodeId sdsNode = findSingleChildNode(
+        UA_QUALIFIEDNAME(0, "Incoming"), UA_NS0ID(HASCOMPONENT),
+        UA_NS0ID(PUBLISHSUBSCRIBE_SUBSCRIBEDDATASETS));
+    ck_assert(UA_NodeId_equal(&sdsNode, &sdsId));
+
+    /* The name identifies the SubscribedDataSet */
+    UA_NodeId duplicateId;
+    ck_assert_int_eq(callAddSubscribedDataSet("Incoming", 1, 1, targetId, &duplicateId),
+                     UA_STATUSCODE_BADBROWSENAMEDUPLICATED);
+    ck_assert_uint_eq(getSubscribedDataSetsSize(), 1);
+
+    /* A DataSetReader added with a reference to the SubscribedDataSet is
+     * connected to it */
+    UA_NodeId readerGroupId = addReaderGroup();
+    UA_StandaloneSubscribedDataSetRefDataType ref;
+    UA_StandaloneSubscribedDataSetRefDataType_init(&ref);
+    ref.dataSetName = UA_STRING("Incoming");
+    UA_ExtensionObject subscribedDataSet;
+    UA_ExtensionObject_setValueNoDelete(
+        &subscribedDataSet, &ref, &UA_TYPES[UA_TYPES_STANDALONESUBSCRIBEDDATASETREFDATATYPE]);
+    UA_NodeId readerId;
+    ck_assert_int_eq(callAddDataSetReader(readerGroupId, subscribedDataSet, &readerId),
+                     UA_STATUSCODE_GOOD);
+    lockServer(server);
+    UA_SubscribedDataSet *sds = UA_SubscribedDataSet_find(getPSM(server), sdsId);
+    ck_assert_ptr_ne(sds, NULL);
+    ck_assert_ptr_ne(sds->connectedReader, NULL);
+    unlockServer(server);
+
+    /* Only a SubscribedDataSet can be removed */
+    ck_assert_int_eq(callRemoveSubscribedDataSet(targetId),
+                     UA_STATUSCODE_BADNODEIDINVALID);
+
+    /* Removing the SubscribedDataSet removes the connected reader */
+    ck_assert_int_eq(callRemoveSubscribedDataSet(sdsId), UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(getSubscribedDataSetsSize(), 0);
+    ck_assert_uint_eq(getReadersCount(readerGroupId), 0);
+    UA_NodeId removedNode = findSingleChildNode(
+        UA_QUALIFIEDNAME(0, "Incoming"), UA_NS0ID(HASCOMPONENT),
+        UA_NS0ID(PUBLISHSUBSCRIBE_SUBSCRIBEDDATASETS));
+    ck_assert(UA_NodeId_isNull(&removedNode));
+    ck_assert_int_eq(callRemoveSubscribedDataSet(sdsId),
+                     UA_STATUSCODE_BADNODEIDUNKNOWN);
+
+    UA_NodeId_clear(&readerId);
+    UA_NodeId_clear(&readerGroupId);
+    UA_NodeId_clear(&sdsNode);
+    UA_NodeId_clear(&sdsId);
+} END_TEST
+
+START_TEST(AddSubscribedDataSetRejectsInvalidInput) {
+    UA_NodeId targetId = UA_NODEID_NUMERIC(1, 62000);
+    addTargetVariable(targetId);
+    UA_NodeId sdsId;
+
+    /* The name is required */
+    ck_assert_int_eq(callAddSubscribedDataSet("", 1, 1, targetId, &sdsId),
+                     UA_STATUSCODE_BADINVALIDARGUMENT);
+    /* The targets must exist and be Variables */
+    ck_assert_int_eq(callAddSubscribedDataSet("Incoming", 1, 1,
+                                              UA_NODEID_NUMERIC(1, 62999), &sdsId),
+                     UA_STATUSCODE_BADNODEIDUNKNOWN);
+    ck_assert_int_eq(callAddSubscribedDataSet("Incoming", 1, 1,
+                                              UA_NS0ID(OBJECTSFOLDER), &sdsId),
+                     UA_STATUSCODE_BADNODECLASSINVALID);
+    /* Every field needs a target */
+    ck_assert_int_eq(callAddSubscribedDataSet("Incoming", 2, 1, targetId, &sdsId),
+                     UA_STATUSCODE_BADINVALIDARGUMENT);
+
+    /* The SubscribedDataSetMirror is not supported */
+    UA_SubscribedDataSetMirrorDataType mirror;
+    UA_SubscribedDataSetMirrorDataType_init(&mirror);
+    UA_StandaloneSubscribedDataSetDataType sds;
+    UA_StandaloneSubscribedDataSetDataType_init(&sds);
+    sds.name = UA_STRING("Mirror");
+    UA_ExtensionObject_setValueNoDelete(&sds.subscribedDataSet, &mirror,
+                                        &UA_TYPES[UA_TYPES_SUBSCRIBEDDATASETMIRRORDATATYPE]);
+    UA_Variant input;
+    UA_Variant_setScalar(&input, &sds,
+                         &UA_TYPES[UA_TYPES_STANDALONESUBSCRIBEDDATASETDATATYPE]);
+    ck_assert_int_eq(callSubscribedDataSetsMethod(
+                         UA_NS0ID(SUBSCRIBEDDATASETFOLDERTYPE_ADDSUBSCRIBEDDATASET),
+                         input, &sdsId),
+                     UA_STATUSCODE_BADNOTSUPPORTED);
+
+    /* The Call service rejects an input argument of the wrong DataType */
+    UA_String wrongType = UA_STRING("Incoming");
+    UA_Variant_setScalar(&input, &wrongType, &UA_TYPES[UA_TYPES_STRING]);
+    ck_assert_int_eq(callSubscribedDataSetsMethod(
+                         UA_NS0ID(SUBSCRIBEDDATASETFOLDERTYPE_ADDSUBSCRIBEDDATASET),
+                         input, &sdsId),
+                     UA_STATUSCODE_BADINVALIDARGUMENT);
+
+    ck_assert_uint_eq(getSubscribedDataSetsSize(), 0);
+} END_TEST
+
 int main(void) {
     TCase *tc_add_pubsub_informationmodel_methods_connection = tcase_create("PubSub connection delete and creation using the information model methods");
     tcase_add_checked_fixture(tc_add_pubsub_informationmodel_methods_connection, setup, teardown);
@@ -2904,6 +3083,8 @@ int main(void) {
     tcase_add_test(tc_add_pubsub_informationmodel_methods_connection, AddNewPubSubConnectionWithReaderGroupandDataSetReader);
     tcase_add_test(tc_add_pubsub_informationmodel_methods_connection, AddDataSetReaderMapsExistingTargets);
     tcase_add_test(tc_add_pubsub_informationmodel_methods_connection, AddDataSetReaderRejectsInvalidTargets);
+    tcase_add_test(tc_add_pubsub_informationmodel_methods_connection, AddAndRemoveSubscribedDataSetUsingServer);
+    tcase_add_test(tc_add_pubsub_informationmodel_methods_connection, AddSubscribedDataSetRejectsInvalidInput);
     tcase_add_test(tc_add_pubsub_informationmodel_methods_connection,
                    AddConnectionRejectsRemotelyReplacedInputArguments);
     tcase_add_test(tc_add_pubsub_informationmodel_methods_connection,

@@ -46,6 +46,7 @@ UABinaryFileDataType
 PermissionType
 RolePermissionType
 SubscribedDataSetMirrorDataType
+StandaloneSubscribedDataSetDataType
 SimpleAttributeOperand
 FilterOperator
 ContentFilterElement

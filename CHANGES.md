@@ -110,6 +110,15 @@ Custom `netifInit` callbacks are called once per successfully initialized loop,
 with retries after failure. Stop/start retains the interface. `netifShutdown`
 is called on deletion only after successful initialization.
 
+### Standalone SubscribedDataSets through the information model
+
+The SubscribedDataSets folder of PublishSubscribe implements the
+`AddSubscribedDataSet` and `RemoveSubscribedDataSet` methods of Part 14. A
+client can now create a standalone SubscribedDataSet and reference it in
+`AddDataSetReader` with a `StandaloneSubscribedDataSetRefDataType`. Only
+`TargetVariables` with one existing target Variable per field are accepted.
+`RemoveSubscribedDataSet` removes the connected DataSetReader as well.
+
 ### Removing a SubscribedDataSet removes the connected DataSetReader
 
 `UA_Server_removeSubscribedDataSet` removes the connected DataSetReader together
