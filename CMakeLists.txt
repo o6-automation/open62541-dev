@@ -409,6 +409,9 @@ mark_as_advanced(UA_ENABLE_DETERMINISTIC_RNG)
 option(UA_LWIP_EXTERNAL "LwIP is provided by the parent project" OFF)
 mark_as_advanced(UA_LWIP_EXTERNAL)
 
+option(UA_FREERTOS_EXTERNAL "FreeRTOS is provided by the parent project" OFF)
+mark_as_advanced(UA_FREERTOS_EXTERNAL)
+
 option(UA_MSVC_FORCE_STATIC_CRT "Force linking with the static C-runtime library when compiling to static library with MSVC" ON)
 mark_as_advanced(UA_MSVC_FORCE_STATIC_CRT)
 
@@ -1370,8 +1373,11 @@ elseif(UA_ARCHITECTURE_POSIX OR UA_ENABLE_AMALGAMATION)
     endif()
 endif()
 
-if(UA_ARCHITECTURE_FREERTOS)
-    # Assume the FreeRTOS POSIX "Simulator".
+if(UA_ARCHITECTURE_FREERTOS AND NOT UA_FREERTOS_EXTERNAL)
+    # Assume the FreeRTOS POSIX "Simulator". With UA_FREERTOS_EXTERNAL the
+    # parent project provides FreeRTOS. Only its headers are used then, set
+    # FREERTOS_INCLUDE_DIRS to the kernel includes, the port and the directory
+    # of FreeRTOSConfig.h. The kernel is linked with the application.
     # Change this to directly include the source files if required.
     set(FREERTOS_KERNEL_PATH "~/software/FreeRTOSv202411.00/FreeRTOS/Source" CACHE STRING "")
     set(FREERTOS_PORT_PATH "~/software/FreeRTOSv202411.00/FreeRTOS/Demo/Posix_GCC" CACHE STRING "")
@@ -1786,6 +1792,10 @@ if(UA_ARCHITECTURE_LWIP)
     target_include_directories(open62541-object SYSTEM PRIVATE ${LWIP_INCLUDE_DIRS})
     target_include_directories(open62541-plugins SYSTEM PRIVATE ${LWIP_INCLUDE_DIRS})
 endif()
+if(UA_ARCHITECTURE_FREERTOS AND UA_FREERTOS_EXTERNAL)
+    target_include_directories(open62541-object SYSTEM PRIVATE ${FREERTOS_INCLUDE_DIRS})
+    target_include_directories(open62541-plugins SYSTEM PRIVATE ${FREERTOS_INCLUDE_DIRS})
+endif()
 if(UA_ENABLE_ENCRYPTION_MBEDTLS)
     target_include_directories(open62541-object SYSTEM PRIVATE ${MBEDTLS_INCLUDE_DIRS})
     target_include_directories(open62541-plugins SYSTEM PRIVATE ${MBEDTLS_INCLUDE_DIRS})
@@ -1953,7 +1963,9 @@ endif()
 # export library (either static or shared depending on BUILD_SHARED_LIBS)
 # On the FreeRTOS architecture the open62541 target links against build-only
 # targets (freertos_kernel/freertos_config) that are not part of any export
-# set, so exporting the target fails at configure time. The same applies when
+# set, so exporting the target fails at configure time. With
+# UA_FREERTOS_EXTERNAL the parent project may pass its own lwIP targets in
+# LWIP_LIBRARIES, which are not exported either. The same applies when
 # open62541 is consumed as a Zephyr module: the target then links the
 # Zephyr-provided mbedTLS targets (mbedTLSBase/mbedTLSX509/mbedTLSCrypto),
 # which are likewise not in any export set of ours. Still install the library
