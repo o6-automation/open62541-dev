@@ -110,6 +110,16 @@ Custom `netifInit` callbacks are called once per successfully initialized loop,
 with retries after failure. Stop/start retains the interface. `netifShutdown`
 is called on deletion only after successful initialization.
 
+### Removing a SubscribedDataSet removes the connected DataSetReader
+
+`UA_Server_removeSubscribedDataSet` removes the connected DataSetReader together
+with the standalone SubscribedDataSet. While the ReaderGroup of the connected
+reader is enabled, it returns `Bad_InvalidState` and changes nothing. If the
+reader cannot be removed otherwise, it returns that error. Before, the
+SubscribedDataSet was freed even when removing the reader failed.
+`UA_Server_addSubscribedDataSet` returns an error if the SubscribedDataSet
+cannot be added to the information model.
+
 ### Removing a PublishedDataSet removes the connected DataSetWriters
 
 `UA_Server_removePublishedDataSet` removes the connected DataSetWriters together

@@ -770,6 +770,8 @@ UA_Server_addSubscribedDataSet(UA_Server *server,
                                const UA_SubscribedDataSetConfig *sdsConfig,
                                UA_NodeId *sdsId);
 
+/* Removes the connected DataSetReader as well. Returns Bad_InvalidState and
+ * changes nothing while the ReaderGroup of the connected reader is enabled. */
 UA_EXPORT UA_StatusCode UA_THREADSAFE
 UA_Server_removeSubscribedDataSet(UA_Server *server, const UA_NodeId sdsId);
 

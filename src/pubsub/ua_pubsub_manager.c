@@ -901,7 +901,11 @@ UA_PubSubManager_clear(UA_PubSubManager *psm) {
     /* Delete subscribed datasets */
     UA_SubscribedDataSet *tmpSDS1, *tmpSDS2;
     TAILQ_FOREACH_SAFE(tmpSDS1, &psm->subscribedDataSets, listEntry, tmpSDS2) {
-        UA_SubscribedDataSet_remove(psm, tmpSDS1);
+        UA_StatusCode res = UA_SubscribedDataSet_remove(psm, tmpSDS1);
+        if(res != UA_STATUSCODE_GOOD)
+            UA_LOG_WARNING_PUBSUB(psm->logging, tmpSDS1,
+                                  "The SubscribedDataSet could not be removed (%s)",
+                                  UA_StatusCode_name(res));
     }
 
 #ifdef UA_ENABLE_PUBSUB_SKS

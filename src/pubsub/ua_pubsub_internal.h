@@ -214,7 +214,9 @@ UA_SubscribedDataSet_find(UA_PubSubManager *psm, const UA_NodeId id);
 UA_SubscribedDataSet *
 UA_SubscribedDataSet_findByName(UA_PubSubManager *psm, const UA_String name);
 
-void
+/* Removes the connected DataSetReader as well. Returns Bad_InvalidState and
+ * changes nothing while the ReaderGroup of the connected reader is enabled. */
+UA_StatusCode
 UA_SubscribedDataSet_remove(UA_PubSubManager *psm, UA_SubscribedDataSet *sds);
 
 /**********************************************/

@@ -2084,6 +2084,71 @@ START_TEST(AddAndRemoveReaderUsingDataSet) {
     ck_assert(ssds->connectedReader == NULL);
 } END_TEST
 
+START_TEST(RemoveDataSetRemovesConnectedReader) {
+    UA_PubSubManager *psm = getPSM(server);
+    addTargetVariable();
+
+    UA_FieldMetaData field;
+    UA_FieldMetaData_init(&field);
+    field.dataType = UA_TYPES[UA_TYPES_DATETIME].typeId;
+    field.builtInType = UA_NS0ID_DATETIME;
+    field.name = UA_STRING("subscribedTargetVar");
+    field.valueRank = -1; /* scalar */
+    UA_FieldTargetDataType target;
+    UA_FieldTargetDataType_init(&target);
+    target.attributeId = UA_ATTRIBUTEID_VALUE;
+    target.targetNodeId = UA_NODEID_STRING(1, "demoVar");
+
+    UA_SubscribedDataSetConfig cfg;
+    memset(&cfg, 0, sizeof(UA_SubscribedDataSetConfig));
+    cfg.name = UA_STRING("DemoStandaloneSDS");
+    cfg.dataSetMetaData.name = cfg.name;
+    cfg.dataSetMetaData.fieldsSize = 1;
+    cfg.dataSetMetaData.fields = &field;
+    cfg.subscribedDataSet.target.targetVariablesSize = 1;
+    cfg.subscribedDataSet.target.targetVariables = &target;
+    UA_NodeId sdsId;
+    ck_assert_int_eq(UA_Server_addSubscribedDataSet(server, &cfg, &sdsId),
+                     UA_STATUSCODE_GOOD);
+
+    UA_ReaderGroupConfig readerGroupConfig;
+    memset(&readerGroupConfig, 0, sizeof(UA_ReaderGroupConfig));
+    readerGroupConfig.name = UA_STRING("ReaderGroup Test");
+    ck_assert_int_eq(UA_Server_addReaderGroup(server, connectionId, &readerGroupConfig,
+                                              &readerGroupId), UA_STATUSCODE_GOOD);
+    UA_DataSetReaderConfig readerConfig;
+    memset(&readerConfig, 0, sizeof(UA_DataSetReaderConfig));
+    readerConfig.name = UA_STRING("DataSetReader Test");
+    readerConfig.publisherId.idType = UA_PUBLISHERIDTYPE_UINT16;
+    readerConfig.publisherId.id.uint16 = PUBLISHER_ID;
+    readerConfig.writerGroupId = WRITER_GROUP_ID;
+    readerConfig.dataSetWriterId = DATASET_WRITER_ID;
+    readerConfig.linkedStandaloneSubscribedDataSetName = cfg.name;
+    UA_NodeId readerId;
+    ck_assert_int_eq(UA_Server_addDataSetReader(server, readerGroupId, &readerConfig,
+                                                &readerId), UA_STATUSCODE_GOOD);
+    UA_SubscribedDataSet *sds = UA_SubscribedDataSet_find(psm, sdsId);
+    ck_assert_ptr_ne(sds, NULL);
+    ck_assert_ptr_ne(sds->connectedReader, NULL);
+
+    /* The reader cannot be removed while its ReaderGroup is enabled. So the
+     * SubscribedDataSet is kept. */
+    ck_assert_int_eq(UA_Server_enableReaderGroup(server, readerGroupId),
+                     UA_STATUSCODE_GOOD);
+    ck_assert_int_eq(UA_Server_removeSubscribedDataSet(server, sdsId),
+                     UA_STATUSCODE_BADINVALIDSTATE);
+    ck_assert_ptr_eq(UA_SubscribedDataSet_find(psm, sdsId), sds);
+    ck_assert_ptr_ne(UA_DataSetReader_find(psm, readerId), NULL);
+
+    /* With the ReaderGroup disabled both are removed */
+    ck_assert_int_eq(UA_Server_disableReaderGroup(server, readerGroupId),
+                     UA_STATUSCODE_GOOD);
+    ck_assert_int_eq(UA_Server_removeSubscribedDataSet(server, sdsId),
+                     UA_STATUSCODE_GOOD);
+    ck_assert_ptr_eq(UA_SubscribedDataSet_find(psm, sdsId), NULL);
+    ck_assert_ptr_eq(UA_DataSetReader_find(psm, readerId), NULL);
+} END_TEST
+
 START_TEST(SinglePublishOnDemand) {
         /* To check status after running both publisher and subscriber */
         UA_StatusCode retVal = UA_STATUSCODE_GOOD;
@@ -3374,6 +3439,7 @@ int main(void) {
     TCase *tc_pubsub_datasets = tcase_create("Subscriber using subscribed datasets");
     tcase_add_test(tc_pubsub_publish_subscribe, ValidDataSetConfigurationAddAndRemove);
     tcase_add_test(tc_pubsub_publish_subscribe, AddAndRemoveReaderUsingDataSet);
+    tcase_add_test(tc_pubsub_publish_subscribe, RemoveDataSetRemovesConnectedReader);
 
     TCase *tc_dataSetMessage_padding = tcase_create("PubSub DataSetMessage padding");
     tcase_add_checked_fixture(tc_dataSetMessage_padding, setup, teardown);
