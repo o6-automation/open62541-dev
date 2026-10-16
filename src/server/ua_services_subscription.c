@@ -677,6 +677,17 @@ Operation_TransferSubscription(UA_Server *server, UA_Session *session,
      * diagnostic counter updates when it is deleted */
     sub->wasTransferred = true;
 
+#ifdef UA_ENABLE_DIAGNOSTICS
+    /* The client is identified by the ApplicationUri. A detached Subscription
+     * remembers the one of its last Session. */
+    const UA_String *oldApplicationUri = (oldSession) ?
+        &oldSession->clientDescription.applicationUri : &sub->ownerApplicationUri;
+    if(UA_String_equal(oldApplicationUri, &session->clientDescription.applicationUri))
+        newSub->transferredToSameClientCount++;
+    else
+        newSub->transferredToAltClientCount++;
+#endif
+
     /* Move over the MonitoredItems and adjust the backpointers */
     newSub->monitoredItemsById = sub->monitoredItemsById;
     ZIP_INIT(&sub->monitoredItemsById);
@@ -758,17 +769,7 @@ Operation_TransferSubscription(UA_Server *server, UA_Session *session,
      * fact that we duplicate the subscription and move over the content is just
      * an implementtion detail.
      * server->serverDiagnosticsSummary.currentSubscriptionCount++;
-     * server->serverDiagnosticsSummary.cumulatedSubscriptionCount++;
-     *
-     * Update the diagnostics statistics: */
-#ifdef UA_ENABLE_DIAGNOSTICS
-    if(oldSession &&
-       UA_equal(&oldSession->clientDescription, &session->clientDescription,
-                &UA_TYPES[UA_TYPES_APPLICATIONDESCRIPTION]))
-        sub->transferredToSameClientCount++;
-    else
-        sub->transferredToAltClientCount++;
-#endif
+     * server->serverDiagnosticsSummary.cumulatedSubscriptionCount++; */
 }
 
 UA_Boolean

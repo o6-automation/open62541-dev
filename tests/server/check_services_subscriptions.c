@@ -1384,6 +1384,47 @@ START_TEST(Server_transferSubscription_sameSession) {
 }
 END_TEST
 
+#ifdef UA_ENABLE_DIAGNOSTICS
+static UA_Session *
+createClientSession(const char *applicationUri) {
+    UA_Session *s = createAuthenticatedSession("testuser");
+    lockServer(server);
+    UA_String_clear(&s->clientDescription.applicationUri);
+    s->clientDescription.applicationUri = UA_STRING_ALLOC(applicationUri);
+    unlockServer(server);
+    return s;
+}
+
+/* Part 5, 12.15: The transferred Subscription counts the transfers to another
+ * Session of the same client and to another client */
+START_TEST(Server_transferSubscription_transferCounters) {
+    lockServer(server);
+    UA_String_clear(&session->clientUserIdOfSession);
+    session->clientUserIdOfSession = UA_STRING_ALLOC("testuser");
+    UA_String_clear(&session->clientDescription.applicationUri);
+    session->clientDescription.applicationUri = UA_STRING_ALLOC("urn:client:a");
+    unlockServer(server);
+    createSubscription();
+
+    UA_Session *sameClient = createClientSession("urn:client:a");
+    ck_assert_uint_eq(transferSubscriptionToSession(sameClient), UA_STATUSCODE_GOOD);
+
+    UA_Session *otherClient = createClientSession("urn:client:b");
+    ck_assert_uint_eq(transferSubscriptionToSession(otherClient), UA_STATUSCODE_GOOD);
+
+    lockServer(server);
+    UA_Subscription *sub = UA_Session_getSubscriptionById(otherClient, subscriptionId);
+    UA_UInt32 requests = sub ? sub->transferRequestCount : 0;
+    UA_UInt32 sameClientCount = sub ? sub->transferredToSameClientCount : 0;
+    UA_UInt32 altClientCount = sub ? sub->transferredToAltClientCount : 0;
+    unlockServer(server);
+    ck_assert_ptr_nonnull(sub);
+    ck_assert_uint_eq(requests, 2);
+    ck_assert_uint_eq(sameClientCount, 1);
+    ck_assert_uint_eq(altClientCount, 1);
+}
+END_TEST
+#endif
 
 /* --- Extended coverage tests --- */
 
@@ -2977,6 +3018,9 @@ static Suite* testSuite_Client(void) {
 #endif
     tcase_add_test(tc_server, Server_transferSubscription_anonymous);
     tcase_add_test(tc_server, Server_transferSubscription_sameSession);
+#ifdef UA_ENABLE_DIAGNOSTICS
+    tcase_add_test(tc_server, Server_transferSubscription_transferCounters);
+#endif
     tcase_add_test(tc_server, Server_setTriggering_nothingToDo);
     tcase_add_test(tc_server, Server_setTriggering_invalidSubscription);
     tcase_add_test(tc_server, Server_setTriggering_invalidMonitoredItem);
