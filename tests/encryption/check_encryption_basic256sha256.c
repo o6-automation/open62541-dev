@@ -9,6 +9,7 @@
 #include <open62541/client.h>
 #include <open62541/client_config_default.h>
 #include <open62541/client_highlevel.h>
+#include <open62541/plugin/accesscontrol_default.h>
 #include <open62541/plugin/securitypolicy.h>
 #include <open62541/plugin/securitypolicy_default.h>
 #include <open62541/plugin/certificategroup_default.h>
@@ -27,6 +28,8 @@
 #include "testing_clock.h"
 #include "testing_networklayers.h"
 #include "thread_wrapper.h"
+
+#define BASIC256SHA256_URI "http://opcfoundation.org/UA/SecurityPolicy#Basic256Sha256"
 
 UA_Server *server;
 UA_atomic(uintptr_t) running;
@@ -87,6 +90,14 @@ static void setup(void) {
 
     for(size_t i = 0; i < trustListSize; i++)
         UA_ByteString_clear(&trustList[i]);
+
+    /* Users for the TransferSubscriptions tests */
+    UA_UsernamePasswordLogin logins[2] = {
+        {UA_STRING_STATIC("user1"), UA_STRING_STATIC("password")},
+        {UA_STRING_STATIC("user2"), UA_STRING_STATIC("password1")}};
+    UA_String userTokenPolicyUri = UA_STRING(BASIC256SHA256_URI);
+    ck_assert_uint_eq(UA_AccessControl_default(config, true, &userTokenPolicyUri,
+                                               2, logins), UA_STATUSCODE_GOOD);
 
     UA_Server_run_startup(server);
     THREAD_CREATE(server_thread, serverloop);
@@ -236,6 +247,53 @@ connectAnonymous(UA_Boolean secure) {
     return client;
 }
 
+static UA_Client *
+connectUser(UA_MessageSecurityMode mode, const char *username,
+            const char *password) {
+    UA_Client *client = UA_Client_newForUnitTest();
+    ck_assert(client != NULL);
+    UA_ByteString certificate = {CERT_DER_LENGTH, CERT_DER_DATA};
+    UA_ByteString privateKey = {KEY_DER_LENGTH, KEY_DER_DATA};
+    UA_ClientConfig *cc = UA_Client_getConfig(client);
+    UA_ClientConfig_setDefaultEncryption(cc, certificate, privateKey,
+                                         NULL, 0, NULL, 0);
+    UA_CertificateGroup_AcceptAll(&cc->certificateVerification);
+    cc->securityMode = mode;
+    UA_String_clear(&cc->securityPolicyUri);
+    cc->securityPolicyUri = UA_STRING_ALLOC(BASIC256SHA256_URI);
+    if(username)
+        UA_ClientConfig_setAuthenticationUsername(cc, username, password);
+    ck_assert_uint_eq(UA_Client_connect(client, "opc.tcp://localhost:4840"),
+                      UA_STATUSCODE_GOOD);
+    return client;
+}
+
+static UA_UInt32
+createSubscription(UA_Client *client) {
+    UA_CreateSubscriptionRequest csReq = UA_CreateSubscriptionRequest_default();
+    UA_CreateSubscriptionResponse csResp;
+    UA_CreateSubscriptionResponse_init(&csResp);
+    __UA_Client_Service(client, &csReq, &UA_TYPES[UA_TYPES_CREATESUBSCRIPTIONREQUEST],
+                        &csResp, &UA_TYPES[UA_TYPES_CREATESUBSCRIPTIONRESPONSE]);
+    ck_assert_uint_eq(csResp.responseHeader.serviceResult, UA_STATUSCODE_GOOD);
+    UA_UInt32 subscriptionId = csResp.subscriptionId;
+    UA_CreateSubscriptionResponse_clear(&csResp);
+    return subscriptionId;
+}
+
+static void
+closeSessionKeepSubscriptions(UA_Client *client) {
+    UA_CloseSessionRequest clReq;
+    UA_CloseSessionRequest_init(&clReq);
+    clReq.deleteSubscriptions = false;
+    UA_CloseSessionResponse clResp;
+    UA_CloseSessionResponse_init(&clResp);
+    __UA_Client_Service(client, &clReq, &UA_TYPES[UA_TYPES_CLOSESESSIONREQUEST],
+                        &clResp, &UA_TYPES[UA_TYPES_CLOSESESSIONRESPONSE]);
+    ck_assert_uint_eq(clResp.responseHeader.serviceResult, UA_STATUSCODE_GOOD);
+    UA_CloseSessionResponse_clear(&clResp);
+}
+
 static UA_StatusCode
 transferSubscription(UA_Client *client, UA_UInt32 subscriptionId) {
     UA_TransferSubscriptionsRequest req;
@@ -294,6 +352,59 @@ START_TEST(transfer_detached_subscription_anonymous) {
                       UA_STATUSCODE_GOOD);
     UA_Client_disconnect(client);
     UA_Client_delete(client);
+}
+END_TEST
+/* Part 4, 5.14.7.1: A Session of the same non-anonymous user takes over the
+ * Subscription. Sessions of other users are rejected. Sign is sufficient. */
+START_TEST(transfer_subscription_username_sign) {
+    UA_Client *owner = connectUser(UA_MESSAGESECURITYMODE_SIGN, "user1", "password");
+    UA_UInt32 subscriptionId = createSubscription(owner);
+
+    UA_Client *other = connectUser(UA_MESSAGESECURITYMODE_SIGN, "user2", "password1");
+    ck_assert_uint_eq(transferSubscription(other, subscriptionId),
+                      UA_STATUSCODE_BADUSERACCESSDENIED);
+    UA_Client_disconnect(other);
+    UA_Client_delete(other);
+
+    UA_Client *anonymous = connectAnonymous(true);
+    ck_assert_uint_eq(transferSubscription(anonymous, subscriptionId),
+                      UA_STATUSCODE_BADUSERACCESSDENIED);
+    UA_Client_disconnect(anonymous);
+    UA_Client_delete(anonymous);
+
+    UA_Client *same = connectUser(UA_MESSAGESECURITYMODE_SIGN, "user1", "password");
+    ck_assert_uint_eq(transferSubscription(same, subscriptionId),
+                      UA_STATUSCODE_GOOD);
+    UA_Client_disconnect(same);
+    UA_Client_delete(same);
+
+    UA_Client_disconnect(owner);
+    UA_Client_delete(owner);
+}
+END_TEST
+
+/* The owner closes its Session with DeleteSubscriptions=false. Only a Session
+ * of the same user takes over the detached Subscription. The SecurityMode of
+ * the new Session does not need to match. */
+START_TEST(transfer_detached_subscription_username) {
+    UA_Client *owner = connectUser(UA_MESSAGESECURITYMODE_SIGN, "user1", "password");
+    UA_UInt32 subscriptionId = createSubscription(owner);
+    closeSessionKeepSubscriptions(owner);
+    UA_Client_disconnect(owner);
+    UA_Client_delete(owner);
+
+    UA_Client *other = connectUser(UA_MESSAGESECURITYMODE_SIGN, "user2", "password1");
+    ck_assert_uint_eq(transferSubscription(other, subscriptionId),
+                      UA_STATUSCODE_BADUSERACCESSDENIED);
+    UA_Client_disconnect(other);
+    UA_Client_delete(other);
+
+    UA_Client *same = connectUser(UA_MESSAGESECURITYMODE_SIGNANDENCRYPT,
+                                  "user1", "password");
+    ck_assert_uint_eq(transferSubscription(same, subscriptionId),
+                      UA_STATUSCODE_GOOD);
+    UA_Client_disconnect(same);
+    UA_Client_delete(same);
 }
 END_TEST
 #endif /* UA_ENABLE_SUBSCRIPTIONS */
@@ -422,6 +533,8 @@ static Suite* testSuite_encryption(void) {
     tcase_add_test(tc_encryption, encryption_connect_pem);
 #ifdef UA_ENABLE_SUBSCRIPTIONS
     tcase_add_test(tc_encryption, transfer_detached_subscription_anonymous);
+    tcase_add_test(tc_encryption, transfer_subscription_username_sign);
+    tcase_add_test(tc_encryption, transfer_detached_subscription_username);
 #endif
 #endif /* UA_ENABLE_ENCRYPTION */
     suite_add_tcase(s,tc_encryption);
