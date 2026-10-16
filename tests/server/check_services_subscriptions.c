@@ -1342,6 +1342,49 @@ START_TEST(Server_transferSubscription_anonymous) {
 }
 END_TEST
 
+static UA_StatusCode
+transferSubscriptionToSession(UA_Session *target) {
+    UA_TransferSubscriptionsRequest request;
+    UA_TransferSubscriptionsRequest_init(&request);
+    request.subscriptionIdsSize = 1;
+    request.subscriptionIds = &subscriptionId;
+    UA_TransferSubscriptionsResponse response;
+    UA_TransferSubscriptionsResponse_init(&response);
+    lockServer(server);
+    Service_TransferSubscriptions(server, target, &request, &response);
+    unlockServer(server);
+    ck_assert_uint_eq(response.responseHeader.serviceResult, UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(response.resultsSize, 1);
+    UA_StatusCode res = response.results[0].statusCode;
+    UA_TransferSubscriptionsResponse_clear(&response);
+    return res;
+}
+
+/* Part 4, 5.14.7.4: Bad_NothingToDo if the Subscription already belongs to the
+ * Session that calls TransferSubscriptions */
+START_TEST(Server_transferSubscription_sameSession) {
+    createSubscription();
+    ck_assert_uint_eq(transferSubscriptionToSession(session),
+                      UA_STATUSCODE_BADNOTHINGTODO);
+
+    lockServer(server);
+    UA_Subscription *sub = UA_Session_getSubscriptionById(session, subscriptionId);
+#ifdef UA_ENABLE_DIAGNOSTICS
+    UA_UInt32 requests = sub ? sub->transferRequestCount : 0;
+    UA_UInt32 sameClient = sub ? sub->transferredToSameClientCount : 0;
+    UA_UInt32 altClient = sub ? sub->transferredToAltClientCount : 0;
+#endif
+    unlockServer(server);
+    ck_assert_ptr_nonnull(sub);
+#ifdef UA_ENABLE_DIAGNOSTICS
+    ck_assert_uint_eq(requests, 1);
+    ck_assert_uint_eq(sameClient, 0);
+    ck_assert_uint_eq(altClient, 0);
+#endif
+}
+END_TEST
+
+
 /* --- Extended coverage tests --- */
 
 START_TEST(Server_setTriggering_nothingToDo) {
@@ -2933,6 +2976,7 @@ static Suite* testSuite_Client(void) {
                    Server_diagnosticsRejectLongBrowseNames);
 #endif
     tcase_add_test(tc_server, Server_transferSubscription_anonymous);
+    tcase_add_test(tc_server, Server_transferSubscription_sameSession);
     tcase_add_test(tc_server, Server_setTriggering_nothingToDo);
     tcase_add_test(tc_server, Server_setTriggering_invalidSubscription);
     tcase_add_test(tc_server, Server_setTriggering_invalidMonitoredItem);

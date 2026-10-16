@@ -598,13 +598,10 @@ Operation_TransferSubscription(UA_Server *server, UA_Session *session,
     sub->transferRequestCount++;
 #endif
 
-    /* Is this the same session? Return the sequence numbers and do nothing else. */
+    /* The Session already owns the Subscription */
     UA_Session *oldSession = sub->session;
     if(oldSession == session) {
-        result->statusCode = setTransferredSequenceNumbers(sub, result);
-#ifdef UA_ENABLE_DIAGNOSTICS
-        sub->transferredToSameClientCount++;
-#endif
+        result->statusCode = UA_STATUSCODE_BADNOTHINGTODO;
         return;
     }
 
