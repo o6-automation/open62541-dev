@@ -610,6 +610,7 @@ if(UA_ENABLE_ENCRYPTION)
 
     if(UA_ENABLE_ENCRYPTION_OPENSSL OR UA_ENABLE_ENCRYPTION_MBEDTLS)
         ua_add_test(client/check_client_authentication.c)
+        ua_add_test(encryption/check_cert_validation_steps.c)
     else()
         MESSAGE(WARNING "Certificate authentication with LibreSSL as crypto backend is not supported.")
     endif()
