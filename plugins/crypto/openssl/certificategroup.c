@@ -494,8 +494,30 @@ openSSLCheckCA(X509 *cert) {
     return true;
 }
 
+/* A revocation list is only used if it is currently valid and signed by the
+ * issuer (RFC 5280, 6.3.3). Otherwise it counts as not available. */
+static UA_Boolean
+openSSLCrlUsable(UA_CertificateGroup *cg, X509_CRL *crl, X509 *issuer) {
+    const char *reason = NULL;
+    time_t now = time(NULL);
+    int lastUpdate = ASN1_TIME_cmp_time_t(X509_CRL_get0_lastUpdate(crl), now);
+    const ASN1_TIME *nextUpdate = X509_CRL_get0_nextUpdate(crl); /* optional */
+    if(lastUpdate == 1 || lastUpdate == -2)
+        reason = "is not yet valid";
+    else if(nextUpdate && ASN1_TIME_cmp_time_t(nextUpdate, now) != 1)
+        reason = "has expired";
+    else if(X509_CRL_verify(crl, X509_get0_pubkey(issuer)) != 1)
+        reason = "is not signed by the issuer";
+    if(!reason)
+        return true;
+    UA_LOG_WARNING(cg->logging, UA_LOGCATEGORY_SECURITYPOLICY,
+                   "Ignoring a revocation list that %s", reason);
+    return false;
+}
+
 static UA_StatusCode
-openSSLCheckRevoked(UA_CertificateGroup *cg, MemoryCertStore *ctx, X509 *cert) {
+openSSLCheckRevoked(UA_CertificateGroup *cg, MemoryCertStore *ctx,
+                    X509 *cert, X509 *issuer) {
     const ASN1_INTEGER *sn = X509_get0_serialNumber(cert);
     const X509_NAME *in = X509_get_issuer_name(cert);
     int size = sk_X509_CRL_num(ctx->crls);
@@ -512,7 +534,8 @@ openSSLCheckRevoked(UA_CertificateGroup *cg, MemoryCertStore *ctx, X509 *cert) {
     for(int i = 0; i < size; i++) {
         /* The crl contains a list of serial numbers from the same issuer */
         X509_CRL *crl = sk_X509_CRL_value(ctx->crls, i);
-        if(X509_NAME_cmp(in, X509_CRL_get_issuer(crl)) != 0)
+        if(X509_NAME_cmp(in, X509_CRL_get_issuer(crl)) != 0 ||
+           !openSSLCrlUsable(cg, crl, issuer))
             continue;
         STACK_OF(X509_REVOKED) *rs = X509_CRL_get_REVOKED(crl);
         int rsize = sk_X509_REVOKED_num(rs);
@@ -576,7 +599,7 @@ openSSL_verifyChain(UA_CertificateGroup *cg, MemoryCertStore *ctx, STACK_OF(X509
         }
 
         /* Verification Step: Revocation Check */
-        ret = openSSLCheckRevoked(cg, ctx, cert);
+        ret = openSSLCheckRevoked(cg, ctx, cert, issuer);
         if(depth > 0) {
             if(ret == UA_STATUSCODE_BADCERTIFICATEREVOKED)
                 ret = UA_STATUSCODE_BADCERTIFICATEISSUERREVOKED;
