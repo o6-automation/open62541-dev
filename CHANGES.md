@@ -3,6 +3,37 @@ refactorings and bug fixes are not reported here.
 
 # Development
 
+### Method support is always available
+
+`UA_ENABLE_METHODCALLS` is removed. The Method service set and method APIs are
+always compiled.
+
+### File transfer driver build option
+
+`UA_ENABLE_DRIVER_FILE_TRANSFER` controls the file transfer driver and defaults
+to ON on all architectures. The local filesystem backend supports POSIX and
+Win32; other architectures can supply a custom backend.
+
+### Percentage deadband support is always available
+
+`UA_ENABLE_DA` is removed. Percentage deadband support is always compiled with
+subscriptions, and DataAccess datatypes and the Part 8 subset are always included
+in the reduced namespace zero.
+
+### Discovery is controlled by server configuration
+
+`UA_ENABLE_DISCOVERY` and `UA_ENABLE_DISCOVERY_MULTICAST` are removed. Use
+`UA_ServerConfig.registeredServersEnabled` and `serversOnNetworkEnabled` to
+enable registration management and network discovery services. mDNS announcement
+and browsing require an attached driver, built with
+`UA_ENABLE_DRIVER_MDNS_MDNSD` or `UA_ENABLE_DRIVER_MDNS_AVAHI`.
+
+### Optional UTC-only local time on POSIX
+
+The POSIX CMake option `UA_ARCH_LOCAL_TIME_IS_UTC` (default OFF) makes
+`UA_DateTime_localTimeUtcOffset()` return zero without linking C library timezone
+conversion functions. The stdout logger consequently uses UTC timestamps.
+
 ### Session and subscription diagnostics are named in the server namespace
 
 The per-session objects below `SessionsDiagnosticsSummary` and the
@@ -247,6 +278,19 @@ Use the same definition for the PublisherId everywhere. `UA_PublisherId` is a
 tagged union. Before the Subscriber API used a variant -- which is still used in
 some standard-defined data types. `UA_PublisherId_fromVariant` and
 `UA_PublisherId_toVariant` are provided for the conversion.
+
+### Empty trust list no longer falls back to accept-all
+
+`UA_ClientConfig_setDefaultEncryption()`, `UA_ServerConfig_setDefaultWithSecurityPolicies()`
+and `UA_ServerConfig_setDefaultWithSecureSecurityPolicies()` now always build a
+trust-list-backed certificate verifier, even when called with an empty trust
+list. Previously, an empty trust list left whatever certificate verifier the
+base configuration had already installed in place, which accepts any
+certificate. An empty trust list now results in a verifier that trusts
+nothing, so encrypted connections set up this way will fail certificate
+verification until a non-empty trust list is passed, or a verifying
+certificate group is assigned to `certificateVerification`/`secureChannelPKI`/
+`sessionPKI` afterwards.
 
 # Release 1.4
 

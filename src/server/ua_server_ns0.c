@@ -372,6 +372,21 @@ readStatus(UA_Server *server, const UA_NodeId *sessionId, void *sessionContext,
                 ((server->endTime - el->dateTime_now(el)) / UA_DATETIME_SEC);
         }
 
+#ifdef UA_GENERATED_NAMESPACE_ZERO
+        /* The application sets the reason in the ShutdownReason Variable */
+        UA_ReadValueId rvi;
+        UA_ReadValueId_init(&rvi);
+        rvi.nodeId = UA_NS0ID(SERVER_SERVERSTATUS_SHUTDOWNREASON);
+        rvi.attributeId = UA_ATTRIBUTEID_VALUE;
+        UA_DataValue reason = readWithSession(server, &server->adminSession, &rvi,
+                                              UA_TIMESTAMPSTORETURN_NEITHER);
+        if(UA_Variant_hasScalarType(&reason.value, &UA_TYPES[UA_TYPES_LOCALIZEDTEXT])) {
+            statustype->shutdownReason = *(UA_LocalizedText*)reason.value.data;
+            UA_LocalizedText_init((UA_LocalizedText*)reason.value.data);
+        }
+        UA_DataValue_clear(&reason);
+#endif
+
         value->value.data = statustype;
         value->value.type = &UA_TYPES[UA_TYPES_SERVERSTATUSDATATYPE];
         value->hasValue = true;
@@ -664,7 +679,7 @@ readMinSamplingInterval(UA_Server *server, const UA_NodeId *sessionId, void *ses
 }
 #endif
 
-#if defined(UA_GENERATED_NAMESPACE_ZERO) && defined(UA_ENABLE_METHODCALLS) && defined(UA_ENABLE_SUBSCRIPTIONS)
+#if defined(UA_GENERATED_NAMESPACE_ZERO) && defined(UA_ENABLE_SUBSCRIPTIONS)
 static UA_StatusCode
 resendData(UA_Server *server, const UA_NodeId *sessionId, void *sessionContext,
            const UA_NodeId *methodId, void *methodContext, const UA_NodeId *objectId,
@@ -791,7 +806,7 @@ readMonitoredItems(UA_Server *server, const UA_NodeId *sessionId, void *sessionC
     unlockServer(server);
     return UA_STATUSCODE_GOOD;
 }
-#endif /* defined(UA_ENABLE_METHODCALLS) && defined(UA_ENABLE_SUBSCRIPTIONS) */
+#endif /* UA_GENERATED_NAMESPACE_ZERO && UA_ENABLE_SUBSCRIPTIONS */
 
 static UA_StatusCode
 writeNs0VariableArray(UA_Server *server, UA_UInt32 id, void *v,
@@ -1067,9 +1082,7 @@ configureNS0(UA_Server *server) {
 #ifdef UA_ENABLE_NODEMANAGEMENT
     ADDPROFILEARRAY("http://opcfoundation.org/UA-Profile/Server/NodeManagement");
 #endif
-#ifdef UA_ENABLE_METHODCALLS
     ADDPROFILEARRAY("http://opcfoundation.org/UA-Profile/Server/Methods");
-#endif
     retVal |= writeNs0VariableArray(server, UA_NS0ID_SERVER_SERVERCAPABILITIES_SERVERPROFILEARRAY,
                                     profileArray, profileArraySize, &UA_TYPES[UA_TYPES_STRING]);
 
@@ -1386,7 +1399,7 @@ connectNS0_dataSources(UA_Server *server) {
     retVal |= setVariableNode_callbackValueSource(server, UA_NS0ID(SERVER_SERVERDIAGNOSTICS_SESSIONSDIAGNOSTICSSUMMARY_SESSIONSECURITYDIAGNOSTICSARRAY), sessionSecDiagSummary);
 #endif /* UA_ENABLE_DIAGNOSTICS */
 
-#if defined(UA_ENABLE_METHODCALLS) && defined(UA_ENABLE_SUBSCRIPTIONS)
+#if defined(UA_ENABLE_SUBSCRIPTIONS)
     retVal |= setMethodNode_callback(server, UA_NS0ID(SERVER_GETMONITOREDITEMS), readMonitoredItems);
     retVal |= setMethodNode_callback(server, UA_NS0ID(SERVER_RESENDDATA), resendData);
 #endif

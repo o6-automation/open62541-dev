@@ -21,7 +21,7 @@
 #include <open62541/server_config_default.h>
 
 #include "server/ua_server_internal.h"
-#if defined(UA_ENABLE_DISCOVERY_MULTICAST_MDNSD)
+#if defined(UA_ENABLE_DRIVER_MDNS_MDNSD)
 #include "src_generated/mdnsd/mdnsd.h"
 #include "src_generated/mdnsd/sdtxt.h"
 #endif
@@ -30,11 +30,19 @@
 #include "testing_networklayers.h"
 #include "thread_wrapper.h"
 
-#if defined(UA_ENABLE_DISCOVERY) && \
-    (defined(UA_ENABLE_DISCOVERY_MULTICAST_MDNSD) || \
-     defined(UA_ENABLE_DISCOVERY_MULTICAST_AVAHI))
+/* RegisterServer(2) requires an authenticated SecureChannel. The tests that
+ * register at the LDS therefore need encryption and a client certificate. */
+#if defined(UA_ENABLE_ENCRYPTION_OPENSSL) || defined(UA_ENABLE_ENCRYPTION_MBEDTLS)
+#define DISCOVERY_TEST_AUTHENTICATED_REGISTER
+#include <open62541/plugin/certificategroup_default.h>
+#include <open62541/plugin/create_certificate.h>
+#include <open62541/plugin/log_stdout.h>
+#include "../encryption/certificates.h"
+#endif
 
-#if defined(UA_ENABLE_DISCOVERY_MULTICAST_AVAHI)
+#if defined(UA_ENABLE_DRIVER_MDNS_MDNSD) || defined(UA_ENABLE_DRIVER_MDNS_AVAHI)
+
+#if defined(UA_ENABLE_DRIVER_MDNS_AVAHI)
 # define MDNS_DRIVER_CONSTRUCTOR UA_MdnsDriver_Avahi
 # define MDNS_DRIVER_NAME "discovery-mdns-avahi"
 # define MDNS_DRIVER_SUITE_NAME "Discovery Avahi"
@@ -180,7 +188,7 @@ addDriverInterfaceTests(Suite *s) {
     suite_add_tcase(s, tc_driver);
 }
 
-#if defined(UA_ENABLE_DISCOVERY_MULTICAST_MDNSD)
+#if defined(UA_ENABLE_DRIVER_MDNS_MDNSD)
 
 #define TEST_UDP_CAPTURED_MESSAGES 64
 #define TEST_MDNS_RECV_CONNECTION_ID 100
@@ -1438,6 +1446,37 @@ waitForServerOnNetworkCalls(UA_UInt32 expectedCalls, UA_UInt32 timeoutMs) {
     }
 }
 
+#ifdef DISCOVERY_TEST_AUTHENTICATED_REGISTER
+/* Certificate for the client that registers serverRegister at the LDS. Its
+ * ApplicationUri must match serverRegister's own applicationUri, since that is
+ * the serverUri the LDS checks the certificate against. */
+static UA_ByteString registerCert;
+static UA_ByteString registerKey;
+
+static void
+createRegisterCertificate(void) {
+    UA_String subject[3] = {UA_STRING_STATIC("C=DE"),
+                            UA_STRING_STATIC("O=SampleOrganization"),
+                            UA_STRING_STATIC("CN=Open62541Server@localhost")};
+    UA_String subjectAltName[2] = {
+        UA_STRING_STATIC("DNS:localhost"),
+        UA_STRING_STATIC("URI:urn:open62541.test.server_register_public_api")
+    };
+    UA_KeyValueMap *kvm = UA_KeyValueMap_new();
+    UA_UInt16 expiresIn = 14;
+    UA_KeyValueMap_setScalar(kvm, UA_QUALIFIEDNAME(0, "expires-in-days"),
+                             (void *)&expiresIn, &UA_TYPES[UA_TYPES_UINT16]);
+    UA_UInt16 keyLength = 2048;
+    UA_KeyValueMap_setScalar(kvm, UA_QUALIFIEDNAME(0, "key-size-bits"),
+                             (void *)&keyLength, &UA_TYPES[UA_TYPES_UINT16]);
+    UA_StatusCode status = UA_CreateCertificate(
+        UA_Log_Stdout, subject, 3, subjectAltName, 2,
+        UA_CERTIFICATEFORMAT_DER, kvm, &registerKey, &registerCert);
+    UA_KeyValueMap_delete(kvm);
+    ck_assert_uint_eq(status, UA_STATUSCODE_GOOD);
+}
+#endif
+
 static void
 setup_public_api_servers(void) {
     memset(&discoveryCounters, 0, sizeof(discoveryCounters));
@@ -1449,14 +1488,34 @@ setup_public_api_servers(void) {
 
     UA_ServerConfig ldsConfig;
     memset(&ldsConfig, 0, sizeof(ldsConfig));
+#ifdef DISCOVERY_TEST_AUTHENTICATED_REGISTER
+    createRegisterCertificate();
+
+    /* The LDS needs SecurityPolicies so that the registering client can open
+     * an authenticated SecureChannel */
+    UA_ByteString ldsCertificate;
+    ldsCertificate.length = CERT_DER_LENGTH;
+    ldsCertificate.data = CERT_DER_DATA;
+    UA_ByteString ldsPrivateKey;
+    ldsPrivateKey.length = KEY_DER_LENGTH;
+    ldsPrivateKey.data = KEY_DER_DATA;
+    ck_assert_uint_eq(UA_ServerConfig_setDefaultWithSecurityPolicies(
+                          &ldsConfig, 4840, &ldsCertificate, &ldsPrivateKey,
+                          NULL, 0, NULL, 0, NULL, 0),
+                      UA_STATUSCODE_GOOD);
+    UA_CertificateGroup_AcceptAll(&ldsConfig.secureChannelPKI);
+    UA_CertificateGroup_AcceptAll(&ldsConfig.sessionPKI);
+#else
     ck_assert_uint_eq(UA_ServerConfig_setMinimal(&ldsConfig, 4840, NULL),
                       UA_STATUSCODE_GOOD);
+#endif
     serverLds = UA_Server_newWithConfig(&ldsConfig);
     ck_assert_ptr_ne(serverLds, NULL);
 
     UA_ServerConfig *ldsServerConfig = UA_Server_getConfig(serverLds);
     ldsServerConfig->tcpReuseAddr = true;
     ldsServerConfig->serversOnNetworkEnabled = true;
+    ldsServerConfig->registeredServersEnabled = true;
     ldsServerConfig->applicationDescription.applicationType =
         UA_APPLICATIONTYPE_DISCOVERYSERVER;
     ldsServerConfig->discoveryNotificationCallback =
@@ -1551,12 +1610,30 @@ teardown_public_api_servers(void) {
     testUdpCmRegister = NULL;
     clearTestUdpIntercept(&testUdpInterceptLds);
     clearTestUdpIntercept(&testUdpInterceptRegister);
+#ifdef DISCOVERY_TEST_AUTHENTICATED_REGISTER
+    UA_ByteString_clear(&registerCert);
+    UA_ByteString_clear(&registerKey);
+#endif
 }
 
 static void
 setDiscoveryTestClientDefaults(UA_ClientConfig *cc) {
     UA_ClientConfig_setDefault(cc);
     cc->securityMode = UA_MESSAGESECURITYMODE_NONE;
+}
+
+/* RegisterServer(2) requires the SecureChannel to authenticate the caller with
+ * a certificate */
+static void
+setDiscoveryRegisterClientDefaults(UA_ClientConfig *cc) {
+#ifdef DISCOVERY_TEST_AUTHENTICATED_REGISTER
+    UA_ClientConfig_setDefaultEncryption(cc, registerCert, registerKey,
+                                         NULL, 0, NULL, 0);
+    UA_CertificateGroup_AcceptAll(&cc->certificateVerification);
+    cc->securityMode = UA_MESSAGESECURITYMODE_SIGNANDENCRYPT;
+#else
+    setDiscoveryTestClientDefaults(cc);
+#endif
 }
 
 /* Called with the registering server's background thread stopped. The public
@@ -1577,7 +1654,7 @@ static void
 registerWithLdsPublicApi(void) {
     UA_ClientConfig cc;
     memset(&cc, 0, sizeof(cc));
-    setDiscoveryTestClientDefaults(&cc);
+    setDiscoveryRegisterClientDefaults(&cc);
 
     UA_atomic_store(&runningRegister, false);
     THREAD_JOIN(serverThreadRegister);
@@ -1600,7 +1677,7 @@ static void
 deregisterFromLdsPublicApi(void) {
     UA_ClientConfig cc;
     memset(&cc, 0, sizeof(cc));
-    setDiscoveryTestClientDefaults(&cc);
+    setDiscoveryRegisterClientDefaults(&cc);
 
     UA_atomic_store(&runningRegister, false);
     THREAD_JOIN(serverThreadRegister);
@@ -1944,6 +2021,9 @@ START_TEST(MdnsQueryDetailsSendsSrvQueryForTxtOnly) {
 END_TEST
 
 START_TEST(PublicApiFindServersOnNetworkListsRegisteredServers) {
+#ifndef DISCOVERY_TEST_AUTHENTICATED_REGISTER
+    return; /* RegisterServer(2) needs an authenticated SecureChannel */
+#endif
     const char *expectedServerNames[1];
     const char *capsLds[] = {"LDS"};
     const char *capsNa[] = {"NA"};
@@ -2125,6 +2205,9 @@ START_TEST(MdnsUpdateOnlineOfflineTriggersSendPath) {
 END_TEST
 
 START_TEST(PublicApiRegisterDeregisterCallback) {
+#ifndef DISCOVERY_TEST_AUTHENTICATED_REGISTER
+    return; /* RegisterServer(2) needs an authenticated SecureChannel */
+#endif
     registerWithLdsPublicApi();
     ck_assert(isServerRegisteredAtLds());
 
@@ -2134,6 +2217,9 @@ START_TEST(PublicApiRegisterDeregisterCallback) {
 END_TEST
 
 START_TEST(PublicApiDeregisterDiscoveryKeepsLocalMdnsRecord) {
+#ifndef DISCOVERY_TEST_AUTHENTICATED_REGISTER
+    return; /* RegisterServer(2) needs an authenticated SecureChannel */
+#endif
     registerWithLdsPublicApi();
     ck_assert(isServerRegisteredAtLds());
     ck_assert_uint_eq(countServersOnNetworkByName(serverRegister,
@@ -2582,7 +2668,80 @@ START_TEST(DisabledNetworkRemovalReleasesLock) {
 }
 END_TEST
 
-#endif /* UA_ENABLE_DISCOVERY_MULTICAST_MDNSD */
+/* Two PTR questions (261 and 217 bytes) followed by an AAAA answer whose
+ * name and rdlength are both empty, so the record's fixed 16-byte address
+ * field begins at offset 501 of this 511-byte datagram -- past the end of
+ * any buffer sized to exactly the received length. */
+static const unsigned char truncatedAaaaRecordPacket[] = {
+    0x12, 0x34, 0x84, 0x00, 0x00, 0x02, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00,
+    0x3f, 0x41, 0x41, 0x41, 0x41, 0x41, 0x41, 0x41, 0x41, 0x41, 0x41, 0x41,
+    0x41, 0x41, 0x41, 0x41, 0x41, 0x41, 0x41, 0x41, 0x41, 0x41, 0x41, 0x41,
+    0x41, 0x41, 0x41, 0x41, 0x41, 0x41, 0x41, 0x41, 0x41, 0x41, 0x41, 0x41,
+    0x41, 0x41, 0x41, 0x41, 0x41, 0x41, 0x41, 0x41, 0x41, 0x41, 0x41, 0x41,
+    0x41, 0x41, 0x41, 0x41, 0x41, 0x41, 0x41, 0x41, 0x41, 0x41, 0x41, 0x41,
+    0x41, 0x41, 0x41, 0x41, 0x3f, 0x41, 0x41, 0x41, 0x41, 0x41, 0x41, 0x41,
+    0x41, 0x41, 0x41, 0x41, 0x41, 0x41, 0x41, 0x41, 0x41, 0x41, 0x41, 0x41,
+    0x41, 0x41, 0x41, 0x41, 0x41, 0x41, 0x41, 0x41, 0x41, 0x41, 0x41, 0x41,
+    0x41, 0x41, 0x41, 0x41, 0x41, 0x41, 0x41, 0x41, 0x41, 0x41, 0x41, 0x41,
+    0x41, 0x41, 0x41, 0x41, 0x41, 0x41, 0x41, 0x41, 0x41, 0x41, 0x41, 0x41,
+    0x41, 0x41, 0x41, 0x41, 0x41, 0x41, 0x41, 0x41, 0x3f, 0x41, 0x41, 0x41,
+    0x41, 0x41, 0x41, 0x41, 0x41, 0x41, 0x41, 0x41, 0x41, 0x41, 0x41, 0x41,
+    0x41, 0x41, 0x41, 0x41, 0x41, 0x41, 0x41, 0x41, 0x41, 0x41, 0x41, 0x41,
+    0x41, 0x41, 0x41, 0x41, 0x41, 0x41, 0x41, 0x41, 0x41, 0x41, 0x41, 0x41,
+    0x41, 0x41, 0x41, 0x41, 0x41, 0x41, 0x41, 0x41, 0x41, 0x41, 0x41, 0x41,
+    0x41, 0x41, 0x41, 0x41, 0x41, 0x41, 0x41, 0x41, 0x41, 0x41, 0x41, 0x41,
+    0x3f, 0x41, 0x41, 0x41, 0x41, 0x41, 0x41, 0x41, 0x41, 0x41, 0x41, 0x41,
+    0x41, 0x41, 0x41, 0x41, 0x41, 0x41, 0x41, 0x41, 0x41, 0x41, 0x41, 0x41,
+    0x41, 0x41, 0x41, 0x41, 0x41, 0x41, 0x41, 0x41, 0x41, 0x41, 0x41, 0x41,
+    0x41, 0x41, 0x41, 0x41, 0x41, 0x41, 0x41, 0x41, 0x41, 0x41, 0x41, 0x41,
+    0x41, 0x41, 0x41, 0x41, 0x41, 0x41, 0x41, 0x41, 0x41, 0x41, 0x41, 0x41,
+    0x41, 0x41, 0x41, 0x41, 0x00, 0x00, 0x0c, 0x00, 0x01, 0x34, 0x42, 0x42,
+    0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42,
+    0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42,
+    0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42,
+    0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42,
+    0x42, 0x42, 0x34, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42,
+    0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42,
+    0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42,
+    0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42,
+    0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x34, 0x42, 0x42, 0x42, 0x42,
+    0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42,
+    0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42,
+    0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42,
+    0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42,
+    0x34, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42,
+    0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42,
+    0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42,
+    0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42,
+    0x42, 0x42, 0x42, 0x42, 0x42, 0x00, 0x00, 0x0c, 0x00, 0x01, 0x00, 0x00,
+    0x1c, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xcc, 0xcc, 0xcc,
+    0xcc, 0xcc, 0xcc, 0xcc, 0xcc, 0xcc, 0xcc
+};
+
+START_TEST(PublicApiIgnoresRecordWithTruncatedAddressField) {
+    size_t initialEntries = countServersOnNetwork(serverLds);
+    UA_ByteString packet;
+    packet.length = sizeof(truncatedAaaaRecordPacket);
+    packet.data = (UA_Byte*)(uintptr_t)truncatedAaaaRecordPacket;
+
+    resetDiscoveryCounters();
+    injectMdnsPacket(testUdpCmLds, &packet);
+
+    ck_assert_uint_eq(discoveryCounters.serverOnNetworkCalls, 0);
+    ck_assert_uint_eq(countServersOnNetwork(serverLds), initialEntries);
+
+    /* The server must keep processing subsequent (well-formed) records
+     * normally afterwards. */
+    UA_ByteString followupPacket = UA_BYTESTRING_NULL;
+    buildInjectedARecordPacket("AfterTruncated-remote._opcua-tcp._tcp.local.",
+                               QCLASS_IN, 600, &followupPacket);
+    injectMdnsPacket(testUdpCmLds, &followupPacket);
+    ck_assert_uint_eq(countServersOnNetwork(serverLds), initialEntries);
+    UA_ByteString_clear(&followupPacket);
+}
+END_TEST
+
+#endif /* UA_ENABLE_DRIVER_MDNS_MDNSD */
 
 static Suite *
 testSuite_DiscoveryMdnsd(void) {
@@ -2590,7 +2749,7 @@ testSuite_DiscoveryMdnsd(void) {
 
     addDriverInterfaceTests(s);
 
-#if defined(UA_ENABLE_DISCOVERY_MULTICAST_MDNSD)
+#if defined(UA_ENABLE_DRIVER_MDNS_MDNSD)
     TCase *regressions = tcase_create("Discovery lock regression");
     tcase_add_test(regressions, DisabledNetworkRemovalReleasesLock);
     suite_add_tcase(s, regressions);
@@ -2658,6 +2817,7 @@ testSuite_DiscoveryMdnsd(void) {
     tcase_add_test(tc_integration, PublicApiInjectedTtlZeroRemovesRemoteServer);
     tcase_add_test(tc_integration, PublicApiInjectedRemoteServerIsNotMirroredBackOut);
     tcase_add_test(tc_integration, PublicApiIgnoresInvalidReceiveRecords);
+    tcase_add_test(tc_integration, PublicApiIgnoresRecordWithTruncatedAddressField);
     suite_add_tcase(s, tc_integration);
 #endif
 

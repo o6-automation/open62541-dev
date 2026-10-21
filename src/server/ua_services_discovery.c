@@ -15,7 +15,6 @@
 
 #include "ua_server_internal.h"
 
-#ifdef UA_ENABLE_DISCOVERY
 
 /***************/
 /* FindServers */
@@ -84,7 +83,6 @@ setApplicationDescriptionFromRegisteredServer(size_t localeIdsSize,
     return retval;
 }
 
-#endif /* UA_ENABLE_DISCOVERY */
 
 static UA_StatusCode
 process_FindServers(UA_Server *server, UA_Session *session, UA_String endpointUrl,
@@ -114,17 +112,6 @@ process_FindServers(UA_Server *server, UA_Session *session, UA_String endpointUr
     /* Direct access to the out-variables */
     UA_ApplicationDescription *servers;
 
-#ifndef UA_ENABLE_DISCOVERY
-    if(!foundSelf)
-        return UA_STATUSCODE_GOOD;
-    res = UA_Array_copy(&sc->applicationDescription, 1, (void**)outServers,
-                        &UA_TYPES[UA_TYPES_APPLICATIONDESCRIPTION]);
-    if(res != UA_STATUSCODE_GOOD)
-        return res;
-    *outServersSize = 1;
-
-    servers = *outServers;
-#else
     /* Allocate enough memory, including memory for the "self" response */
     size_t maxResults = server->registeredServersSize + 1;
     *outServers = (UA_ApplicationDescription*)
@@ -148,6 +135,8 @@ process_FindServers(UA_Server *server, UA_Session *session, UA_String endpointUr
 
     /* Copy registered ApplicationDescriptions into the response */
     LIST_FOREACH(current, &server->registeredServers, pointers) {
+        if(!sc->registeredServersEnabled)
+            break;
         UA_Boolean usable = (serverUrisSize == 0);
         if(!usable) {
             /* If client only requested a specific set of servers */
@@ -182,7 +171,6 @@ process_FindServers(UA_Server *server, UA_Session *session, UA_String endpointUr
     }
 
     *outServersSize = pos;
-#endif /* UA_ENABLE_DISCOVERY */
 
     /* Mirror back the expected EndpointUrl for the local server only.
      * Registered servers retain the DiscoveryUrls they registered with. */
@@ -234,7 +222,6 @@ UA_Server_findServers(UA_Server *server, UA_String endpointUrl,
 /* FindServersOnNetwork */
 /************************/
 
-#if defined(UA_ENABLE_DISCOVERY)
 
 static void
 notifyServerOnNetwork(UA_Server *server,
@@ -564,7 +551,6 @@ UA_Server_deregisterServerOnNetwork(UA_Server *server,
     return UA_STATUSCODE_GOOD;
 }
 
-#endif /* if defined(UA_ENABLE_DISCOVERY) */
 
 /****************/
 /* GetEndpoints */
@@ -986,7 +972,6 @@ Service_GetEndpoints(UA_Server *server, UA_Session *session,
 /* RegisterServer */
 /******************/
 
-#ifdef UA_ENABLE_DISCOVERY
 
 static void
 notifyRegisteredServer(UA_Server *server, UA_Session *session,
@@ -1056,10 +1041,23 @@ process_RegisterServer(UA_Server *server, UA_Session *session,
                        UA_Boolean allocateResponseConfigResults) {
     UA_LOCK_ASSERT(&server->serviceMutex);
 
-    /* Only support RegisterServer on discovery servers */
+    /* Registration management is enabled explicitly in the server config. */
     UA_ServerConfig *sc = &server->config;
-    if(sc->applicationDescription.applicationType != UA_APPLICATIONTYPE_DISCOVERYSERVER)
+    if(!sc->registeredServersEnabled)
         return UA_STATUSCODE_BADSERVICEUNSUPPORTED;
+
+    /* No Session backs RegisterServer(2), so only the channel can
+     * authenticate the caller. A local call without a channel is exempt. */
+    UA_SecureChannel *rsChannel = session->channel;
+    if(rsChannel && rsChannel->remoteCertificate.length == 0)
+        return UA_STATUSCODE_BADSECURITYMODEINSUFFICIENT;
+
+    /* The certificate must also match the claimed serverUri, otherwise a
+     * differently-identified peer could still overwrite another entry. */
+    if(rsChannel && rsChannel->remoteCertificate.length > 0 &&
+       UA_CertificateUtils_verifyApplicationUri(&rsChannel->remoteCertificate,
+                                                &requestServer->serverUri) != UA_STATUSCODE_GOOD)
+        return UA_STATUSCODE_BADCERTIFICATEURIINVALID;
 
     /* Check the presence of at least one DiscoveryUrl */
     if(requestServer->discoveryUrlsSize == 0)
@@ -1333,5 +1331,3 @@ cleanupRegisteredServers(UA_Server *server) {
         server->registeredServersSize--;
     }
 }
-
-#endif /* UA_ENABLE_DISCOVERY */

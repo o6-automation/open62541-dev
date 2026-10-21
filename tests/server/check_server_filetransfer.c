@@ -329,8 +329,8 @@ memHandle(UA_FileTransferFileBackend *b, UA_UInt32 handle) {
 }
 
 static UA_StatusCode
-memOpen(UA_FileTransferFileBackend *b, const UA_String path,
-        UA_Byte mode, UA_UInt32 *handle) {
+memOpen(UA_FileTransferFileBackend *b, const UA_String path, UA_Byte mode,
+        const UA_FileTransferOpenContext *context, UA_UInt32 *handle) {
     MemBackendContext *ctx = (MemBackendContext*)b->context;
     MemEntry *e = memFind(ctx, path);
     if(!e || e->isDir)
@@ -683,7 +683,7 @@ runBackendContract(UA_FileTransferBackend *b) {
                       UA_STATUSCODE_BADBROWSENAMEDUPLICATED);
 
     /* Write content */
-    res = f->open(f, UA_STRING("hello.txt"), UA_OPENFILEMODE_WRITE, &fc);
+    res = f->open(f, UA_STRING("hello.txt"), UA_OPENFILEMODE_WRITE, NULL, &fc);
     ck_assert_uint_eq(res, UA_STATUSCODE_GOOD);
     ck_assert_uint_eq(f->write(f, fc, UA_BYTESTRING("Hello World")),
                       UA_STATUSCODE_GOOD);
@@ -704,7 +704,7 @@ runBackendContract(UA_FileTransferBackend *b) {
                       UA_STATUSCODE_BADNOTFOUND);
 
     /* Read in chunks until the end of the file */
-    res = f->open(f, UA_STRING("hello.txt"), UA_OPENFILEMODE_READ, &fc);
+    res = f->open(f, UA_STRING("hello.txt"), UA_OPENFILEMODE_READ, NULL, &fc);
     ck_assert_uint_eq(res, UA_STATUSCODE_GOOD);
     ck_assert_uint_eq(f->read(f, fc, 5, &out), UA_STATUSCODE_GOOD);
     ck_assert_uint_eq(out.length, 5);
@@ -733,7 +733,7 @@ runBackendContract(UA_FileTransferBackend *b) {
 
     /* EraseExisting truncates */
     res = f->open(f, UA_STRING("hello.txt"),
-                      UA_OPENFILEMODE_WRITE | UA_OPENFILEMODE_ERASEEXISTING, &fc);
+                      UA_OPENFILEMODE_WRITE | UA_OPENFILEMODE_ERASEEXISTING, NULL, &fc);
     ck_assert_uint_eq(res, UA_STATUSCODE_GOOD);
     ck_assert_uint_eq(f->write(f, fc, UA_BYTESTRING("Hi")), UA_STATUSCODE_GOOD);
     ck_assert_uint_eq(f->close(f, fc), UA_STATUSCODE_GOOD);
@@ -743,7 +743,7 @@ runBackendContract(UA_FileTransferBackend *b) {
 
     /* Append positions at the end */
     res = f->open(f, UA_STRING("hello.txt"),
-                      UA_OPENFILEMODE_WRITE | UA_OPENFILEMODE_APPEND, &fc);
+                      UA_OPENFILEMODE_WRITE | UA_OPENFILEMODE_APPEND, NULL, &fc);
     ck_assert_uint_eq(res, UA_STATUSCODE_GOOD);
     ck_assert_uint_eq(f->getPosition(f, fc, &pos), UA_STATUSCODE_GOOD);
     ck_assert_uint_eq(pos, 2);
@@ -754,19 +754,19 @@ runBackendContract(UA_FileTransferBackend *b) {
     ck_assert_uint_eq(info.size, 3);
 
     /* Empty write is a no-op */
-    res = f->open(f, UA_STRING("hello.txt"), UA_OPENFILEMODE_WRITE, &fc);
+    res = f->open(f, UA_STRING("hello.txt"), UA_OPENFILEMODE_WRITE, NULL, &fc);
     ck_assert_uint_eq(res, UA_STATUSCODE_GOOD);
     ck_assert_uint_eq(f->write(f, fc, UA_BYTESTRING_NULL), UA_STATUSCODE_GOOD);
     ck_assert_uint_eq(f->close(f, fc), UA_STATUSCODE_GOOD);
 
     /* Invalid open modes and missing files */
-    ck_assert_uint_eq(f->open(f, UA_STRING("hello.txt"), 0, &fc),
+    ck_assert_uint_eq(f->open(f, UA_STRING("hello.txt"), 0, NULL, &fc),
                       UA_STATUSCODE_BADINVALIDARGUMENT);
     ck_assert_uint_eq(f->open(f, UA_STRING("missing"),
-                                  UA_OPENFILEMODE_READ, &fc),
+                                  UA_OPENFILEMODE_READ, NULL, &fc),
                       UA_STATUSCODE_BADNOTFOUND);
     ck_assert_uint_eq(f->open(f, UA_STRING("missing"),
-                                  UA_OPENFILEMODE_WRITE, &fc),
+                                  UA_OPENFILEMODE_WRITE, NULL, &fc),
                       UA_STATUSCODE_BADNOTFOUND);
 
     /* Listing */
@@ -840,8 +840,10 @@ START_TEST(memoryBackendContract) {
 #if defined(__GLIBC__) && defined(UA_ARCHITECTURE_POSIX) && \
     !defined(UA_ARCHITECTURE_LWIP)
 # if __GLIBC_PREREQ(2, 34)
-#  define FT_TEST_READDIR_FAULTS
 #  include <dlfcn.h>
+#  ifdef RTLD_NEXT /* Not provided by TinyCC's dlfcn.h */
+#   define FT_TEST_READDIR_FAULTS
+#  endif
 # endif
 #endif
 
@@ -971,7 +973,7 @@ START_TEST(localDirectoryBackendSandbox) {
     UA_UInt32 fc = 0;
     for(size_t i = 0; i < 8; i++) {
         UA_String p = UA_STRING((char*)(uintptr_t)badPaths[i]);
-        ck_assert_uint_eq(b.file.open(&b.file, p, UA_OPENFILEMODE_READ, &fc),
+        ck_assert_uint_eq(b.file.open(&b.file, p, UA_OPENFILEMODE_READ, NULL, &fc),
                           UA_STATUSCODE_BADINVALIDARGUMENT);
         ck_assert_uint_eq(createEntry(&b, p, false), UA_STATUSCODE_BADINVALIDARGUMENT);
         ck_assert_uint_eq(createEntry(&b, p, true),
@@ -1015,7 +1017,7 @@ START_TEST(localDirectoryUtf8Names) {
                       UA_STATUSCODE_GOOD);
     ck_assert_uint_eq(createEntry(&b, path, false), UA_STATUSCODE_GOOD);
     UA_UInt32 fc = 0;
-    ck_assert_uint_eq(b.file.open(&b.file, path, UA_OPENFILEMODE_WRITE, &fc),
+    ck_assert_uint_eq(b.file.open(&b.file, path, UA_OPENFILEMODE_WRITE, NULL, &fc),
                       UA_STATUSCODE_GOOD);
     ck_assert_uint_eq(b.file.write(&b.file, fc, UA_BYTESTRING("utf8")),
                       UA_STATUSCODE_GOOD);
@@ -1060,7 +1062,7 @@ START_TEST(localDirectoryUtf8Names) {
     ck_assert_str_eq(info.name, name);
     ck_assert_str_eq(info.mimeType, "text/plain");
     ck_assert_uint_eq(info.size, 4);
-    ck_assert_uint_eq(file.open(&file, UA_STRING_NULL, UA_OPENFILEMODE_READ, &fc),
+    ck_assert_uint_eq(file.open(&file, UA_STRING_NULL, UA_OPENFILEMODE_READ, NULL, &fc),
                       UA_STATUSCODE_GOOD);
     UA_ByteString content;
     ck_assert_uint_eq(file.read(&file, fc, 10, &content), UA_STATUSCODE_GOOD);
@@ -1181,7 +1183,7 @@ memBackendWithFile(const char *name, const char *content) {
     ck_assert_uint_eq(createEntry(&b, path, false), UA_STATUSCODE_GOOD);
     if(content && strlen(content) > 0) {
         UA_UInt32 fc = 0;
-        ck_assert_uint_eq(b.file.open(&b.file, path, UA_OPENFILEMODE_WRITE, &fc),
+        ck_assert_uint_eq(b.file.open(&b.file, path, UA_OPENFILEMODE_WRITE, NULL, &fc),
                           UA_STATUSCODE_GOOD);
         UA_ByteString data = UA_BYTESTRING((char*)(uintptr_t)content);
         ck_assert_uint_eq(b.file.write(&b.file, fc, data), UA_STATUSCODE_GOOD);
@@ -1372,6 +1374,43 @@ START_TEST(fileProperties) {
     ck_assert_uint_eq(testRemove(driverForRoot(fileId), fileId),
                       UA_STATUSCODE_GOOD);
     UA_NodeId_clear(&fileId);
+} END_TEST
+
+static UA_StatusCode
+unknownSizeGetInfo(UA_FileTransferFileBackend *b, const UA_String path,
+                   UA_FileTransferFileInfo *info) {
+    UA_StatusCode res = memGetInfo(b, path, info);
+    info->sizeUnknown = true;
+    return res;
+}
+
+/* Part 20, 4.2.1: a size the server cannot determine reads as Bad_NotSupported */
+START_TEST(fileSizeUnknown) {
+    UA_FileTransferBackend backend = memBackendWithFile("f.bin", "content");
+    backend.file.getInfo = unknownSizeGetInfo;
+    UA_NodeId file = addTestFileBackend(backend, "UnknownSize", NULL);
+    UA_NodeId sizeId = resolveChild(server_ft, file, "Size");
+    UA_Variant value;
+    UA_Variant_init(&value);
+    ck_assert_uint_eq(UA_Server_readValue(server_ft, sizeId, &value),
+                      UA_STATUSCODE_BADNOTSUPPORTED);
+    UA_Variant_clear(&value);
+    UA_NodeId_clear(&sizeId);
+
+    /* The content and the other Properties are not affected */
+    readProperty(file, "LastModifiedTime", &value);
+    ck_assert(UA_Variant_hasScalarType(&value, &UA_TYPES[UA_TYPES_DATETIME]));
+    UA_Variant_clear(&value);
+    UA_UInt32 h = callOpen(file, UA_OPENFILEMODE_READ, UA_STATUSCODE_GOOD);
+    UA_ByteString data = callRead(file, h, 100, UA_STATUSCODE_GOOD);
+    UA_ByteString expected = UA_BYTESTRING("content");
+    ck_assert(UA_ByteString_equal(&data, &expected));
+    UA_ByteString_clear(&data);
+    data = callRead(file, h, 100, UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(data.length, 0);
+    UA_ByteString_clear(&data);
+    callClose(file, h, UA_STATUSCODE_GOOD);
+    UA_NodeId_clear(&file);
 } END_TEST
 
 START_TEST(fileMaxByteStringLength) {
@@ -1750,7 +1789,7 @@ memBackendWithTree(void) {
     ck_assert_uint_eq(createEntry(&b, UA_STRING("docs/sub/b.txt"), false), UA_STATUSCODE_GOOD);
     UA_UInt32 fc = 0;
     ck_assert_uint_eq(b.file.open(&b.file, UA_STRING("docs/a.txt"),
-                                  UA_OPENFILEMODE_WRITE, &fc),
+                                  UA_OPENFILEMODE_WRITE, NULL, &fc),
                       UA_STATUSCODE_GOOD);
     ck_assert_uint_eq(b.file.write(&b.file, fc, UA_BYTESTRING("content-a")),
                       UA_STATUSCODE_GOOD);
@@ -2088,7 +2127,7 @@ writeMemFile(UA_FileTransferBackend *b, const char *name, const char *content) {
     UA_String path = UA_STRING((char*)(uintptr_t)name);
     ck_assert_uint_eq(createEntry(b, path, false), UA_STATUSCODE_GOOD);
     UA_UInt32 fc = 0;
-    ck_assert_uint_eq(b->file.open(&b->file, path, UA_OPENFILEMODE_WRITE, &fc),
+    ck_assert_uint_eq(b->file.open(&b->file, path, UA_OPENFILEMODE_WRITE, NULL, &fc),
                       UA_STATUSCODE_GOOD);
     ck_assert_uint_eq(b->file.write(&b->file, fc,
                                     UA_BYTESTRING((char*)(uintptr_t)content)),
@@ -2446,7 +2485,7 @@ START_TEST(localFileMount) {
     UA_FileTransferFileInfo info;
     for(size_t i = 0; i < sizeof(paths) / sizeof(paths[0]); i++) {
         UA_String path = UA_STRING((char*)(uintptr_t)paths[i]);
-        ck_assert_uint_eq(backend.open(&backend, path, UA_OPENFILEMODE_READ, &handle),
+        ck_assert_uint_eq(backend.open(&backend, path, UA_OPENFILEMODE_READ, NULL, &handle),
                           UA_STATUSCODE_BADINVALIDARGUMENT);
         ck_assert_uint_eq(backend.getInfo(&backend, path, &info), UA_STATUSCODE_BADINVALIDARGUMENT);
     }
@@ -2702,8 +2741,8 @@ static struct {
 } minimalFiles[MINIMAL_MAXOPEN];
 
 static UA_StatusCode
-minimalOpen(UA_FileTransferFileBackend *b, const UA_String path,
-            UA_Byte mode, UA_UInt32 *handle) {
+minimalOpen(UA_FileTransferFileBackend *b, const UA_String path, UA_Byte mode,
+            const UA_FileTransferOpenContext *context, UA_UInt32 *handle) {
     if(mode & UA_OPENFILEMODE_WRITE)
         return UA_STATUSCODE_BADNOTWRITABLE;
     for(size_t i = 0; i < MINIMAL_MAXOPEN; i++) {
@@ -3112,6 +3151,7 @@ static UA_StatusCode (*memCreateFn)(UA_FileTransferBackend *b, const UA_String p
                                       const UA_FileTransferFileInfo *info);
 static UA_StatusCode (*memOpenFn)(UA_FileTransferFileBackend *b,
                                   const UA_String path, UA_Byte mode,
+                                  const UA_FileTransferOpenContext *context,
                                   UA_UInt32 *handle);
 
 static UA_Boolean
@@ -3135,9 +3175,9 @@ failingCreate(UA_FileTransferBackend *b, const UA_String path,
 
 static UA_StatusCode
 failingOpen(UA_FileTransferFileBackend *b, const UA_String path, UA_Byte mode,
-            UA_UInt32 *handle) {
+            const UA_FileTransferOpenContext *context, UA_UInt32 *handle) {
     return isFailingPath(path) ? UA_STATUSCODE_BADUSERACCESSDENIED :
-        memOpenFn(b, path, mode, handle);
+        memOpenFn(b, path, mode, context, handle);
 }
 
 /* A move to another mount that cannot delete the source keeps the data. A
@@ -3649,15 +3689,15 @@ START_TEST(localWriteOnlyFile) {
     ck_assert_uint_eq(info.accessRights, UA_FILEACCESS_WRITE);
 
     UA_UInt32 h = 0;
-    ck_assert_uint_eq(b.file.open(&b.file, name, UA_OPENFILEMODE_READ, &h),
+    ck_assert_uint_eq(b.file.open(&b.file, name, UA_OPENFILEMODE_READ, NULL, &h),
                       UA_STATUSCODE_BADUSERACCESSDENIED);
-    ck_assert_uint_eq(b.file.open(&b.file, name, UA_OPENFILEMODE_WRITE, &h),
+    ck_assert_uint_eq(b.file.open(&b.file, name, UA_OPENFILEMODE_WRITE, NULL, &h),
                       UA_STATUSCODE_GOOD);
     ck_assert_uint_eq(b.file.write(&b.file, h, UA_BYTESTRING("XY")), UA_STATUSCODE_GOOD);
     ck_assert_uint_eq(b.file.close(&b.file, h), UA_STATUSCODE_GOOD);
     /* Append starts at the end; SetPosition still moves the next write */
     ck_assert_uint_eq(b.file.open(&b.file, name, UA_OPENFILEMODE_WRITE |
-                                  UA_OPENFILEMODE_APPEND, &h), UA_STATUSCODE_GOOD);
+                                  UA_OPENFILEMODE_APPEND, NULL, &h), UA_STATUSCODE_GOOD);
     ck_assert_uint_eq(b.file.write(&b.file, h, UA_BYTESTRING("Z")), UA_STATUSCODE_GOOD);
     ck_assert_uint_eq(b.file.setPosition(&b.file, h, 0), UA_STATUSCODE_GOOD);
     ck_assert_uint_eq(b.file.write(&b.file, h, UA_BYTESTRING("Q")), UA_STATUSCODE_GOOD);
@@ -3666,7 +3706,7 @@ START_TEST(localWriteOnlyFile) {
     checkLocalFile(path, "QYcZ");
     ck_assert_int_eq(fchmod(fileno(permissionsFile), 0200), 0);
     ck_assert_uint_eq(b.file.open(&b.file, name, UA_OPENFILEMODE_WRITE |
-                                  UA_OPENFILEMODE_ERASEEXISTING, &h), UA_STATUSCODE_GOOD);
+                                  UA_OPENFILEMODE_ERASEEXISTING, NULL, &h), UA_STATUSCODE_GOOD);
     ck_assert_uint_eq(b.file.close(&b.file, h), UA_STATUSCODE_GOOD);
     ck_assert_int_eq(fchmod(fileno(permissionsFile), 0600), 0);
     checkLocalFile(path, "");
@@ -4109,6 +4149,131 @@ accessBackend(UA_FileTransferBackend backend, AccessPolicy *policy) {
     server_ft->adminSession.context = &accessSessionContext;
     return backend;
 }
+
+/* Records the opens of the backend and forwards them to the memory backend
+ * unless a result is preset */
+static struct {
+    size_t calls;
+    UA_Boolean hasContext;
+    UA_NodeId sessionId;
+    void *sessionContext;
+    void *openContext;
+    UA_String path;
+    UA_Byte mode;
+    UA_StatusCode result;
+} recordedOpen;
+
+static UA_StatusCode
+recordingOpen(UA_FileTransferFileBackend *b, const UA_String path, UA_Byte mode,
+              const UA_FileTransferOpenContext *context, UA_UInt32 *handle) {
+    recordedOpen.calls++;
+    recordedOpen.hasContext = (context != NULL);
+    UA_NodeId_clear(&recordedOpen.sessionId);
+    if(context) {
+        ck_assert_ptr_eq(context->server, server_ft);
+        ck_assert_uint_eq(UA_NodeId_copy(context->sessionId, &recordedOpen.sessionId),
+                          UA_STATUSCODE_GOOD);
+        recordedOpen.sessionContext = context->sessionContext;
+        recordedOpen.openContext = context->openContext;
+    }
+    UA_String_clear(&recordedOpen.path);
+    ck_assert_uint_eq(UA_String_copy(&path, &recordedOpen.path), UA_STATUSCODE_GOOD);
+    recordedOpen.mode = mode;
+    if(recordedOpen.result != UA_STATUSCODE_GOOD)
+        return recordedOpen.result;
+    return memOpen(b, path, mode, context, handle);
+}
+
+static void
+resetRecordedOpen(void) {
+    UA_NodeId_clear(&recordedOpen.sessionId);
+    UA_String_clear(&recordedOpen.path);
+    memset(&recordedOpen, 0, sizeof(recordedOpen));
+}
+
+START_TEST(openReceivesCaller) {
+    resetRecordedOpen();
+    UA_FileTransferBackend backend = memBackendWithFile("f.bin", "content");
+    backend.file.open = recordingOpen;
+    server_ft->adminSession.context = &accessSessionContext;
+    UA_NodeId fileId = addTestFileBackend(backend, "SessionOpen", NULL);
+
+    UA_UInt32 h = callOpen(fileId, UA_OPENFILEMODE_READ, UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(recordedOpen.calls, 1);
+    ck_assert(recordedOpen.hasContext);
+    ck_assert(UA_NodeId_equal(&recordedOpen.sessionId,
+                              &server_ft->adminSession.sessionId));
+    ck_assert_ptr_eq(recordedOpen.sessionContext, &accessSessionContext);
+    UA_String path = UA_STRING("f.bin");
+    ck_assert(UA_String_equal(&recordedOpen.path, &path));
+    ck_assert_uint_eq(recordedOpen.mode, UA_OPENFILEMODE_READ);
+    UA_ByteString data = callRead(fileId, h, 100, UA_STATUSCODE_GOOD);
+    UA_ByteString expected = UA_BYTESTRING("content");
+    ck_assert(UA_ByteString_equal(&data, &expected));
+    UA_ByteString_clear(&data);
+    callClose(fileId, h, UA_STATUSCODE_GOOD);
+
+    /* The result of the backend reaches the client */
+    recordedOpen.result = UA_STATUSCODE_BADTRANSACTIONPENDING;
+    callOpen(fileId, UA_OPENFILEMODE_WRITE | UA_OPENFILEMODE_ERASEEXISTING,
+             UA_STATUSCODE_BADTRANSACTIONPENDING);
+    ck_assert_uint_eq(readOpenCount(fileId), 0);
+
+    /* The mode and the locking are checked before */
+    recordedOpen.result = UA_STATUSCODE_GOOD;
+    size_t calls = recordedOpen.calls;
+    callOpen(fileId, UA_OPENFILEMODE_ERASEEXISTING, UA_STATUSCODE_BADINVALIDARGUMENT);
+    h = callOpen(fileId, UA_OPENFILEMODE_WRITE, UA_STATUSCODE_GOOD);
+    callOpen(fileId, UA_OPENFILEMODE_READ, UA_STATUSCODE_BADNOTREADABLE);
+    ck_assert_uint_eq(recordedOpen.calls, calls + 1);
+    callClose(fileId, h, UA_STATUSCODE_GOOD);
+    resetRecordedOpen();
+} END_TEST
+
+/* CreateFile and the copies of MoveOrCopy open for the caller, direct calls
+ * of the application pass no context */
+START_TEST(openInDirectories) {
+    resetRecordedOpen();
+    UA_FileTransferBackend backend = memBackendWithTree();
+    backend.file.open = recordingOpen;
+    UA_NodeId fsId = UA_NODEID_NULL;
+    ck_assert_uint_eq(testAddDirectory(UA_NODEID_NULL, UA_NS0ID(OBJECTSFOLDER),
+                          UA_QUALIFIEDNAME(0, "FileSystem"), backendArg(backend),
+                          NULL, &fsId), UA_STATUSCODE_GOOD);
+    UA_UInt32 h = 0;
+    UA_NodeId fileId = callCreateFile(fsId, "new.bin", true, &h, UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(recordedOpen.calls, 1);
+    ck_assert(recordedOpen.hasContext);
+    ck_assert(UA_NodeId_equal(&recordedOpen.sessionId,
+                              &server_ft->adminSession.sessionId));
+    ck_assert_uint_eq(recordedOpen.mode, UA_OPENFILEMODE_READ | UA_OPENFILEMODE_WRITE);
+    UA_String path = UA_STRING("new.bin");
+    ck_assert(UA_String_equal(&recordedOpen.path, &path));
+    callClose(fileId, h, UA_STATUSCODE_GOOD);
+    UA_NodeId_clear(&fileId);
+
+    UA_NodeId docsId = resolveChild(server_ft, fsId, "docs");
+    UA_NodeId aId = resolveChild(server_ft, docsId, "a.txt");
+    UA_NodeId copyId = callMoveOrCopy(docsId, aId, fsId, true, "copy.txt",
+                                      UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(recordedOpen.calls, 3);
+    ck_assert(recordedOpen.hasContext);
+    ck_assert(UA_NodeId_equal(&recordedOpen.sessionId,
+                              &server_ft->adminSession.sessionId));
+    ck_assert_uint_eq(recordedOpen.mode, UA_OPENFILEMODE_WRITE);
+    path = UA_STRING("copy.txt");
+    ck_assert(UA_String_equal(&recordedOpen.path, &path));
+
+    UA_UInt32 fc = 0;
+    ck_assert_uint_eq(backend.file.open(&backend.file, path, UA_OPENFILEMODE_READ,
+                                        NULL, &fc), UA_STATUSCODE_GOOD);
+    ck_assert(!recordedOpen.hasContext);
+    ck_assert_uint_eq(backend.file.close(&backend.file, fc), UA_STATUSCODE_GOOD);
+    UA_NodeId_clear(&copyId);
+    UA_NodeId_clear(&aId);
+    UA_NodeId_clear(&docsId);
+    resetRecordedOpen();
+} END_TEST
 
 START_TEST(fileAccessRightsEnforced) {
     AccessPolicy policy;
@@ -4995,6 +5160,157 @@ START_TEST(subtypeMethodUsesFileHandle) {
     UA_NodeId_clear(&file);
 } END_TEST
 
+/* A subtype Method that opens the file with its own argument, like
+ * OpenWithMasks of a TrustList (Part 12) */
+static UA_Driver *openingDriver;
+static UA_UInt32 openingBackendHandle;
+static int openingContext;
+
+static UA_StatusCode
+openWithArgumentCallback(UA_Server *server, const UA_NodeId *sessionId,
+                         void *sessionContext, const UA_NodeId *methodId,
+                         void *methodContext, const UA_NodeId *objectId,
+                         void *objectContext, size_t inputSize,
+                         const UA_Variant *input, size_t outputSize,
+                         UA_Variant *output) {
+    if(inputSize != 1 || outputSize != 1 ||
+       !UA_Variant_hasScalarType(input, &UA_TYPES[UA_TYPES_BYTE]))
+        return UA_STATUSCODE_BADTYPEMISMATCH;
+    UA_UInt32 fileHandle = 0;
+    UA_StatusCode res = UA_FileTransferDriver_openHandle(
+        openingDriver, *objectId, sessionId, sessionContext,
+        *(UA_Byte*)input->data, &openingContext, &fileHandle, &openingBackendHandle);
+    if(res != UA_STATUSCODE_GOOD)
+        return res;
+    res = UA_Variant_setScalarCopy(output, &fileHandle, &UA_TYPES[UA_TYPES_UINT32]);
+    if(res != UA_STATUSCODE_GOOD)
+        UA_FileTransferDriver_closeHandle(openingDriver, *objectId, sessionId,
+                                          fileHandle);
+    return res;
+}
+
+static UA_UInt32
+callOpenWithArgument(const UA_NodeId file, UA_Byte mode, UA_StatusCode expected) {
+    UA_Variant input;
+    UA_Variant_setScalar(&input, &mode, &UA_TYPES[UA_TYPES_BYTE]);
+    UA_CallMethodResult result = callObjectMethod(file, "OpenWithArgument", 1, &input);
+    ck_assert_uint_eq(result.statusCode, expected);
+    UA_UInt32 handle = 0;
+    if(expected == UA_STATUSCODE_GOOD) {
+        ck_assert_uint_eq(result.outputArgumentsSize, 1);
+        handle = *(UA_UInt32*)result.outputArguments[0].data;
+    }
+    UA_CallMethodResult_clear(&result);
+    return handle;
+}
+
+START_TEST(openHandleFromSubtypeMethod) {
+    resetRecordedOpen();
+    UA_FileTransferBackend backend = memBackendWithFile("f.bin", "content");
+    backend.file.open = recordingOpen;
+    UA_NodeId file = addTestFileBackend(backend, "Opening", NULL);
+    openingDriver = driverForRoot(file);
+    UA_MethodAttributes attr = UA_MethodAttributes_default;
+    attr.executable = true;
+    attr.userExecutable = true;
+    UA_Argument inArg, outArg;
+    UA_Argument_init(&inArg);
+    inArg.name = UA_STRING("Mode");
+    inArg.dataType = UA_TYPES[UA_TYPES_BYTE].typeId;
+    inArg.valueRank = UA_VALUERANK_SCALAR;
+    UA_Argument_init(&outArg);
+    outArg.name = UA_STRING("FileHandle");
+    outArg.dataType = UA_TYPES[UA_TYPES_UINT32].typeId;
+    outArg.valueRank = UA_VALUERANK_SCALAR;
+    ck_assert_uint_eq(UA_Server_addMethodNode(server_ft, UA_NODEID_NULL, file,
+                          UA_NS0ID(HASCOMPONENT), UA_QUALIFIEDNAME(0, "OpenWithArgument"),
+                          attr, openWithArgumentCallback, 1, &inArg, 1, &outArg,
+                          NULL, NULL), UA_STATUSCODE_GOOD);
+
+    /* The handle works with the standard Methods and counts as open */
+    UA_UInt32 h = callOpenWithArgument(file, UA_OPENFILEMODE_READ, UA_STATUSCODE_GOOD);
+    ck_assert_uint_ne(h, 0);
+    ck_assert_uint_eq(recordedOpen.calls, 1);
+    ck_assert_ptr_eq(recordedOpen.openContext, &openingContext);
+    ck_assert_uint_eq(readOpenCount(file), 1);
+    UA_UInt32 backendHandle = 0;
+    ck_assert_uint_eq(UA_FileTransferDriver_getHandleInfo(openingDriver, file,
+                          &server_ft->adminSession.sessionId, h, NULL, &backendHandle),
+                      UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(backendHandle, openingBackendHandle);
+    UA_ByteString data = callRead(file, h, 100, UA_STATUSCODE_GOOD);
+    UA_ByteString expected = UA_BYTESTRING("content");
+    ck_assert(UA_ByteString_equal(&data, &expected));
+    UA_ByteString_clear(&data);
+
+    /* The checks of Open apply */
+    callOpenWithArgument(file, UA_OPENFILEMODE_WRITE, UA_STATUSCODE_BADNOTWRITABLE);
+    callOpenWithArgument(file, UA_OPENFILEMODE_APPEND, UA_STATUSCODE_BADINVALIDARGUMENT);
+    recordedOpen.result = UA_STATUSCODE_BADNOTSUPPORTED;
+    callOpenWithArgument(file, UA_OPENFILEMODE_READ, UA_STATUSCODE_BADNOTSUPPORTED);
+    recordedOpen.result = UA_STATUSCODE_GOOD;
+    ck_assert_uint_eq(readOpenCount(file), 1);
+    callClose(file, h, UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(readOpenCount(file), 0);
+
+    /* The handle closes with its Session */
+    h = callOpenWithArgument(file, UA_OPENFILEMODE_READ, UA_STATUSCODE_GOOD);
+    UA_KeyValueMap payload = UA_KEYVALUEMAP_NULL;
+    ck_assert_uint_eq(UA_KeyValueMap_setScalar(&payload, UA_QUALIFIEDNAME(0, "session-id"),
+                          &server_ft->adminSession.sessionId, &UA_TYPES[UA_TYPES_NODEID]),
+                      UA_STATUSCODE_GOOD);
+    lockServer(server_ft);
+    notifyApplication(server_ft, UA_APPLICATIONNOTIFICATIONTYPE_SESSION_CLOSED, payload);
+    unlockServer(server_ft);
+    UA_KeyValueMap_clear(&payload);
+    ck_assert_uint_eq(readOpenCount(file), 0);
+    callClose(file, h, UA_STATUSCODE_BADINVALIDARGUMENT);
+    UA_NodeId_clear(&file);
+    resetRecordedOpen();
+} END_TEST
+
+START_TEST(openHandleChecks) {
+    UA_NodeId file = addTestFile("Opening", "content", NULL);
+    UA_Driver *driver = driverForRoot(file);
+    const UA_NodeId *session = &server_ft->adminSession.sessionId;
+    UA_UInt32 h = 0;
+    ck_assert_uint_eq(UA_FileTransferDriver_openHandle(NULL, file, session, NULL,
+                          UA_OPENFILEMODE_READ, NULL, &h, NULL), UA_STATUSCODE_BADINVALIDARGUMENT);
+    ck_assert_uint_eq(UA_FileTransferDriver_openHandle(driver, file, NULL, NULL,
+                          UA_OPENFILEMODE_READ, NULL, &h, NULL), UA_STATUSCODE_BADINVALIDARGUMENT);
+    ck_assert_uint_eq(UA_FileTransferDriver_openHandle(driver, file, session, NULL,
+                          UA_OPENFILEMODE_READ, NULL, NULL, NULL), UA_STATUSCODE_BADINVALIDARGUMENT);
+    ck_assert_uint_eq(UA_FileTransferDriver_openHandle(driver, UA_NS0ID(OBJECTSFOLDER),
+                          session, NULL, UA_OPENFILEMODE_READ, NULL, &h, NULL),
+                      UA_STATUSCODE_BADINVALIDARGUMENT);
+    UA_Driver unrelated;
+    memset(&unrelated, 0, sizeof(unrelated));
+    unrelated.server = server_ft;
+    ck_assert_uint_eq(UA_FileTransferDriver_openHandle(&unrelated, file, session, NULL,
+                          UA_OPENFILEMODE_READ, NULL, &h, NULL), UA_STATUSCODE_BADINVALIDARGUMENT);
+
+    /* Without the Method callback; the backend handle is optional */
+    ck_assert_uint_eq(UA_FileTransferDriver_openHandle(driver, file, session, NULL,
+                          UA_OPENFILEMODE_READ, NULL, &h, NULL), UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(readOpenCount(file), 1);
+    ck_assert_uint_eq(UA_FileTransferDriver_closeHandle(driver, file, session, h),
+                      UA_STATUSCODE_GOOD);
+
+    /* A stopped driver has no handles */
+    driver->stop(driver);
+    ck_assert_uint_eq(UA_FileTransferDriver_openHandle(driver, file, session, NULL,
+                          UA_OPENFILEMODE_READ, NULL, &h, NULL), UA_STATUSCODE_BADINVALIDSTATE);
+    ck_assert_uint_eq(driver->start(driver), UA_STATUSCODE_GOOD);
+    UA_NodeId_clear(&file);
+
+    /* Directories have no content */
+    UA_NodeId fsId = mountTree(NULL);
+    UA_NodeId docs = resolveChild(server_ft, fsId, "docs");
+    ck_assert_uint_eq(UA_FileTransferDriver_openHandle(driverForRoot(fsId), docs, session,
+                          NULL, UA_OPENFILEMODE_READ, NULL, &h, NULL), UA_STATUSCODE_BADNOTFOUND);
+    UA_NodeId_clear(&docs);
+} END_TEST
+
 START_TEST(constructorFailureLeavesBackendAndOutputs) {
     backendClearCount = 0;
     UA_FileTransferBackend backend = memBackendWithFile("f.bin", "data");
@@ -5111,6 +5427,111 @@ START_TEST(directoryLifetimeAndAutomaticRefresh) {
     ck_assert_uint_eq(UA_Server_run_shutdown(server_ft), UA_STATUSCODE_GOOD);
     UA_NodeId_clear(&root);
     UA_NodeId_clear(&file);
+} END_TEST
+
+static void
+setActivityTimeout(UA_Driver *driver, UA_Double timeout) {
+    ck_assert_uint_eq(UA_KeyValueMap_setScalar(&driver->params,
+                          UA_QUALIFIEDNAME(0, "activity-timeout"), &timeout,
+                          &UA_TYPES[UA_TYPES_DOUBLE]), UA_STATUSCODE_GOOD);
+}
+
+static void
+advanceClock(UA_UInt32 ms) {
+    UA_fakeSleep(ms);
+    UA_Server_run_iterate(server_ft, false);
+}
+
+/* Handles without a Method call for longer than the activity-timeout close
+ * like with Close */
+START_TEST(activityTimeoutClosesIdleHandles) {
+    UA_Server_getConfig(server_ft)->tcpEnabled = false;
+    ck_assert_uint_eq(UA_Server_run_startup(server_ft), UA_STATUSCODE_GOOD);
+    UA_FileTransferBackend backend = memBackendWithFile("f.bin", "content");
+    UA_NodeId file;
+    UA_Driver *driver = newTestFile(server_ft, &backend.file, "Timed", &file);
+    setActivityTimeout(driver, 100);
+    ck_assert_uint_eq(UA_Server_addDriver(server_ft, driver), UA_STATUSCODE_GOOD);
+
+    /* Method calls keep the handle open */
+    UA_UInt32 h = callOpen(file, UA_OPENFILEMODE_READ, UA_STATUSCODE_GOOD);
+    for(size_t i = 0; i < 4; i++) {
+        advanceClock(60);
+        callGetPosition(file, h);
+    }
+    /* So do the calls of subtype Methods */
+    const UA_NodeId *session = &server_ft->adminSession.sessionId;
+    for(size_t i = 0; i < 3; i++) {
+        advanceClock(60);
+        ck_assert_uint_eq(UA_FileTransferDriver_getHandleInfo(driver, file, session,
+                              h, NULL, NULL), UA_STATUSCODE_GOOD);
+    }
+    ck_assert_uint_eq(readOpenCount(file), 1);
+
+    /* An idle handle closes within twice the timeout */
+    advanceClock(201);
+    ck_assert_uint_eq(readOpenCount(file), 0);
+    callClose(file, h, UA_STATUSCODE_BADINVALIDARGUMENT);
+
+    /* Without the parameter, the handles stay open */
+    driver->stop(driver);
+    ck_assert_uint_eq(UA_KeyValueMap_remove(&driver->params,
+                          UA_QUALIFIEDNAME(0, "activity-timeout")), UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(driver->start(driver), UA_STATUSCODE_GOOD);
+    h = callOpen(file, UA_OPENFILEMODE_READ, UA_STATUSCODE_GOOD);
+    advanceClock(10 * 60 * 1000);
+    ck_assert_uint_eq(readOpenCount(file), 1);
+    callClose(file, h, UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(UA_Server_run_shutdown(server_ft), UA_STATUSCODE_GOOD);
+    UA_NodeId_clear(&file);
+} END_TEST
+
+/* Closing an idle handle also removes a vanished file it kept */
+START_TEST(activityTimeoutClosesZombies) {
+    UA_Server_getConfig(server_ft)->tcpEnabled = false;
+    ck_assert_uint_eq(UA_Server_run_startup(server_ft), UA_STATUSCODE_GOOD);
+    UA_FileTransferBackend backend = memBackendWithTree();
+    UA_NodeId root;
+    UA_Driver *driver = newTestDirectory(server_ft, &backend, &root);
+    UA_Double interval = 0;
+    ck_assert_uint_eq(UA_KeyValueMap_setScalar(&driver->params,
+                          UA_QUALIFIEDNAME(0, "refresh-interval"), &interval,
+                          &UA_TYPES[UA_TYPES_DOUBLE]), UA_STATUSCODE_GOOD);
+    setActivityTimeout(driver, 100);
+    ck_assert_uint_eq(UA_Server_addDriver(server_ft, driver), UA_STATUSCODE_GOOD);
+    UA_NodeId docs = resolveChild(server_ft, root, "docs");
+    UA_NodeId file = resolveChild(server_ft, docs, "a.txt");
+    callOpen(file, UA_OPENFILEMODE_READ, UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(backend.remove(&backend, UA_STRING("docs/a.txt")),
+                      UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(testRefresh(driver, root), UA_STATUSCODE_GOOD);
+    ck_assert(tryResolveChild(server_ft, docs, "a.txt", NULL));
+    advanceClock(201);
+    ck_assert(!tryResolveChild(server_ft, docs, "a.txt", NULL));
+    ck_assert_uint_eq(UA_Server_run_shutdown(server_ft), UA_STATUSCODE_GOOD);
+    UA_NodeId_clear(&file);
+    UA_NodeId_clear(&docs);
+    UA_NodeId_clear(&root);
+} END_TEST
+
+START_TEST(activityTimeoutParameter) {
+    UA_FileTransferBackend backend = memBackendWithFile("f.bin", "content");
+    UA_Driver *driver = newTestFile(server_ft, &backend.file, "Timed", NULL);
+    ck_assert_uint_eq(UA_Server_addDriver(server_ft, driver), UA_STATUSCODE_GOOD);
+    /* Negative, NaN, infinite and sub-tick timeouts are rejected */
+    UA_Double zero = 0.0;
+    UA_Double invalid[4] = {-1, zero / zero, 1.0 / zero, 0.00001};
+    for(size_t i = 0; i < 4; i++) {
+        setActivityTimeout(driver, invalid[i]);
+        ck_assert_uint_eq(driver->start(driver), UA_STATUSCODE_BADINVALIDARGUMENT);
+    }
+    UA_UInt32 wrong = 100;
+    ck_assert_uint_eq(UA_KeyValueMap_setScalar(&driver->params,
+                          UA_QUALIFIEDNAME(0, "activity-timeout"), &wrong,
+                          &UA_TYPES[UA_TYPES_UINT32]), UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(driver->start(driver), UA_STATUSCODE_BADINVALIDARGUMENT);
+    setActivityTimeout(driver, 0);
+    ck_assert_uint_eq(driver->start(driver), UA_STATUSCODE_GOOD);
 } END_TEST
 
 /* A negative refresh interval is rejected. 0 disables the periodic refresh;
@@ -5953,13 +6374,16 @@ START_TEST(indexedDirectoryAndSessionCleanup) {
     lockServer(server_ft);
     for(size_t s = 0; s < 2; s++) {
         for(size_t i = 0; i < 8; i++) {
+            FTHandle *opened = NULL;
             ck_assert_uint_eq(openFileHandle(server_ft, file, &sessions[s], NULL,
-                UA_OPENFILEMODE_READ, &handles[s][i]), UA_STATUSCODE_GOOD);
+                UA_OPENFILEMODE_READ, NULL, &opened), UA_STATUSCODE_GOOD);
+            handles[s][i] = opened->handle;
             ck_assert_ptr_null(findFTHandle(ftd, &sessions[1 - s], handles[s][i]));
         }
-        UA_UInt32 rejected;
+        FTHandle *rejected = NULL;
         ck_assert_uint_eq(openFileHandle(server_ft, file, &sessions[s], NULL,
-            UA_OPENFILEMODE_READ, &rejected), UA_STATUSCODE_BADRESOURCEUNAVAILABLE);
+            UA_OPENFILEMODE_READ, NULL, &rejected), UA_STATUSCODE_BADRESOURCEUNAVAILABLE);
+        ck_assert_ptr_null(rejected);
     }
     unlockServer(server_ft);
     ck_assert_uint_eq(readOpenCount(files[0]), 16);
@@ -6038,6 +6462,1272 @@ START_TEST(duplicateListingKeepsTree) {
     UA_NodeId_clear(&root);
 } END_TEST
 
+/**************************************
+ * TemporaryFileTransferType Tests
+ **************************************/
+
+/* The reduced Namespace Zero carries the type without its optional
+ * <TransferState> state machine */
+START_TEST(temporaryTypeInNamespaceZero) {
+    UA_NodeClass cls;
+    ck_assert_uint_eq(UA_Server_readNodeClass(server_ft, UA_NS0ID(TEMPORARYFILETRANSFERTYPE),
+                                              &cls), UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(cls, UA_NODECLASS_OBJECTTYPE);
+    const UA_UInt32 children[] = {
+        UA_NS0ID_TEMPORARYFILETRANSFERTYPE_CLIENTPROCESSINGTIMEOUT,
+        UA_NS0ID_TEMPORARYFILETRANSFERTYPE_GENERATEFILEFORREAD,
+        UA_NS0ID_TEMPORARYFILETRANSFERTYPE_GENERATEFILEFORREAD_INPUTARGUMENTS,
+        UA_NS0ID_TEMPORARYFILETRANSFERTYPE_GENERATEFILEFORREAD_OUTPUTARGUMENTS,
+        UA_NS0ID_TEMPORARYFILETRANSFERTYPE_GENERATEFILEFORWRITE,
+        UA_NS0ID_TEMPORARYFILETRANSFERTYPE_GENERATEFILEFORWRITE_INPUTARGUMENTS,
+        UA_NS0ID_TEMPORARYFILETRANSFERTYPE_GENERATEFILEFORWRITE_OUTPUTARGUMENTS,
+        UA_NS0ID_TEMPORARYFILETRANSFERTYPE_CLOSEANDCOMMIT,
+        UA_NS0ID_TEMPORARYFILETRANSFERTYPE_CLOSEANDCOMMIT_INPUTARGUMENTS,
+        UA_NS0ID_TEMPORARYFILETRANSFERTYPE_CLOSEANDCOMMIT_OUTPUTARGUMENTS};
+    for(size_t i = 0; i < sizeof(children) / sizeof(children[0]); i++)
+        ck_assert_uint_eq(UA_Server_readNodeClass(server_ft,
+                              UA_NODEID_NUMERIC(0, children[i]), &cls), UA_STATUSCODE_GOOD);
+    UA_NodeId commit = resolveChild(server_ft, UA_NS0ID(TEMPORARYFILETRANSFERTYPE),
+                                    "CloseAndCommit");
+    UA_NodeId expected = UA_NS0ID(TEMPORARYFILETRANSFERTYPE_CLOSEANDCOMMIT);
+    ck_assert(UA_NodeId_equal(&commit, &expected));
+    UA_NodeId_clear(&commit);
+#ifndef UA_GENERATED_NAMESPACE_ZERO_FULL
+    ck_assert(!tryResolveChild(server_ft, UA_NS0ID(TEMPORARYFILETRANSFERTYPE),
+                               "<TransferState>", NULL));
+#endif
+} END_TEST
+
+/* The internal store of temporary transfers: a flat set of files with
+ * independent handles that grows on demand */
+START_TEST(memoryStoreContract) {
+    UA_FileTransferBackend b;
+    ck_assert_uint_eq(memStoreInit(&b), UA_STATUSCODE_GOOD);
+    UA_FileTransferFileInfo info;
+    memset(&info, 0, sizeof(info));
+    ck_assert_uint_eq(b.create(&b, UA_STRING("a"), &info), UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(b.create(&b, UA_STRING("a"), &info), UA_STATUSCODE_BADBROWSENAMEDUPLICATED);
+    ck_assert_uint_eq(b.create(&b, UA_STRING("d/a"), &info), UA_STATUSCODE_BADINVALIDARGUMENT);
+    info.isDirectory = true;
+    ck_assert_uint_eq(b.create(&b, UA_STRING("d"), &info), UA_STATUSCODE_BADNOTSUPPORTED);
+
+    UA_UInt32 w = 0, r = 0;
+    ck_assert_uint_eq(b.file.open(&b.file, UA_STRING("a"), UA_OPENFILEMODE_WRITE, NULL, &w),
+                      UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(b.file.write(&b.file, w, UA_BYTESTRING("hello")), UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(b.file.open(&b.file, UA_STRING("a"), UA_OPENFILEMODE_READ, NULL, &r),
+                      UA_STATUSCODE_GOOD);
+    ck_assert_uint_ne(r, w);
+    UA_ByteString data;
+    ck_assert_uint_eq(b.file.read(&b.file, r, 3, &data), UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(data.length, 3);
+    UA_ByteString_clear(&data);
+    UA_UInt64 position = 0;
+    ck_assert_uint_eq(b.file.getPosition(&b.file, r, &position), UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(position, 3);
+    ck_assert_uint_eq(b.file.setPosition(&b.file, r, 100), UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(b.file.read(&b.file, r, 3, &data), UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(data.length, 0);
+
+    memset(&info, 0, sizeof(info));
+    ck_assert_uint_eq(b.file.getInfo(&b.file, UA_STRING("a"), &info), UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(info.size, 5);
+    ck_assert_str_eq(info.name, "a");
+    ck_assert_uint_eq(info.accessRights, UA_FILEACCESS_READ | UA_FILEACCESS_WRITE);
+    memset(&info, 0, sizeof(info));
+    ck_assert_uint_eq(b.file.getInfo(&b.file, UA_STRING_NULL, &info), UA_STATUSCODE_GOOD);
+    ck_assert(info.isDirectory);
+
+    /* Removing a file invalidates its handles */
+    ck_assert_uint_eq(b.remove(&b, UA_STRING("a")), UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(b.file.read(&b.file, r, 3, &data), UA_STATUSCODE_BADINVALIDARGUMENT);
+    ck_assert_uint_eq(b.file.close(&b.file, w), UA_STATUSCODE_BADINVALIDARGUMENT);
+    ck_assert_uint_eq(b.remove(&b, UA_STRING("a")), UA_STATUSCODE_BADNOTFOUND);
+
+    /* The tables grow; clear frees files with open handles */
+    memset(&info, 0, sizeof(info));
+    char name[16];
+    for(size_t i = 0; i < 40; i++) {
+        snprintf(name, sizeof(name), "f%u", (unsigned)i);
+        ck_assert_uint_eq(b.create(&b, UA_STRING(name), &info), UA_STATUSCODE_GOOD);
+        ck_assert_uint_eq(b.file.open(&b.file, UA_STRING(name), UA_OPENFILEMODE_WRITE,
+                                      NULL, &w), UA_STATUSCODE_GOOD);
+        ck_assert_uint_eq(b.file.write(&b.file, w, UA_BYTESTRING("x")), UA_STATUSCODE_GOOD);
+    }
+    b.file.clear(&b.file);
+    ck_assert_ptr_null(b.file.context);
+} END_TEST
+
+/* Application side of the temporary transfers */
+static UA_ByteString tempReadContent;
+static UA_ByteString tempCommitted;
+static UA_Variant tempOptions;
+static UA_StatusCode tempGenerateResult;
+static UA_StatusCode tempCommitResult;
+static size_t tempGenerateCalls;
+static size_t tempCommitCalls;
+static UA_StatusCode tempGenerateWriteResult;
+static size_t tempGenerateWriteCalls;
+static size_t tempEndCalls;
+static UA_StatusCode tempEndStatus;
+static UA_Boolean tempEndForWrite;
+/* transferContext set by generateFileForRead and closeAndCommit, seen by
+ * closeAndCommit and endTransfer */
+static void *tempGenerateContext;
+static void *tempCommitContextOut;
+static void *tempCommitContextSeen;
+static void *tempEndContext;
+
+static void
+resetTemporaryCallbacks(void) {
+    tempReadContent = UA_BYTESTRING("report");
+    UA_ByteString_clear(&tempCommitted);
+    UA_Variant_clear(&tempOptions);
+    tempGenerateResult = UA_STATUSCODE_GOOD;
+    tempCommitResult = UA_STATUSCODE_GOOD;
+    tempGenerateCalls = 0;
+    tempCommitCalls = 0;
+    tempGenerateWriteResult = UA_STATUSCODE_GOOD;
+    tempGenerateWriteCalls = 0;
+    tempEndCalls = 0;
+    tempEndStatus = UA_STATUSCODE_GOOD;
+    tempEndForWrite = false;
+    tempGenerateContext = NULL;
+    tempCommitContextOut = NULL;
+    tempCommitContextSeen = NULL;
+    tempEndContext = NULL;
+}
+
+static UA_StatusCode
+writeStoreFile(UA_FileTransferFileBackend *store, const UA_String path,
+               const UA_ByteString content) {
+    UA_UInt32 handle = 0;
+    UA_StatusCode res = store->open(store, path, UA_OPENFILEMODE_WRITE, NULL, &handle);
+    if(res != UA_STATUSCODE_GOOD)
+        return res;
+    res = store->write(store, handle, content);
+    UA_StatusCode closeRes = store->close(store, handle);
+    return (res != UA_STATUSCODE_GOOD) ? res : closeRes;
+}
+
+static UA_StatusCode
+readStoreFile(UA_FileTransferFileBackend *store, const UA_String path,
+              UA_ByteString *out) {
+    UA_ByteString_init(out);
+    UA_UInt32 handle = 0;
+    UA_StatusCode res = store->open(store, path, UA_OPENFILEMODE_READ, NULL, &handle);
+    while(res == UA_STATUSCODE_GOOD) {
+        UA_ByteString chunk;
+        res = store->read(store, handle, 4096, &chunk);
+        if(res != UA_STATUSCODE_GOOD || chunk.length == 0) {
+            UA_ByteString_clear(&chunk);
+            break;
+        }
+        UA_Byte *grown = (UA_Byte*)UA_realloc(out->data, out->length + chunk.length);
+        if(!grown) {
+            UA_ByteString_clear(&chunk);
+            res = UA_STATUSCODE_BADOUTOFMEMORY;
+            break;
+        }
+        memcpy(grown + out->length, chunk.data, chunk.length);
+        out->data = grown;
+        out->length += chunk.length;
+        UA_ByteString_clear(&chunk);
+    }
+    if(handle != 0)
+        store->close(store, handle);
+    return res;
+}
+
+static UA_StatusCode
+tempGenerateRead(UA_Server *server, void *context, UA_FileTransferTemporaryFile *transfer) {
+    tempGenerateCalls++;
+    ck_assert(!transfer->forWrite);
+    UA_Variant_clear(&tempOptions);
+    UA_Variant_copy(transfer->generateOptions, &tempOptions);
+    if(tempGenerateResult != UA_STATUSCODE_GOOD)
+        return tempGenerateResult;
+    ck_assert_ptr_null(transfer->transferContext);
+    transfer->transferContext = tempGenerateContext;
+    return writeStoreFile(transfer->store, transfer->path, tempReadContent);
+}
+
+static UA_StatusCode
+tempGenerateWrite(UA_Server *server, void *context, UA_FileTransferTemporaryFile *transfer) {
+    tempGenerateWriteCalls++;
+    ck_assert(transfer->forWrite);
+    UA_Variant_clear(&tempOptions);
+    UA_Variant_copy(transfer->generateOptions, &tempOptions);
+    if(tempGenerateWriteResult != UA_STATUSCODE_GOOD)
+        return tempGenerateWriteResult;
+    transfer->transferContext = tempGenerateContext;
+    return UA_STATUSCODE_GOOD;
+}
+
+static UA_StatusCode
+tempCommit(UA_Server *server, void *context, UA_FileTransferTemporaryFile *transfer) {
+    tempCommitCalls++;
+    ck_assert(transfer->forWrite);
+    tempCommitContextSeen = transfer->transferContext;
+    if(tempCommitContextOut)
+        transfer->transferContext = tempCommitContextOut;
+    UA_Variant_clear(&tempOptions);
+    UA_Variant_copy(transfer->generateOptions, &tempOptions);
+    UA_ByteString_clear(&tempCommitted);
+    UA_StatusCode res = readStoreFile(transfer->store, transfer->path, &tempCommitted);
+    return (res != UA_STATUSCODE_GOOD) ? res : tempCommitResult;
+}
+
+/* The file of an ending transfer still exists */
+static void
+tempEndTransfer(UA_Server *server, void *context, UA_FileTransferTemporaryFile *transfer,
+                UA_StatusCode status) {
+    tempEndCalls++;
+    tempEndStatus = status;
+    tempEndForWrite = transfer->forWrite;
+    tempEndContext = transfer->transferContext;
+    ck_assert_ptr_null(transfer->sessionContext);
+    ck_assert(UA_NodeId_equal(transfer->sessionId, &server->adminSession.sessionId));
+    UA_FileTransferFileInfo info;
+    memset(&info, 0, sizeof(info));
+    ck_assert_uint_eq(transfer->store->getInfo(transfer->store, transfer->path, &info),
+                      UA_STATUSCODE_GOOD);
+}
+
+static void
+expectEnd(size_t calls, UA_Boolean forWrite, UA_StatusCode status) {
+    ck_assert_uint_eq(tempEndCalls, calls);
+    ck_assert(tempEndForWrite == forWrite);
+    ck_assert_uint_eq(tempEndStatus, status);
+}
+
+static UA_FileTransferTemporaryOptions
+temporaryOptions(UA_Boolean read, UA_Boolean write) {
+    UA_FileTransferTemporaryOptions options;
+    memset(&options, 0, sizeof(options));
+    options.generateFileForRead = read ? tempGenerateRead : NULL;
+    options.closeAndCommit = write ? tempCommit : NULL;
+    options.endTransfer = tempEndTransfer;
+    return options;
+}
+
+static UA_FileTransferNodeDescription
+temporaryDescription(const char *name) {
+    UA_FileTransferNodeDescription description;
+    memset(&description, 0, sizeof(description));
+    description.browseName = UA_QUALIFIEDNAME(1, (char*)(uintptr_t)name);
+    return description;
+}
+
+static UA_Driver *
+newTemporaryDriver(UA_Boolean read, UA_Boolean write, const char *name,
+                   UA_NodeId *outRoot) {
+    UA_FileTransferTemporaryOptions options = temporaryOptions(read, write);
+    UA_FileTransferNodeDescription description = temporaryDescription(name);
+    UA_Driver *driver = NULL;
+    ck_assert_uint_eq(UA_FileTransferDriver_newTemporary(server_ft, &options, &description,
+                          outRoot, &driver), UA_STATUSCODE_GOOD);
+    registerTestDriver(driver);
+    return driver;
+}
+
+static UA_UInt32
+callGenerate(const UA_NodeId root, UA_Boolean forWrite, UA_NodeId *outFile,
+             UA_StatusCode expected) {
+    UA_UInt32 option = 7;
+    UA_Variant input;
+    UA_Variant_setScalar(&input, &option, &UA_TYPES[UA_TYPES_UINT32]);
+    UA_CallMethodResult result = callMethod(root, forWrite ?
+        UA_NS0ID_TEMPORARYFILETRANSFERTYPE_GENERATEFILEFORWRITE :
+        UA_NS0ID_TEMPORARYFILETRANSFERTYPE_GENERATEFILEFORREAD, 1, &input);
+    ck_assert_uint_eq(result.statusCode, expected);
+    UA_UInt32 handle = 0;
+    if(outFile)
+        *outFile = UA_NODEID_NULL;
+    if(expected == UA_STATUSCODE_GOOD) {
+        ck_assert_uint_eq(result.outputArgumentsSize, forWrite ? 2 : 3);
+        if(outFile)
+            UA_NodeId_copy((UA_NodeId*)result.outputArguments[0].data, outFile);
+        handle = *(UA_UInt32*)result.outputArguments[1].data;
+        if(!forWrite)
+            ck_assert(UA_NodeId_isNull((UA_NodeId*)result.outputArguments[2].data));
+    }
+    UA_CallMethodResult_clear(&result);
+    return handle;
+}
+
+static void
+callCommit(const UA_NodeId root, UA_UInt32 handle, UA_StatusCode expected) {
+    UA_Variant input;
+    UA_Variant_setScalar(&input, &handle, &UA_TYPES[UA_TYPES_UINT32]);
+    UA_CallMethodResult result =
+        callMethod(root, UA_NS0ID_TEMPORARYFILETRANSFERTYPE_CLOSEANDCOMMIT, 1, &input);
+    ck_assert_uint_eq(result.statusCode, expected);
+    if(expected == UA_STATUSCODE_GOOD) {
+        ck_assert_uint_eq(result.outputArgumentsSize, 1);
+        ck_assert(UA_NodeId_isNull((UA_NodeId*)result.outputArguments[0].data));
+    }
+    UA_CallMethodResult_clear(&result);
+}
+
+static UA_Boolean
+nodeExists(const UA_NodeId nodeId) {
+    UA_NodeClass cls;
+    return UA_Server_readNodeClass(server_ft, nodeId, &cls) == UA_STATUSCODE_GOOD;
+}
+
+static UA_Boolean
+contentEquals(const UA_ByteString data, const char *expected) {
+    UA_ByteString e = UA_BYTESTRING((char*)(uintptr_t)expected);
+    return UA_ByteString_equal(&data, &e);
+}
+
+static UA_Boolean tempDenyAccess;
+
+static UA_StatusCode
+tempUserAccessRights(UA_FileTransferFileBackend *b, UA_Server *server,
+                     const UA_NodeId *sessionId, void *sessionContext,
+                     const UA_NodeId *nodeId, UA_FileAccessRights *outRights) {
+    *outRights = tempDenyAccess ? 0 : (UA_FILEACCESS_READ | UA_FILEACCESS_WRITE);
+    return UA_STATUSCODE_GOOD;
+}
+
+/* A transfer whose handle cannot be opened is rolled back completely */
+START_TEST(temporaryOpenFailureRollsBack) {
+    resetTemporaryCallbacks();
+    UA_FileTransferBackend store;
+    ck_assert_uint_eq(memBackend(&store), UA_STATUSCODE_GOOD);
+    store.file.getUserAccessRights = tempUserAccessRights;
+    MemBackendContext *ctx = (MemBackendContext*)store.file.context;
+    UA_FileTransferTemporaryOptions options = temporaryOptions(true, true);
+    options.store = &store;
+    UA_Driver *driver = NULL;
+    UA_NodeId root;
+    ck_assert_uint_eq(UA_FileTransferDriver_newTemporary(server_ft, &options, NULL,
+                          &root, &driver), UA_STATUSCODE_GOOD);
+    registerTestDriver(driver);
+    tempDenyAccess = true;
+    callGenerate(root, false, NULL, UA_STATUSCODE_BADNOTREADABLE);
+    ck_assert_ptr_null(memFind(ctx, UA_STRING("read-1")));
+    ck_assert_uint_eq(((FileTransferDriver*)driver)->entryCount, 1);
+    tempDenyAccess = false;
+    /* No read transfer is left that blocks a write transfer */
+    UA_NodeId file;
+    UA_UInt32 h = callGenerate(root, true, &file, UA_STATUSCODE_GOOD);
+    callClose(file, h, UA_STATUSCODE_GOOD);
+    UA_NodeId_clear(&file);
+    UA_NodeId_clear(&root);
+    resetTemporaryCallbacks();
+} END_TEST
+
+static UA_Boolean
+hasMethodCallback(const UA_NodeId methodId) {
+    UA_MethodCallback callback = NULL;
+    ck_assert_uint_eq(UA_Server_getMethodNodeCallback(server_ft, methodId, &callback),
+                      UA_STATUSCODE_GOOD);
+    return callback != NULL;
+}
+
+/* The temporary Methods belong to the started temporary drivers, the FileType
+ * Methods to every started driver */
+START_TEST(temporaryMethodCallbacksReleased) {
+    resetTemporaryCallbacks();
+    UA_NodeId fileId = addTestFile("Plain", "data", NULL);
+    UA_Driver *fileDriver = driverForRoot(fileId);
+    UA_NodeId root;
+    UA_Driver *temp = newTemporaryDriver(true, true, "Temp", &root);
+    UA_NodeId generate = UA_NS0ID(TEMPORARYFILETRANSFERTYPE_GENERATEFILEFORREAD);
+    UA_NodeId open = UA_NS0ID(FILETYPE_OPEN);
+    ck_assert(hasMethodCallback(generate));
+    temp->stop(temp);
+    ck_assert(!hasMethodCallback(generate));
+    ck_assert(hasMethodCallback(open));
+    ck_assert_uint_eq(temp->start(temp), UA_STATUSCODE_GOOD);
+    fileDriver->stop(fileDriver);
+    ck_assert(hasMethodCallback(open));
+    ck_assert(hasMethodCallback(generate));
+    temp->stop(temp);
+    ck_assert(!hasMethodCallback(open));
+    ck_assert(!hasMethodCallback(generate));
+    UA_NodeId_clear(&fileId);
+    UA_NodeId_clear(&root);
+    resetTemporaryCallbacks();
+} END_TEST
+
+START_TEST(temporaryReadTransfer) {
+    resetTemporaryCallbacks();
+    UA_NodeId root;
+    newTemporaryDriver(true, true, "Temp", &root);
+    UA_Variant value;
+    readProperty(root, "ClientProcessingTimeout", &value);
+    ck_assert(UA_Variant_hasScalarType(&value, &UA_TYPES[UA_TYPES_DURATION]));
+    ck_assert(*(UA_Duration*)value.data == 60000.0);
+    UA_Variant_clear(&value);
+
+    UA_NodeId file;
+    UA_UInt32 h = callGenerate(root, false, &file, UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(tempGenerateCalls, 1);
+    ck_assert(UA_Variant_hasScalarType(&tempOptions, &UA_TYPES[UA_TYPES_UINT32]));
+    ck_assert_uint_eq(*(UA_UInt32*)tempOptions.data, 7);
+    ck_assert_uint_eq(file.identifierType, UA_NODEIDTYPE_GUID);
+    ck_assert_uint_eq(file.namespaceIndex, root.namespaceIndex);
+    readProperty(file, "Size", &value);
+    ck_assert_uint_eq(*(UA_UInt64*)value.data, 6);
+    UA_Variant_clear(&value);
+    readProperty(file, "Writable", &value);
+    ck_assert(!*(UA_Boolean*)value.data);
+    UA_Variant_clear(&value);
+    ck_assert_uint_eq(readOpenCount(file), 1);
+
+    UA_ByteString data = callRead(file, h, 100, UA_STATUSCODE_GOOD);
+    ck_assert(contentEquals(data, "report"));
+    UA_ByteString_clear(&data);
+    callClose(file, h, UA_STATUSCODE_GOOD);
+    ck_assert(!nodeExists(file));
+    UA_NodeId_clear(&file);
+
+    /* Read transfers run in parallel */
+    UA_NodeId files[2];
+    UA_UInt32 handles[2];
+    for(size_t i = 0; i < 2; i++)
+        handles[i] = callGenerate(root, false, &files[i], UA_STATUSCODE_GOOD);
+    ck_assert(!UA_NodeId_equal(&files[0], &files[1]));
+    for(size_t i = 0; i < 2; i++) {
+        callClose(files[i], handles[i], UA_STATUSCODE_GOOD);
+        UA_NodeId_clear(&files[i]);
+    }
+    UA_NodeId_clear(&root);
+    resetTemporaryCallbacks();
+} END_TEST
+
+/* A transfer file has only the handle of its generate Method, and the root is
+ * not a file */
+START_TEST(temporaryOpenHandleRejected) {
+    resetTemporaryCallbacks();
+    UA_NodeId root;
+    UA_Driver *driver = newTemporaryDriver(true, true, "Temp", &root);
+    UA_NodeId file;
+    UA_UInt32 h = callGenerate(root, false, &file, UA_STATUSCODE_GOOD);
+    const UA_NodeId *session = &server_ft->adminSession.sessionId;
+    UA_UInt32 other = 0;
+    ck_assert_uint_eq(UA_FileTransferDriver_openHandle(driver, file, session, NULL,
+                          UA_OPENFILEMODE_READ, NULL, &other, NULL),
+                      UA_STATUSCODE_BADINVALIDARGUMENT);
+    ck_assert_uint_eq(UA_FileTransferDriver_openHandle(driver, root, session, NULL,
+                          UA_OPENFILEMODE_READ, NULL, &other, NULL),
+                      UA_STATUSCODE_BADINVALIDARGUMENT);
+    ck_assert_uint_eq(readOpenCount(file), 1);
+    callClose(file, h, UA_STATUSCODE_GOOD);
+    ck_assert(!nodeExists(file));
+    UA_NodeId_clear(&file);
+    UA_NodeId_clear(&root);
+    resetTemporaryCallbacks();
+} END_TEST
+
+/* Application Methods can generate temporary files, e.g. to return one */
+START_TEST(temporaryGenerateFileFunction) {
+    resetTemporaryCallbacks();
+    UA_NodeId root;
+    UA_Driver *driver = newTemporaryDriver(true, true, "Temp", &root);
+    const UA_NodeId *session = &server_ft->adminSession.sessionId;
+
+    /* A read transfer without generateOptions */
+    UA_NodeId file;
+    UA_UInt32 h = 0;
+    ck_assert_uint_eq(UA_FileTransferDriver_generateFile(driver, session, NULL, false,
+                          NULL, &file, &h), UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(tempGenerateCalls, 1);
+    ck_assert(UA_Variant_isEmpty(&tempOptions));
+    UA_ByteString data = callRead(file, h, 100, UA_STATUSCODE_GOOD);
+    ck_assert(contentEquals(data, "report"));
+    UA_ByteString_clear(&data);
+    callClose(file, h, UA_STATUSCODE_GOOD);
+    ck_assert(!nodeExists(file));
+    expectEnd(1, false, UA_STATUSCODE_GOOD);
+    UA_NodeId_clear(&file);
+
+    /* A write transfer excludes reads and is committed on the root */
+    UA_UInt32 option = 7;
+    UA_Variant options;
+    UA_Variant_setScalar(&options, &option, &UA_TYPES[UA_TYPES_UINT32]);
+    ck_assert_uint_eq(UA_FileTransferDriver_generateFile(driver, session, NULL, true,
+                          &options, &file, &h), UA_STATUSCODE_GOOD);
+    UA_NodeId other;
+    UA_UInt32 otherHandle = 0;
+    ck_assert_uint_eq(UA_FileTransferDriver_generateFile(driver, session, NULL, false,
+                          NULL, &other, &otherHandle), UA_STATUSCODE_BADNOTREADABLE);
+    callWrite(file, h, "image", UA_STATUSCODE_GOOD);
+    callCommit(root, h, UA_STATUSCODE_GOOD);
+    ck_assert(contentEquals(tempCommitted, "image"));
+    ck_assert(UA_Variant_hasScalarType(&tempOptions, &UA_TYPES[UA_TYPES_UINT32]));
+    ck_assert(!nodeExists(file));
+    expectEnd(2, true, UA_STATUSCODE_GOOD);
+    UA_NodeId_clear(&file);
+
+    /* Missing arguments, other drivers and stopped drivers */
+    ck_assert_uint_eq(UA_FileTransferDriver_generateFile(driver, NULL, NULL, false,
+                          NULL, &file, &h), UA_STATUSCODE_BADINVALIDARGUMENT);
+    ck_assert_uint_eq(UA_FileTransferDriver_generateFile(driver, session, NULL, false,
+                          NULL, NULL, &h), UA_STATUSCODE_BADINVALIDARGUMENT);
+    UA_NodeId plain = addTestFile("Plain", "data", NULL);
+    ck_assert_uint_eq(UA_FileTransferDriver_generateFile(driverForRoot(plain), session,
+                          NULL, false, NULL, &file, &h), UA_STATUSCODE_BADNOTSUPPORTED);
+    UA_NodeId_clear(&plain);
+    driver->stop(driver);
+    ck_assert_uint_eq(UA_FileTransferDriver_generateFile(driver, session, NULL, false,
+                          NULL, &file, &h), UA_STATUSCODE_BADINVALIDSTATE);
+    ck_assert_uint_eq(driver->start(driver), UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(tempGenerateCalls, 1);
+    UA_NodeId_clear(&root);
+    resetTemporaryCallbacks();
+} END_TEST
+
+START_TEST(temporaryWriteTransfer) {
+    resetTemporaryCallbacks();
+    UA_NodeId root;
+    newTemporaryDriver(true, true, "Temp", &root);
+    UA_NodeId file;
+    UA_UInt32 h = callGenerate(root, true, &file, UA_STATUSCODE_GOOD);
+    UA_Variant value;
+    readProperty(file, "Writable", &value);
+    ck_assert(*(UA_Boolean*)value.data);
+    UA_Variant_clear(&value);
+    callWrite(file, h, "firmware", UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(tempCommitCalls, 0);
+    callCommit(root, h, UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(tempCommitCalls, 1);
+    ck_assert(contentEquals(tempCommitted, "firmware"));
+    ck_assert_uint_eq(*(UA_UInt32*)tempOptions.data, 7);
+    ck_assert(!nodeExists(file));
+    UA_NodeId_clear(&file);
+
+    /* The next write transfer starts with an empty file */
+    h = callGenerate(root, true, &file, UA_STATUSCODE_GOOD);
+    callWrite(file, h, "ab", UA_STATUSCODE_GOOD);
+    callCommit(root, h, UA_STATUSCODE_GOOD);
+    ck_assert(contentEquals(tempCommitted, "ab"));
+    UA_NodeId_clear(&file);
+    UA_NodeId_clear(&root);
+    resetTemporaryCallbacks();
+} END_TEST
+
+START_TEST(temporaryWriteAbort) {
+    resetTemporaryCallbacks();
+    UA_NodeId root;
+    newTemporaryDriver(true, true, "Temp", &root);
+    UA_NodeId file;
+    UA_UInt32 h = callGenerate(root, true, &file, UA_STATUSCODE_GOOD);
+    callWrite(file, h, "partial", UA_STATUSCODE_GOOD);
+    callClose(file, h, UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(tempCommitCalls, 0);
+    ck_assert(!nodeExists(file));
+    UA_NodeId_clear(&file);
+    h = callGenerate(root, true, &file, UA_STATUSCODE_GOOD);
+    callClose(file, h, UA_STATUSCODE_GOOD);
+    UA_NodeId_clear(&file);
+    UA_NodeId_clear(&root);
+    resetTemporaryCallbacks();
+} END_TEST
+
+START_TEST(temporaryDirections) {
+    resetTemporaryCallbacks();
+    UA_NodeId readRoot, writeRoot;
+    newTemporaryDriver(true, false, "ReadOnly", &readRoot);
+    newTemporaryDriver(false, true, "WriteOnly", &writeRoot);
+    callGenerate(readRoot, true, NULL, UA_STATUSCODE_BADNOTWRITABLE);
+    callGenerate(writeRoot, false, NULL, UA_STATUSCODE_BADNOTREADABLE);
+
+    UA_FileTransferTemporaryOptions options = temporaryOptions(false, false);
+    UA_Driver *driver = (UA_Driver*)(uintptr_t)1;
+    ck_assert_uint_eq(UA_FileTransferDriver_newTemporary(server_ft, &options, NULL,
+                          NULL, &driver), UA_STATUSCODE_BADINVALIDARGUMENT);
+    ck_assert_ptr_null(driver);
+
+    /* read-only rejects write transfers */
+    options = temporaryOptions(true, true);
+    UA_FileTransferNodeDescription description = temporaryDescription("Protected");
+    UA_NodeId root;
+    ck_assert_uint_eq(UA_FileTransferDriver_newTemporary(server_ft, &options, &description,
+                          &root, &driver), UA_STATUSCODE_GOOD);
+    UA_Boolean readOnly = true;
+    ck_assert_uint_eq(UA_KeyValueMap_setScalar(&driver->params,
+                          UA_QUALIFIEDNAME(0, "read-only"), &readOnly,
+                          &UA_TYPES[UA_TYPES_BOOLEAN]), UA_STATUSCODE_GOOD);
+    registerTestDriver(driver);
+    callGenerate(root, true, NULL, UA_STATUSCODE_BADNOTWRITABLE);
+    UA_NodeId file;
+    UA_UInt32 h = callGenerate(root, false, &file, UA_STATUSCODE_GOOD);
+    callClose(file, h, UA_STATUSCODE_GOOD);
+    UA_NodeId_clear(&file);
+    UA_NodeId_clear(&root);
+    UA_NodeId_clear(&readRoot);
+    UA_NodeId_clear(&writeRoot);
+    resetTemporaryCallbacks();
+} END_TEST
+
+START_TEST(temporaryExclusiveWrite) {
+    resetTemporaryCallbacks();
+    UA_NodeId root;
+    newTemporaryDriver(true, true, "Temp", &root);
+    UA_NodeId file;
+    UA_UInt32 h = callGenerate(root, true, &file, UA_STATUSCODE_GOOD);
+    callGenerate(root, true, NULL, UA_STATUSCODE_BADNOTWRITABLE);
+    callGenerate(root, false, NULL, UA_STATUSCODE_BADNOTREADABLE);
+    callClose(file, h, UA_STATUSCODE_GOOD);
+    UA_NodeId_clear(&file);
+
+    h = callGenerate(root, false, &file, UA_STATUSCODE_GOOD);
+    callGenerate(root, true, NULL, UA_STATUSCODE_BADNOTWRITABLE);
+    callClose(file, h, UA_STATUSCODE_GOOD);
+    UA_NodeId_clear(&file);
+    h = callGenerate(root, true, &file, UA_STATUSCODE_GOOD);
+    callClose(file, h, UA_STATUSCODE_GOOD);
+    UA_NodeId_clear(&file);
+    UA_NodeId_clear(&root);
+    resetTemporaryCallbacks();
+} END_TEST
+
+/* CloseAndCommit needs a write handle of this Object; transfer files have no
+ * other handles than the generated one */
+START_TEST(temporaryCommitHandles) {
+    resetTemporaryCallbacks();
+    UA_NodeId root, otherRoot;
+    newTemporaryDriver(true, true, "Temp", &root);
+    newTemporaryDriver(true, true, "Other", &otherRoot);
+    callCommit(root, 4711, UA_STATUSCODE_BADINVALIDARGUMENT);
+
+    UA_NodeId file;
+    UA_UInt32 h = callGenerate(root, false, &file, UA_STATUSCODE_GOOD);
+    callCommit(root, h, UA_STATUSCODE_BADINVALIDARGUMENT);
+    callOpen(file, UA_OPENFILEMODE_READ, UA_STATUSCODE_BADUSERACCESSDENIED);
+    callClose(file, h, UA_STATUSCODE_GOOD);
+    UA_NodeId_clear(&file);
+
+    h = callGenerate(otherRoot, true, &file, UA_STATUSCODE_GOOD);
+    callCommit(root, h, UA_STATUSCODE_BADINVALIDARGUMENT);
+    ck_assert_uint_eq(tempCommitCalls, 0);
+    callCommit(otherRoot, h, UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(tempCommitCalls, 1);
+    UA_NodeId_clear(&file);
+    UA_NodeId_clear(&root);
+    UA_NodeId_clear(&otherRoot);
+    resetTemporaryCallbacks();
+} END_TEST
+
+static UA_Boolean
+referencesNode(const UA_NodeId source, UA_BrowseDirection direction,
+               const UA_NodeId target) {
+    UA_BrowseDescription bd;
+    UA_BrowseDescription_init(&bd);
+    bd.nodeId = source;
+    bd.browseDirection = direction;
+    bd.includeSubtypes = true;
+    UA_BrowseResult br = UA_Server_browse(server_ft, 0, &bd);
+    UA_Boolean found = false;
+    while(br.statusCode == UA_STATUSCODE_GOOD) {
+        for(size_t i = 0; i < br.referencesSize && !found; i++)
+            found = UA_NodeId_equal(&br.references[i].nodeId.nodeId, &target);
+        if(found || br.continuationPoint.length == 0)
+            break;
+        UA_BrowseResult next = UA_Server_browseNext(server_ft, false, &br.continuationPoint);
+        UA_BrowseResult_clear(&br);
+        br = next;
+    }
+    if(br.continuationPoint.length > 0) {
+        UA_BrowseResult released = UA_Server_browseNext(server_ft, true, &br.continuationPoint);
+        UA_BrowseResult_clear(&released);
+    }
+    UA_BrowseResult_clear(&br);
+    return found;
+}
+
+/* Part 20, 4.4.1: the transfer files are not browsable */
+START_TEST(temporaryFilesHidden) {
+    resetTemporaryCallbacks();
+    UA_NodeId root;
+    newTemporaryDriver(true, true, "Temp", &root);
+    UA_NodeId file;
+    UA_UInt32 h = callGenerate(root, false, &file, UA_STATUSCODE_GOOD);
+    UA_NodeId size = resolveChild(server_ft, file, "Size");
+    ck_assert(!referencesNode(root, UA_BROWSEDIRECTION_BOTH, file));
+    ck_assert(!referencesNode(UA_NS0ID(OBJECTSFOLDER), UA_BROWSEDIRECTION_FORWARD, file));
+    ck_assert(!referencesNode(UA_NS0ID(FILETYPE), UA_BROWSEDIRECTION_INVERSE, file));
+    ck_assert(!referencesNode(UA_NS0ID(FILETYPE_READ), UA_BROWSEDIRECTION_INVERSE, file));
+    ck_assert(!referencesNode(UA_NS0ID(PROPERTYTYPE), UA_BROWSEDIRECTION_INVERSE, size));
+    /* The file itself keeps its type, Methods and Properties */
+    ck_assert(referencesNode(file, UA_BROWSEDIRECTION_FORWARD, UA_NS0ID(FILETYPE)));
+    ck_assert(referencesNode(file, UA_BROWSEDIRECTION_FORWARD, UA_NS0ID(FILETYPE_READ)));
+    callClose(file, h, UA_STATUSCODE_GOOD);
+    ck_assert(!nodeExists(size));
+    UA_NodeId_clear(&size);
+    UA_NodeId_clear(&file);
+    UA_NodeId_clear(&root);
+    resetTemporaryCallbacks();
+} END_TEST
+
+static UA_Double
+readTimeoutValue(const UA_NodeId root) {
+    UA_Variant value;
+    readProperty(root, "ClientProcessingTimeout", &value);
+    ck_assert(UA_Variant_hasScalarType(&value, &UA_TYPES[UA_TYPES_DURATION]));
+    UA_Double timeout = *(UA_Duration*)value.data;
+    UA_Variant_clear(&value);
+    return timeout;
+}
+
+/* An existing TemporaryFileTransferType Object is served and restored */
+START_TEST(temporaryReuseObject) {
+    resetTemporaryCallbacks();
+    UA_NodeId existing;
+    ck_assert_uint_eq(UA_Server_addObjectNode(server_ft, UA_NODEID_NULL,
+                          UA_NS0ID(OBJECTSFOLDER), UA_NS0ID(HASCOMPONENT),
+                          UA_QUALIFIEDNAME(1, "FirmwareUpdate"),
+                          UA_NS0ID(TEMPORARYFILETRANSFERTYPE),
+                          UA_ObjectAttributes_default, NULL, &existing),
+                      UA_STATUSCODE_GOOD);
+    UA_NodeId timeoutId = resolveChild(server_ft, existing, "ClientProcessingTimeout");
+    UA_Double original = 5.0;
+    UA_Variant value;
+    UA_Variant_setScalar(&value, &original, &UA_TYPES[UA_TYPES_DOUBLE]);
+    ck_assert_uint_eq(UA_Server_writeValue(server_ft, timeoutId, value), UA_STATUSCODE_GOOD);
+
+    UA_FileTransferTemporaryOptions options = temporaryOptions(true, true);
+    UA_FileTransferNodeDescription description;
+    memset(&description, 0, sizeof(description));
+    description.nodeId = existing;
+    UA_Driver *driver = NULL;
+    ck_assert_uint_eq(UA_FileTransferDriver_newTemporary(server_ft, &options, &description,
+                          NULL, &driver), UA_STATUSCODE_GOOD);
+    registerTestDriver(driver);
+    ck_assert(readTimeoutValue(existing) == 60000.0);
+    UA_NodeId file;
+    UA_UInt32 h = callGenerate(existing, true, &file, UA_STATUSCODE_GOOD);
+    callWrite(file, h, "image", UA_STATUSCODE_GOOD);
+    callCommit(existing, h, UA_STATUSCODE_GOOD);
+    ck_assert(contentEquals(tempCommitted, "image"));
+    UA_NodeId_clear(&file);
+
+    /* A second driver cannot claim the Object */
+    UA_Driver *second = NULL;
+    ck_assert_uint_eq(UA_FileTransferDriver_newTemporary(server_ft, &options, &description,
+                          NULL, &second), UA_STATUSCODE_BADNODEIDEXISTS);
+    ck_assert_uint_eq(testRemove(driver, existing), UA_STATUSCODE_GOOD);
+    ck_assert(nodeExists(existing));
+    ck_assert(readTimeoutValue(existing) == 5.0);
+
+    /* Other types are rejected */
+    UA_NodeId plainFile = addFileTypeInstance(server_ft, "PlainFile");
+    description.nodeId = plainFile;
+    ck_assert_uint_eq(UA_FileTransferDriver_newTemporary(server_ft, &options, &description,
+                          NULL, &second), UA_STATUSCODE_BADTYPEDEFINITIONINVALID);
+    UA_NodeId_clear(&plainFile);
+    UA_NodeId_clear(&timeoutId);
+    UA_NodeId_clear(&existing);
+    resetTemporaryCallbacks();
+} END_TEST
+
+/* Without the TemporaryFileTransferType Methods only temporary drivers fail */
+START_TEST(temporaryMissingMethodNodes) {
+    resetTemporaryCallbacks();
+    ck_assert_uint_eq(UA_Server_deleteNode(server_ft,
+                          UA_NS0ID(TEMPORARYFILETRANSFERTYPE_CLOSEANDCOMMIT), true),
+                      UA_STATUSCODE_GOOD);
+    UA_NodeId fileId = addTestFile("Plain", "data", NULL);
+    UA_FileTransferTemporaryOptions options = temporaryOptions(true, true);
+    UA_Driver *driver = NULL;
+    ck_assert_uint_eq(UA_FileTransferDriver_newTemporary(server_ft, &options, NULL,
+                          NULL, &driver), UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(UA_Server_addDriver(server_ft, driver), UA_STATUSCODE_GOOD);
+    ck_assert_uint_ne(driver->start(driver), UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(driver->state, UA_LIFECYCLESTATE_STOPPED);
+    UA_UInt32 h = callOpen(fileId, UA_OPENFILEMODE_READ, UA_STATUSCODE_GOOD);
+    callClose(fileId, h, UA_STATUSCODE_GOOD);
+    UA_NodeId_clear(&fileId);
+} END_TEST
+
+/* An application store needs no listing or rename. The transfer files exist
+ * in it only during the transfer. */
+START_TEST(temporaryApplicationStore) {
+    resetTemporaryCallbacks();
+    UA_FileTransferBackend store;
+    ck_assert_uint_eq(memBackend(&store), UA_STATUSCODE_GOOD);
+    store.listDirectory = NULL;
+    store.rename = NULL;
+    MemBackendContext *ctx = (MemBackendContext*)store.file.context;
+    UA_FileTransferTemporaryOptions options = temporaryOptions(true, true);
+    options.store = &store;
+    UA_Driver *driver = NULL;
+    UA_NodeId root;
+    ck_assert_uint_eq(UA_FileTransferDriver_newTemporary(server_ft, &options, NULL,
+                          &root, &driver), UA_STATUSCODE_GOOD);
+    registerTestDriver(driver);
+    UA_NodeId file;
+    UA_UInt32 h = callGenerate(root, true, &file, UA_STATUSCODE_GOOD);
+    UA_String path = UA_STRING("write-1");
+    ck_assert_ptr_nonnull(memFind(ctx, path));
+    callWrite(file, h, "data", UA_STATUSCODE_GOOD);
+    callCommit(root, h, UA_STATUSCODE_GOOD);
+    ck_assert(contentEquals(tempCommitted, "data"));
+    ck_assert_ptr_null(memFind(ctx, path));
+    UA_NodeId_clear(&file);
+    UA_NodeId_clear(&root);
+
+    /* A store without remove is rejected and stays with the caller */
+    UA_FileTransferBackend incomplete;
+    ck_assert_uint_eq(memBackend(&incomplete), UA_STATUSCODE_GOOD);
+    incomplete.remove = NULL;
+    options.store = &incomplete;
+    UA_Driver *rejected = NULL;
+    ck_assert_uint_eq(UA_FileTransferDriver_newTemporary(server_ft, &options, NULL,
+                          NULL, &rejected), UA_STATUSCODE_BADINVALIDARGUMENT);
+    ck_assert_ptr_null(rejected);
+    incomplete.file.clear(&incomplete.file);
+    resetTemporaryCallbacks();
+} END_TEST
+
+/* Stopping the driver and closing the Session abort transfers without commit */
+START_TEST(temporaryStopAndSessionClose) {
+    resetTemporaryCallbacks();
+    UA_NodeId root;
+    UA_Driver *driver = newTemporaryDriver(true, true, "Temp", &root);
+    UA_NodeId file;
+    callGenerate(root, true, &file, UA_STATUSCODE_GOOD);
+    driver->stop(driver);
+    ck_assert(!nodeExists(file));
+    ck_assert_uint_eq(((FileTransferDriver*)driver)->entryCount, 1);
+    UA_NodeId_clear(&file);
+    ck_assert_uint_eq(driver->start(driver), UA_STATUSCODE_GOOD);
+
+    callGenerate(root, true, &file, UA_STATUSCODE_GOOD);
+    UA_KeyValueMap payload = UA_KEYVALUEMAP_NULL;
+    ck_assert_uint_eq(UA_KeyValueMap_setScalar(&payload, UA_QUALIFIEDNAME(0, "session-id"),
+                          &server_ft->adminSession.sessionId, &UA_TYPES[UA_TYPES_NODEID]),
+                      UA_STATUSCODE_GOOD);
+    lockServer(server_ft);
+    notifyApplication(server_ft, UA_APPLICATIONNOTIFICATIONTYPE_SESSION_CLOSED, payload);
+    unlockServer(server_ft);
+    UA_KeyValueMap_clear(&payload);
+    ck_assert(!nodeExists(file));
+    UA_NodeId_clear(&file);
+    UA_UInt32 h = callGenerate(root, true, &file, UA_STATUSCODE_GOOD);
+    callClose(file, h, UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(tempCommitCalls, 0);
+    UA_NodeId_clear(&file);
+    UA_NodeId_clear(&root);
+    resetTemporaryCallbacks();
+} END_TEST
+
+START_TEST(temporaryCallbackFailures) {
+    resetTemporaryCallbacks();
+    UA_NodeId root;
+    UA_Driver *driver = newTemporaryDriver(true, true, "Temp", &root);
+    tempGenerateResult = UA_STATUSCODE_BADUSERACCESSDENIED;
+    callGenerate(root, false, NULL, UA_STATUSCODE_BADUSERACCESSDENIED);
+    ck_assert_uint_eq(((FileTransferDriver*)driver)->entryCount, 1);
+    tempGenerateResult = UA_STATUSCODE_GOOD;
+
+    tempCommitResult = UA_STATUSCODE_BADINVALIDSTATE;
+    UA_NodeId file;
+    UA_UInt32 h = callGenerate(root, true, &file, UA_STATUSCODE_GOOD);
+    callWrite(file, h, "bad image", UA_STATUSCODE_GOOD);
+    callCommit(root, h, UA_STATUSCODE_BADINVALIDSTATE);
+    ck_assert(!nodeExists(file));
+    UA_NodeId_clear(&file);
+    tempCommitResult = UA_STATUSCODE_GOOD;
+    h = callGenerate(root, true, &file, UA_STATUSCODE_GOOD);
+    callCommit(root, h, UA_STATUSCODE_GOOD);
+    UA_NodeId_clear(&file);
+    UA_NodeId_clear(&root);
+    resetTemporaryCallbacks();
+} END_TEST
+
+/* endTransfer tells how each transfer ended */
+START_TEST(temporaryEndTransferStatus) {
+    resetTemporaryCallbacks();
+    UA_NodeId root;
+    UA_Driver *driver = newTemporaryDriver(true, true, "Temp", &root);
+    UA_NodeId file;
+    UA_UInt32 h = callGenerate(root, false, &file, UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(tempEndCalls, 0);
+    callClose(file, h, UA_STATUSCODE_GOOD);
+    expectEnd(1, false, UA_STATUSCODE_GOOD);
+    UA_NodeId_clear(&file);
+
+    /* CloseAndCommit ends with the result of closeAndCommit, Close cancels */
+    h = callGenerate(root, true, &file, UA_STATUSCODE_GOOD);
+    callCommit(root, h, UA_STATUSCODE_GOOD);
+    expectEnd(2, true, UA_STATUSCODE_GOOD);
+    UA_NodeId_clear(&file);
+    tempCommitResult = UA_STATUSCODE_BADINVALIDSTATE;
+    h = callGenerate(root, true, &file, UA_STATUSCODE_GOOD);
+    callCommit(root, h, UA_STATUSCODE_BADINVALIDSTATE);
+    expectEnd(3, true, UA_STATUSCODE_BADINVALIDSTATE);
+    UA_NodeId_clear(&file);
+    tempCommitResult = UA_STATUSCODE_GOOD;
+    h = callGenerate(root, true, &file, UA_STATUSCODE_GOOD);
+    callClose(file, h, UA_STATUSCODE_GOOD);
+    expectEnd(4, true, UA_STATUSCODE_BADREQUESTCANCELLEDBYCLIENT);
+    UA_NodeId_clear(&file);
+
+    /* A refused generateFileForRead creates no transfer */
+    tempGenerateResult = UA_STATUSCODE_BADUSERACCESSDENIED;
+    callGenerate(root, false, NULL, UA_STATUSCODE_BADUSERACCESSDENIED);
+    ck_assert_uint_eq(tempEndCalls, 4);
+    tempGenerateResult = UA_STATUSCODE_GOOD;
+
+    /* The Session closes, the driver stops */
+    callGenerate(root, false, &file, UA_STATUSCODE_GOOD);
+    UA_KeyValueMap payload = UA_KEYVALUEMAP_NULL;
+    ck_assert_uint_eq(UA_KeyValueMap_setScalar(&payload, UA_QUALIFIEDNAME(0, "session-id"),
+                          &server_ft->adminSession.sessionId, &UA_TYPES[UA_TYPES_NODEID]),
+                      UA_STATUSCODE_GOOD);
+    lockServer(server_ft);
+    notifyApplication(server_ft, UA_APPLICATIONNOTIFICATIONTYPE_SESSION_CLOSED, payload);
+    unlockServer(server_ft);
+    UA_KeyValueMap_clear(&payload);
+    expectEnd(5, false, UA_STATUSCODE_BADSESSIONCLOSED);
+    UA_NodeId_clear(&file);
+    callGenerate(root, true, &file, UA_STATUSCODE_GOOD);
+    driver->stop(driver);
+    expectEnd(6, true, UA_STATUSCODE_BADSHUTDOWN);
+    ck_assert(!nodeExists(file));
+    UA_NodeId_clear(&file);
+    ck_assert_uint_eq(driver->start(driver), UA_STATUSCODE_GOOD);
+    UA_NodeId_clear(&root);
+    resetTemporaryCallbacks();
+} END_TEST
+
+/* A subtype Method finds the running transfer by its FileHandle */
+START_TEST(temporaryTransferContext) {
+    resetTemporaryCallbacks();
+    UA_NodeId root;
+    UA_Driver *driver = newTemporaryDriver(true, true, "Temp", &root);
+    const UA_NodeId *session = &server_ft->adminSession.sessionId;
+    UA_NodeId other = UA_NODEID_NUMERIC(1, 4711);
+    int dataset = 1, info = 2, result = 3;
+
+    tempGenerateContext = &dataset;
+    UA_NodeId file;
+    UA_UInt32 h = callGenerate(root, false, &file, UA_STATUSCODE_GOOD);
+    UA_Boolean forWrite = true;
+    void *context = NULL;
+    ck_assert_uint_eq(UA_FileTransferDriver_getTransfer(driver, session, h, &forWrite,
+                          &context), UA_STATUSCODE_GOOD);
+    ck_assert(!forWrite);
+    ck_assert_ptr_eq(context, &dataset);
+    ck_assert_uint_eq(UA_FileTransferDriver_getTransfer(driver, &other, h, NULL, NULL),
+                      UA_STATUSCODE_BADINVALIDARGUMENT);
+    ck_assert_uint_eq(UA_FileTransferDriver_getTransfer(driver, session, h + 1, NULL,
+                          NULL), UA_STATUSCODE_BADINVALIDARGUMENT);
+    callClose(file, h, UA_STATUSCODE_GOOD);
+    ck_assert_ptr_eq(tempEndContext, &dataset);
+    ck_assert_uint_eq(UA_FileTransferDriver_getTransfer(driver, session, h, NULL, NULL),
+                      UA_STATUSCODE_BADINVALIDARGUMENT);
+    UA_NodeId_clear(&file);
+
+    /* A write transfer gets its context later; closeAndCommit can replace it */
+    h = callGenerate(root, true, &file, UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(UA_FileTransferDriver_getTransfer(driver, session, h, &forWrite,
+                          &context), UA_STATUSCODE_GOOD);
+    ck_assert(forWrite);
+    ck_assert_ptr_null(context);
+    ck_assert_uint_eq(UA_FileTransferDriver_setTransferContext(driver, &other, h, &info),
+                      UA_STATUSCODE_BADINVALIDARGUMENT);
+    ck_assert_uint_eq(UA_FileTransferDriver_setTransferContext(driver, session, h, &info),
+                      UA_STATUSCODE_GOOD);
+    tempCommitContextOut = &result;
+    callCommit(root, h, UA_STATUSCODE_GOOD);
+    ck_assert_ptr_eq(tempCommitContextSeen, &info);
+    ck_assert_ptr_eq(tempEndContext, &result);
+    UA_NodeId_clear(&file);
+
+    /* Only temporary drivers have transfers */
+    UA_NodeId plain = addTestFile("Plain", "data", NULL);
+    UA_Driver *fileDriver = driverForRoot(plain);
+    h = callOpen(plain, UA_OPENFILEMODE_READ, UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(UA_FileTransferDriver_getTransfer(fileDriver, session, h, NULL,
+                          NULL), UA_STATUSCODE_BADNOTSUPPORTED);
+    ck_assert_uint_eq(UA_FileTransferDriver_setTransferContext(fileDriver, session, h,
+                          &info), UA_STATUSCODE_BADNOTSUPPORTED);
+    callClose(plain, h, UA_STATUSCODE_GOOD);
+    UA_NodeId_clear(&plain);
+    UA_NodeId_clear(&root);
+    resetTemporaryCallbacks();
+} END_TEST
+
+/* generateFileForWrite can refuse a write transfer (Part 20, 4.4.4) */
+START_TEST(temporaryGenerateWrite) {
+    resetTemporaryCallbacks();
+    UA_FileTransferBackend store;
+    ck_assert_uint_eq(memBackend(&store), UA_STATUSCODE_GOOD);
+    MemBackendContext *ctx = (MemBackendContext*)store.file.context;
+    UA_FileTransferTemporaryOptions options = temporaryOptions(true, true);
+    options.generateFileForWrite = tempGenerateWrite;
+    options.store = &store;
+    UA_FileTransferNodeDescription description = temporaryDescription("Temp");
+    UA_Driver *driver = NULL;
+    UA_NodeId root;
+    ck_assert_uint_eq(UA_FileTransferDriver_newTemporary(server_ft, &options, &description,
+                          &root, &driver), UA_STATUSCODE_GOOD);
+    registerTestDriver(driver);
+
+    UA_StatusCode refusals[2] = {UA_STATUSCODE_BADINVALIDSTATE,
+                                 UA_STATUSCODE_BADINVALIDARGUMENT};
+    const char *names[2] = {"write-1", "write-2"};
+    for(size_t i = 0; i < 2; i++) {
+        tempGenerateWriteResult = refusals[i];
+        callGenerate(root, true, NULL, refusals[i]);
+        ck_assert_uint_eq(tempGenerateWriteCalls, i + 1);
+        ck_assert_uint_eq(*(UA_UInt32*)tempOptions.data, 7);
+        ck_assert_ptr_null(memFind(ctx, UA_STRING((char*)(uintptr_t)names[i])));
+        ck_assert_uint_eq(((FileTransferDriver*)driver)->entryCount, 1);
+    }
+    ck_assert_uint_eq(tempEndCalls, 0);
+
+    /* A refused transfer holds no lock; an accepted one keeps its context */
+    tempGenerateWriteResult = UA_STATUSCODE_GOOD;
+    int image = 1;
+    tempGenerateContext = &image;
+    UA_NodeId file;
+    UA_UInt32 h = callGenerate(root, true, &file, UA_STATUSCODE_GOOD);
+    callWrite(file, h, "image", UA_STATUSCODE_GOOD);
+    callCommit(root, h, UA_STATUSCODE_GOOD);
+    ck_assert_ptr_eq(tempCommitContextSeen, &image);
+    expectEnd(1, true, UA_STATUSCODE_GOOD);
+    UA_NodeId_clear(&file);
+    h = callGenerate(root, false, &file, UA_STATUSCODE_GOOD);
+    callClose(file, h, UA_STATUSCODE_GOOD);
+    UA_NodeId_clear(&file);
+
+    /* A read-only driver refuses before generateFileForWrite */
+    driver->stop(driver);
+    UA_Boolean readOnly = true;
+    ck_assert_uint_eq(UA_KeyValueMap_setScalar(&driver->params,
+                          UA_QUALIFIEDNAME(0, "read-only"), &readOnly,
+                          &UA_TYPES[UA_TYPES_BOOLEAN]), UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(driver->start(driver), UA_STATUSCODE_GOOD);
+    callGenerate(root, true, NULL, UA_STATUSCODE_BADNOTWRITABLE);
+    ck_assert_uint_eq(tempGenerateWriteCalls, 3);
+    UA_NodeId_clear(&root);
+    resetTemporaryCallbacks();
+} END_TEST
+
+static UA_Driver *
+newTimedTemporaryDriver(const char *name, UA_Double timeout, UA_NodeId *outRoot) {
+    UA_FileTransferTemporaryOptions options = temporaryOptions(true, true);
+    UA_FileTransferNodeDescription description = temporaryDescription(name);
+    UA_Driver *driver = NULL;
+    ck_assert_uint_eq(UA_FileTransferDriver_newTemporary(server_ft, &options, &description,
+                          outRoot, &driver), UA_STATUSCODE_GOOD);
+    setActivityTimeout(driver, timeout);
+    return driver;
+}
+
+/* Part 20, 4.4.1: an idle transfer is cancelled after the activity-timeout,
+ * published as ClientProcessingTimeout */
+START_TEST(temporaryIdleTransferCancelled) {
+    resetTemporaryCallbacks();
+    UA_Server_getConfig(server_ft)->tcpEnabled = false;
+    ck_assert_uint_eq(UA_Server_run_startup(server_ft), UA_STATUSCODE_GOOD);
+    UA_NodeId root;
+    UA_Driver *driver = newTimedTemporaryDriver("Temp", 100, &root);
+    ck_assert_uint_eq(UA_Server_addDriver(server_ft, driver), UA_STATUSCODE_GOOD);
+    ck_assert(readTimeoutValue(root) == 100.0);
+
+    /* Method calls keep the transfer alive */
+    UA_NodeId file;
+    UA_UInt32 h = callGenerate(root, true, &file, UA_STATUSCODE_GOOD);
+    for(size_t i = 0; i < 4; i++) {
+        UA_fakeSleep(60);
+        UA_Server_run_iterate(server_ft, false);
+        callWrite(file, h, "x", UA_STATUSCODE_GOOD);
+    }
+    /* So do the lookups of subtype Methods */
+    for(size_t i = 0; i < 3; i++) {
+        UA_fakeSleep(60);
+        UA_Server_run_iterate(server_ft, false);
+        ck_assert_uint_eq(UA_FileTransferDriver_getTransfer(driver,
+                              &server_ft->adminSession.sessionId, h, NULL, NULL),
+                          UA_STATUSCODE_GOOD);
+    }
+    ck_assert(nodeExists(file));
+
+    /* An idle transfer ends within twice the timeout and releases the lock */
+    UA_fakeSleep(210);
+    UA_Server_run_iterate(server_ft, false);
+    ck_assert(!nodeExists(file));
+    ck_assert_uint_eq(tempCommitCalls, 0);
+    expectEnd(1, true, UA_STATUSCODE_BADTIMEOUT);
+    UA_NodeId_clear(&file);
+    h = callGenerate(root, true, &file, UA_STATUSCODE_GOOD);
+    callClose(file, h, UA_STATUSCODE_GOOD);
+    UA_NodeId_clear(&file);
+
+    /* Read transfers are cancelled as well */
+    callGenerate(root, false, &file, UA_STATUSCODE_GOOD);
+    advanceClock(201);
+    ck_assert(!nodeExists(file));
+    expectEnd(3, false, UA_STATUSCODE_BADTIMEOUT);
+    UA_NodeId_clear(&file);
+    ck_assert_uint_eq(UA_Server_run_shutdown(server_ft), UA_STATUSCODE_GOOD);
+    UA_NodeId_clear(&root);
+    resetTemporaryCallbacks();
+} END_TEST
+
+START_TEST(temporaryTimeoutParameter) {
+    resetTemporaryCallbacks();
+    UA_Server_getConfig(server_ft)->tcpEnabled = false;
+    ck_assert_uint_eq(UA_Server_run_startup(server_ft), UA_STATUSCODE_GOOD);
+
+    /* 0 disables the timeout */
+    UA_NodeId root;
+    UA_Driver *driver = newTimedTemporaryDriver("Unlimited", 0, &root);
+    ck_assert_uint_eq(UA_Server_addDriver(server_ft, driver), UA_STATUSCODE_GOOD);
+    ck_assert(readTimeoutValue(root) == 0.0);
+    UA_NodeId file;
+    UA_UInt32 h = callGenerate(root, false, &file, UA_STATUSCODE_GOOD);
+    UA_fakeSleep(10 * 60 * 1000);
+    UA_Server_run_iterate(server_ft, false);
+    ck_assert(nodeExists(file));
+    callClose(file, h, UA_STATUSCODE_GOOD);
+    UA_NodeId_clear(&file);
+    UA_NodeId_clear(&root);
+
+    /* Negative, NaN, infinite and sub-tick timeouts are rejected */
+    UA_Double zero = 0.0;
+    UA_Double invalid[4] = {-1, zero / zero, 1.0 / zero, 0.00001};
+    for(size_t i = 0; i < 4; i++) {
+        UA_Driver *rejected = newTimedTemporaryDriver("Invalid", invalid[i], NULL);
+        ck_assert_uint_eq(UA_Server_addDriver(server_ft, rejected),
+                          UA_STATUSCODE_BADINVALIDARGUMENT);
+        ck_assert_uint_eq(rejected->free(rejected), UA_STATUSCODE_GOOD);
+    }
+
+    /* Another type than Double fails the start */
+    UA_Driver *wrongType = newTimedTemporaryDriver("WrongType", 100, NULL);
+    UA_Int32 wrong = 100;
+    ck_assert_uint_eq(UA_KeyValueMap_setScalar(&wrongType->params,
+                          UA_QUALIFIEDNAME(0, "activity-timeout"), &wrong,
+                          &UA_TYPES[UA_TYPES_INT32]), UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(UA_Server_addDriver(server_ft, wrongType),
+                      UA_STATUSCODE_BADINVALIDARGUMENT);
+    ck_assert_uint_eq(wrongType->free(wrongType), UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(UA_Server_run_shutdown(server_ft), UA_STATUSCODE_GOOD);
+    resetTemporaryCallbacks();
+} END_TEST
+
+static UA_Driver *
+newConfiguredTemporaryDriver(const char *name, const char *param, const void *value,
+                             const UA_DataType *type, UA_NodeId *outRoot) {
+    UA_FileTransferTemporaryOptions options = temporaryOptions(true, true);
+    UA_FileTransferNodeDescription description = temporaryDescription(name);
+    UA_Driver *driver = NULL;
+    ck_assert_uint_eq(UA_FileTransferDriver_newTemporary(server_ft, &options, &description,
+                          outRoot, &driver), UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(UA_KeyValueMap_setScalar(&driver->params,
+                          UA_QUALIFIEDNAME(0, (char*)(uintptr_t)param), value, type),
+                      UA_STATUSCODE_GOOD);
+    registerTestDriver(driver);
+    return driver;
+}
+
+START_TEST(temporaryExclusiveReads) {
+    resetTemporaryCallbacks();
+    UA_Boolean exclusive = true;
+    UA_NodeId root;
+    newConfiguredTemporaryDriver("Temp", "exclusive-reads", &exclusive,
+                                 &UA_TYPES[UA_TYPES_BOOLEAN], &root);
+    UA_NodeId file;
+    UA_UInt32 h = callGenerate(root, false, &file, UA_STATUSCODE_GOOD);
+    callGenerate(root, false, NULL, UA_STATUSCODE_BADNOTREADABLE);
+    callClose(file, h, UA_STATUSCODE_GOOD);
+    UA_NodeId_clear(&file);
+    h = callGenerate(root, false, &file, UA_STATUSCODE_GOOD);
+    callClose(file, h, UA_STATUSCODE_GOOD);
+    UA_NodeId_clear(&file);
+    UA_NodeId_clear(&root);
+    resetTemporaryCallbacks();
+} END_TEST
+
+START_TEST(temporaryTransferSizeLimit) {
+    resetTemporaryCallbacks();
+    UA_UInt64 limit = 8;
+    UA_NodeId root;
+    UA_Driver *driver = newConfiguredTemporaryDriver("Temp", "max-transfer-size", &limit,
+                                                     &UA_TYPES[UA_TYPES_UINT64], &root);
+    UA_NodeId file;
+    UA_UInt32 h = callGenerate(root, true, &file, UA_STATUSCODE_GOOD);
+    callWrite(file, h, "12345", UA_STATUSCODE_GOOD);
+    callWrite(file, h, "6789", UA_STATUSCODE_BADRESOURCEUNAVAILABLE);
+    callWrite(file, h, "678", UA_STATUSCODE_GOOD);
+    callCommit(root, h, UA_STATUSCODE_GOOD);
+    ck_assert(contentEquals(tempCommitted, "12345678"));
+    UA_NodeId_clear(&file);
+
+    /* A prepared file beyond the limit fails the transfer */
+    tempReadContent = UA_BYTESTRING("123456789");
+    callGenerate(root, false, NULL, UA_STATUSCODE_BADRESOURCEUNAVAILABLE);
+    ck_assert_uint_eq(((FileTransferDriver*)driver)->entryCount, 1);
+    UA_NodeId_clear(&root);
+    resetTemporaryCallbacks();
+} END_TEST
+
+/* The transfers of a root and the handles of a Session are limited before
+ * generateFileForRead runs */
+START_TEST(temporaryTransferLimits) {
+    resetTemporaryCallbacks();
+    UA_UInt16 limit = 2;
+    UA_NodeId root;
+    newConfiguredTemporaryDriver("Temp", "max-open-handles-per-file", &limit,
+                                 &UA_TYPES[UA_TYPES_UINT16], &root);
+    UA_NodeId files[2];
+    UA_UInt32 handles[2];
+    for(size_t i = 0; i < 2; i++)
+        handles[i] = callGenerate(root, false, &files[i], UA_STATUSCODE_GOOD);
+    callGenerate(root, false, NULL, UA_STATUSCODE_BADRESOURCEUNAVAILABLE);
+    ck_assert_uint_eq(tempGenerateCalls, 2);
+    for(size_t i = 0; i < 2; i++) {
+        callClose(files[i], handles[i], UA_STATUSCODE_GOOD);
+        UA_NodeId_clear(&files[i]);
+    }
+    UA_NodeId_clear(&root);
+
+    UA_UInt16 sessionLimit = 1;
+    newConfiguredTemporaryDriver("Session", "max-open-handles-per-session", &sessionLimit,
+                                 &UA_TYPES[UA_TYPES_UINT16], &root);
+    UA_NodeId file;
+    UA_UInt32 h = callGenerate(root, false, &file, UA_STATUSCODE_GOOD);
+    callGenerate(root, false, NULL, UA_STATUSCODE_BADRESOURCEUNAVAILABLE);
+    ck_assert_uint_eq(tempGenerateCalls, 3);
+    callClose(file, h, UA_STATUSCODE_GOOD);
+    UA_NodeId_clear(&file);
+    UA_NodeId_clear(&root);
+    resetTemporaryCallbacks();
+} END_TEST
+
+START_TEST(temporaryLimitParametersRequireTheirTypes) {
+    resetTemporaryCallbacks();
+    UA_FileTransferTemporaryOptions options = temporaryOptions(true, true);
+    UA_FileTransferNodeDescription description = temporaryDescription("Temp");
+    UA_Driver *driver = NULL;
+    ck_assert_uint_eq(UA_FileTransferDriver_newTemporary(server_ft, &options, &description,
+                          NULL, &driver), UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(UA_Server_addDriver(server_ft, driver), UA_STATUSCODE_GOOD);
+    UA_UInt32 wrong = 1;
+    const char *keys[2] = {"exclusive-reads", "max-transfer-size"};
+    for(size_t i = 0; i < 2; i++) {
+        ck_assert_uint_eq(UA_KeyValueMap_setScalar(&driver->params,
+                              UA_QUALIFIEDNAME(0, (char*)(uintptr_t)keys[i]), &wrong,
+                              &UA_TYPES[UA_TYPES_UINT32]), UA_STATUSCODE_GOOD);
+        ck_assert_uint_eq(driver->start(driver), UA_STATUSCODE_BADINVALIDARGUMENT);
+        ck_assert_uint_eq(UA_KeyValueMap_remove(&driver->params,
+                              UA_QUALIFIEDNAME(0, (char*)(uintptr_t)keys[i])),
+                          UA_STATUSCODE_GOOD);
+    }
+    ck_assert_uint_eq(driver->start(driver), UA_STATUSCODE_GOOD);
+    resetTemporaryCallbacks();
+} END_TEST
+
 int main(void) {
     Suite *s = suite_create("server_filetransfer");
 
@@ -6049,6 +7739,9 @@ int main(void) {
     tcase_add_test(tc_lifecycle, failedRegistrationRetainsObjects);
     tcase_add_test(tc_lifecycle, directoryLifetimeAndAutomaticRefresh);
     tcase_add_test(tc_lifecycle, disabledPeriodicRefresh);
+    tcase_add_test(tc_lifecycle, activityTimeoutClosesIdleHandles);
+    tcase_add_test(tc_lifecycle, activityTimeoutClosesZombies);
+    tcase_add_test(tc_lifecycle, activityTimeoutParameter);
     tcase_add_test(tc_lifecycle, driverParametersRequireTheirTypes);
     tcase_add_test(tc_lifecycle, directoryBackendCastsFileBackend);
     tcase_add_test(tc_lifecycle, defaultNodeDescriptions);
@@ -6082,14 +7775,18 @@ int main(void) {
     tcase_add_test(tc_file, readAtEndReturnsEmptyByteString);
     tcase_add_test(tc_file, fileBadHandles);
     tcase_add_test(tc_file, subtypeMethodUsesFileHandle);
+    tcase_add_test(tc_file, openHandleFromSubtypeMethod);
+    tcase_add_test(tc_file, openHandleChecks);
     tcase_add_test(tc_file, fileReadOnlyMount);
     tcase_add_test(tc_file, fileHandleLimits);
     tcase_add_test(tc_file, removeFileClosesHandles);
+    tcase_add_test(tc_file, fileSizeUnknown);
     tcase_add_test(tc_file, fileMaxByteStringLength);
     tcase_add_test(tc_file, fileWriteRespectsMaxByteStringLength);
     tcase_add_test(tc_file, readOnlyBackendNeedsNoWriteCallbacks);
     tcase_add_test(tc_file, userWritableFollowsStorage);
     tcase_add_test(tc_file, fileAccessRightsEnforced);
+    tcase_add_test(tc_file, openReceivesCaller);
 #ifndef _WIN32
     tcase_add_test(tc_file, localDirectoryAccessRightsFollowPermissions);
 #endif
@@ -6152,6 +7849,7 @@ int main(void) {
     tcase_add_test(tc_dir, localDirectoryListingErrors);
 #endif
     tcase_add_checked_fixture(tc_dir, setup, teardown);
+    tcase_add_test(tc_dir, openInDirectories);
     suite_add_tcase(s, tc_dir);
 
     TCase *tc_backend = tcase_create("Storage Backends");
@@ -6160,6 +7858,37 @@ int main(void) {
     tcase_add_test(tc_backend, localDirectoryBackendSandbox);
     tcase_add_test(tc_backend, localDirectoryUtf8Names);
     suite_add_tcase(s, tc_backend);
+
+    TCase *tc_temp = tcase_create("TemporaryFileTransferType");
+    tcase_add_checked_fixture(tc_temp, setup, teardown);
+    tcase_add_test(tc_temp, temporaryTypeInNamespaceZero);
+    tcase_add_test(tc_temp, memoryStoreContract);
+    tcase_add_test(tc_temp, temporaryReadTransfer);
+    tcase_add_test(tc_temp, temporaryOpenHandleRejected);
+    tcase_add_test(tc_temp, temporaryGenerateFileFunction);
+    tcase_add_test(tc_temp, temporaryOpenFailureRollsBack);
+    tcase_add_test(tc_temp, temporaryMethodCallbacksReleased);
+    tcase_add_test(tc_temp, temporaryWriteTransfer);
+    tcase_add_test(tc_temp, temporaryWriteAbort);
+    tcase_add_test(tc_temp, temporaryDirections);
+    tcase_add_test(tc_temp, temporaryExclusiveWrite);
+    tcase_add_test(tc_temp, temporaryCommitHandles);
+    tcase_add_test(tc_temp, temporaryFilesHidden);
+    tcase_add_test(tc_temp, temporaryReuseObject);
+    tcase_add_test(tc_temp, temporaryMissingMethodNodes);
+    tcase_add_test(tc_temp, temporaryApplicationStore);
+    tcase_add_test(tc_temp, temporaryStopAndSessionClose);
+    tcase_add_test(tc_temp, temporaryCallbackFailures);
+    tcase_add_test(tc_temp, temporaryEndTransferStatus);
+    tcase_add_test(tc_temp, temporaryTransferContext);
+    tcase_add_test(tc_temp, temporaryGenerateWrite);
+    tcase_add_test(tc_temp, temporaryIdleTransferCancelled);
+    tcase_add_test(tc_temp, temporaryTimeoutParameter);
+    tcase_add_test(tc_temp, temporaryExclusiveReads);
+    tcase_add_test(tc_temp, temporaryTransferSizeLimit);
+    tcase_add_test(tc_temp, temporaryTransferLimits);
+    tcase_add_test(tc_temp, temporaryLimitParametersRequireTheirTypes);
+    suite_add_tcase(s, tc_temp);
 
     SRunner *sr = srunner_create(s);
     srunner_set_fork_status(sr, CK_NOFORK);
