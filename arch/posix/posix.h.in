@@ -9,8 +9,11 @@
 #cmakedefine UA_ARCHITECTURE_POSIX
 
 /* Detect the target when generating a portable amalgamation with no selected
- * architecture. Explicit architecture selections take precedence. */
-#if !defined(UA_ARCHITECTURE_WIN32) && !defined(UA_ARCHITECTURE_POSIX)
+ * architecture. Explicit architecture selections take precedence. Define
+ * UA_ARCHITECTURE_DEFINED (e.g. as a compiler flag) to build without either,
+ * when the application brings its own clock and EventLoop. */
+#if !defined(UA_ARCHITECTURE_WIN32) && !defined(UA_ARCHITECTURE_POSIX) && \
+    !defined(UA_ARCHITECTURE_DEFINED)
 # ifdef _WIN32
 #  define UA_ARCHITECTURE_WIN32
 # else

@@ -80,5 +80,8 @@ To port open62541 to a new architecture, follow these steps:
 
 To prevent the parallel build of Win32/POSIX versions, set UA_ARCHITECTURE=none
 in the cmake setting and link the final binary against your new code files.
+An amalgamation generated with UA_ARCHITECTURE=none still detects POSIX or
+Win32 from the compiler. Define UA_ARCHITECTURE_DEFINED when compiling it to
+build without either.
 Otherwise modify /include/open62541/config.h.in and /CMakelists.txt to add
 permanent support for your operating system.
