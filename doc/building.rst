@@ -251,6 +251,20 @@ Main Build Options
     This level is required to complete async Read, Write or Call operations from worker threads.
     Async work on the server's event loop does not require multithreading support.
 
+**UA_LWIP_EXTERNAL**
+   The lwIP stack is provided by the parent project (architectures
+   ``freertos-lwip`` and ``posix-lwip``). Instead of searching an installed lwIP,
+   the headers in ``LWIP_INCLUDE_DIRS`` and the optional ``LWIP_LIBRARIES`` are
+   used.
+
+**UA_FREERTOS_EXTERNAL**
+   FreeRTOS is provided by the parent project (architecture ``freertos-lwip``).
+   The FreeRTOS POSIX simulator is not built. The library is compiled against
+   the headers in ``FREERTOS_INCLUDE_DIRS``: the kernel ``include`` directory,
+   the directory of the port (``portmacro.h``) and the directory of
+   ``FreeRTOSConfig.h``. The FreeRTOS kernel is linked with the application,
+   for example with the static library open62541.a.
+
 Select build artefacts
 ^^^^^^^^^^^^^^^^^^^^^^
 
