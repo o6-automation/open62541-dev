@@ -722,6 +722,17 @@ getTargetFallback(UA_PubSubManager *psm, UA_DataSetReader *dsr, size_t index,
     return res;
 }
 
+static UA_Boolean
+isScalarTargetVariable(UA_Server *server, const UA_NodeId *targetId) {
+    const UA_Node *node = UA_NODESTORE_GET(server, targetId);
+    if(!node)
+        return false;
+    UA_Boolean scalar = (node->head.nodeClass == UA_NODECLASS_VARIABLE &&
+                         node->variableNode.valueRank == UA_VALUERANK_SCALAR);
+    UA_NODESTORE_RELEASE(server, node);
+    return scalar;
+}
+
 static UA_StatusCode
 updateTargetsForState(UA_PubSubManager *psm, UA_DataSetReader *dsr) {
     /* Translate the inactive reader state into target quality: communication
@@ -1086,6 +1097,21 @@ UA_DataSetReader_process(UA_PubSubManager *psm, UA_DataSetReader *dsr,
                 UA_DataValue_clear(&fallback);
                 UA_Variant_clear(&rangedValue);
                 return false;
+            }
+
+            /* A single selected element is applied as a scalar if the target
+             * Variable is scalar (Part 14, 6.2.10.2.3). The element of the
+             * one-element array becomes the scalar content. */
+            if(rangedValue.arrayLength == 1 &&
+               tv->attributeId == UA_ATTRIBUTEID_VALUE &&
+               tv->writeIndexRange.length == 0 &&
+               isScalarTargetVariable(psm->drv.server, &tv->targetNodeId)) {
+                UA_Array_delete(rangedValue.arrayDimensions,
+                                rangedValue.arrayDimensionsSize,
+                                &UA_TYPES[UA_TYPES_UINT32]);
+                rangedValue.arrayDimensions = NULL;
+                rangedValue.arrayDimensionsSize = 0;
+                rangedValue.arrayLength = 0;
             }
             writeValue.value = rangedValue;
             writeValue.hasValue = true;

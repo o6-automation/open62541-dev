@@ -157,6 +157,56 @@ START_TEST(StateChangesUpdateTargetsOnce) {
 } END_TEST
 
 
+START_TEST(ReceiverIndexRangeSelectsScalar) {
+    /* A single selected element is written as a scalar to the scalar target
+     * (_i == 0). An array target keeps the one-element array (_i == 1). */
+    UA_FieldTargetDataType *tv =
+        &reader->config.subscribedDataSet.target.targetVariables[0];
+    tv->receiverIndexRange = UA_STRING_ALLOC("1");
+    UA_NodeId arrayTargetId = UA_NODEID_NULL;
+    if(_i == 1) {
+        UA_VariableAttributes attr = UA_VariableAttributes_default;
+        attr.dataType = UA_TYPES[UA_TYPES_INT32].typeId;
+        attr.valueRank = UA_VALUERANK_ONE_DIMENSION;
+        UA_UInt32 arrayDimensions[1] = {0};
+        attr.arrayDimensionsSize = 1;
+        attr.arrayDimensions = arrayDimensions;
+        attr.accessLevel = UA_ACCESSLEVELMASK_READ | UA_ACCESSLEVELMASK_WRITE;
+        UA_Int32 initial = 0;
+        UA_Variant_setArray(&attr.value, &initial, 1, &UA_TYPES[UA_TYPES_INT32]);
+        ck_assert_uint_eq(UA_Server_addVariableNode(server, UA_NODEID_NULL,
+            UA_NODEID_NUMERIC(0, UA_NS0ID_OBJECTSFOLDER), UA_NODEID_NUMERIC(0, UA_NS0ID_ORGANIZES),
+            UA_QUALIFIEDNAME(1, "arrayTarget"), UA_NODEID_NUMERIC(0, UA_NS0ID_BASEDATAVARIABLETYPE),
+            attr, NULL, &arrayTargetId), UA_STATUSCODE_GOOD);
+        tv->targetNodeId = arrayTargetId;
+    }
+
+    UA_Int32 values[3] = {10, 20, 30};
+    UA_DataValue field;
+    UA_DataValue_init(&field);
+    UA_Variant_setArray(&field.value, values, 3, &UA_TYPES[UA_TYPES_INT32]);
+    field.hasValue = true;
+    UA_DataSetMessage message;
+    memset(&message, 0, sizeof(message));
+    message.header.dataSetMessageValid = true;
+    message.fieldCount = 1;
+    message.data.keyFrameFields = &field;
+    lockServer(server);
+    UA_DataSetReader_process(getPSM(server), reader, &message);
+    unlockServer(server);
+
+    UA_Variant value;
+    UA_Variant_init(&value);
+    ck_assert_uint_eq(UA_Server_readValue(server, _i == 0 ? targetId : arrayTargetId,
+                                          &value), UA_STATUSCODE_GOOD);
+    ck_assert_ptr_eq(value.type, &UA_TYPES[UA_TYPES_INT32]);
+    ck_assert(UA_Variant_isScalar(&value) == (_i == 0));
+    if(_i == 1)
+        ck_assert_uint_eq(value.arrayLength, 1);
+    ck_assert_int_eq(*(UA_Int32*)value.data, 20);
+    UA_Variant_clear(&value);
+} END_TEST
+
 START_TEST(UadpReaderFiltersAreEnforced) {
     UA_UadpDataSetReaderMessageDataType settings;
     UA_UadpDataSetReaderMessageDataType_init(&settings);
@@ -696,6 +746,7 @@ int main(void) {
     tcase_add_checked_fixture(tc, setup, teardown);
     tcase_add_loop_test(tc, FallbackQualityAndInitialDefault, 0, 3);
     tcase_add_loop_test(tc, StateChangesUpdateTargetsOnce, 0, 9);
+    tcase_add_loop_test(tc, ReceiverIndexRangeSelectsScalar, 0, 2);
     tcase_add_loop_test(tc, UadpReaderFiltersAreEnforced, 0, 3);
     tcase_add_loop_test(tc, SequenceOrderingAndRollover, 0, 3);
     tcase_add_test(tc, SequenceHistoriesArePerStream);
