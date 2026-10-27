@@ -5,6 +5,14 @@ set(UA_ARCHITECTURE_INCLUDE "arch/freertos.h")
 configure_file("${CMAKE_CURRENT_LIST_DIR}/freertos.h.in"
                "${PROJECT_BINARY_DIR}/src_generated/open62541/${UA_ARCHITECTURE_INCLUDE}")
 
+# The parent project provides FreeRTOS. Only its headers are used, the kernel
+# is linked with the application. FREERTOS_INCLUDE_DIRS holds the kernel
+# includes, the port (portmacro.h) and the directory of FreeRTOSConfig.h.
+if(UA_FREERTOS_EXTERNAL)
+    include_directories(SYSTEM ${FREERTOS_INCLUDE_DIRS})
+    return()
+endif()
+
 # Assume the FreeRTOS POSIX "Simulator".
 # Change this to directly include the source files if required.
 set(FREERTOS_KERNEL_PATH "~/software/FreeRTOSv202411.00/FreeRTOS/Source" CACHE STRING "")

@@ -399,6 +399,9 @@ mark_as_advanced(UA_ENABLE_DETERMINISTIC_RNG)
 option(UA_LWIP_EXTERNAL "LwIP is provided by the parent project" OFF)
 mark_as_advanced(UA_LWIP_EXTERNAL)
 
+option(UA_FREERTOS_EXTERNAL "FreeRTOS is provided by the parent project" OFF)
+mark_as_advanced(UA_FREERTOS_EXTERNAL)
+
 option(UA_MSVC_FORCE_STATIC_CRT "Force linking with the static C-runtime library when compiling to static library with MSVC" ON)
 mark_as_advanced(UA_MSVC_FORCE_STATIC_CRT)
 
@@ -1790,7 +1793,9 @@ endif()
 # export library (either static or shared depending on BUILD_SHARED_LIBS)
 # On the FreeRTOS architecture the open62541 target links against build-only
 # targets (freertos_kernel/freertos_config) that are not part of any export
-# set, so exporting the target fails at configure time. The same applies when
+# set, so exporting the target fails at configure time. With
+# UA_FREERTOS_EXTERNAL the parent project may pass its own lwIP targets in
+# LWIP_LIBRARIES, which are not exported either. The same applies when
 # open62541 is consumed as a Zephyr module: the target then links the
 # Zephyr-provided mbedTLS targets (mbedTLSBase/mbedTLSX509/mbedTLSCrypto),
 # which are likewise not in any export set of ours. Still install the library

@@ -3,6 +3,14 @@ refactorings and bug fixes are not reported here.
 
 # Development
 
+### FreeRTOS from the parent project
+
+With the new CMake option `UA_FREERTOS_EXTERNAL`, the architecture
+`freertos-lwip` uses the FreeRTOS of the parent project instead of building the
+FreeRTOS POSIX simulator. The library is compiled against the headers in
+`FREERTOS_INCLUDE_DIRS`, and the kernel is linked with the application. So
+open62541 can be built as a static library for an embedded application.
+
 ### Client reconnects with backoff and gives up
 
 A lost connection is re-dialed with a delay that starts at the new
