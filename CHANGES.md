@@ -3,6 +3,14 @@ refactorings and bug fixes are not reported here.
 
 # Development
 
+### FreeRTOS recursive locks
+
+The `freertos-lwip` architecture supports `UA_MULTITHREADING=100` with
+FreeRTOS recursive mutexes, using static storage when available and dynamic
+allocation otherwise. Required kernel options are checked at compile time.
+Temporary buffers use task-stack storage without requiring compiler TLS.
+External FreeRTOS include paths are propagated to library consumers.
+
 ### FreeRTOS from the parent project
 
 With the new CMake option `UA_FREERTOS_EXTERNAL`, the architecture
