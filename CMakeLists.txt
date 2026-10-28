@@ -939,7 +939,7 @@ set(lib_headers ${PROJECT_SOURCE_DIR}/deps/open62541_queue.h
                 ${PROJECT_SOURCE_DIR}/deps/yxml.h
                 ${PROJECT_SOURCE_DIR}/deps/ziptree.h
                 ${PROJECT_SOURCE_DIR}/deps/parse_num.h
-                ${PROJECT_SOURCE_DIR}/src/ua_types_encoding_binary.h
+                ${PROJECT_SOURCE_DIR}/src/ua_types_encoding.h
                 ${PROJECT_BINARY_DIR}/src_generated/open62541/transport_generated.h
                 ${PROJECT_SOURCE_DIR}/src/ua_securechannel.h
                 ${PROJECT_SOURCE_DIR}/src/util/ua_util_internal.h
@@ -956,7 +956,7 @@ if(UA_ENABLE_AMALGAMATION OR (UA_ENABLE_ENCRYPTION AND UA_ARCHITECTURE_WIN32))
 endif()
 
 set(lib_sources ${PROJECT_SOURCE_DIR}/src/ua_types.c
-                ${PROJECT_SOURCE_DIR}/src/ua_types_definition.c
+                ${PROJECT_SOURCE_DIR}/src/ua_types_description.c
                 ${PROJECT_SOURCE_DIR}/src/ua_types_encoding_binary.c
                 ${PROJECT_BINARY_DIR}/src_generated/open62541/types_generated.c
                 ${PROJECT_BINARY_DIR}/src_generated/open62541/transport_generated.c
@@ -1075,8 +1075,8 @@ if(UA_ENABLE_JSON_ENCODING)
     if(NOT UA_ENABLE_TYPEDESCRIPTION)
         message(FATAL_ERROR "JSON encoding requires parsing and type descriptions to be enabled")
     endif()
-    list(APPEND lib_headers ${PROJECT_SOURCE_DIR}/deps/cj5.h
-                            ${PROJECT_SOURCE_DIR}/src/ua_types_encoding_json.h)
+    # The encoding header uses cj5 types. Keep cj5 first for amalgamation.
+    list(PREPEND lib_headers ${PROJECT_SOURCE_DIR}/deps/cj5.h)
     list(APPEND lib_sources ${PROJECT_SOURCE_DIR}/deps/cj5.c
                             ${PROJECT_SOURCE_DIR}/src/ua_types_encoding_json.c)
     if(UA_ENABLE_PUBSUB)
@@ -1108,7 +1108,6 @@ if(UA_ENABLE_XML_ENCODING)
     if(NOT UA_ENABLE_TYPEDESCRIPTION)
         message(FATAL_ERROR "XML encoding requires parsing and type descriptions to be enabled")
     endif()
-    list(APPEND lib_headers ${PROJECT_SOURCE_DIR}/src/ua_types_encoding_xml.h)
     list(APPEND lib_sources ${PROJECT_SOURCE_DIR}/src/ua_types_encoding_xml.c)
 else()
     message(WARNING "UA_ENABLE_XML_ENCODING is not enabled. Value attributes will not be extracted from XML.")
@@ -1262,7 +1261,9 @@ if(UA_ENABLE_DRIVER_FILE_TRANSFER)
          ${PROJECT_SOURCE_DIR}/drivers/file_transfer/file_transfer_ns0.c
          ${PROJECT_SOURCE_DIR}/drivers/file_transfer/file_transfer_file.c
          ${PROJECT_SOURCE_DIR}/drivers/file_transfer/file_transfer_directory.c
-         ${PROJECT_SOURCE_DIR}/drivers/file_transfer/file_transfer_backend_localfs.c)
+         ${PROJECT_SOURCE_DIR}/drivers/file_transfer/file_transfer_backend_localfs.c
+         ${PROJECT_SOURCE_DIR}/drivers/file_transfer/file_transfer_backend_memory.c
+         ${PROJECT_SOURCE_DIR}/drivers/file_transfer/file_transfer_temporary.c)
 endif()
 
 # For file based server and client configuration
@@ -1405,12 +1406,12 @@ else()
         endif()
     endif()
 
-    if(UA_ENABLE_SUBSCRIPTIONS)
-        list(APPEND UA_NS0_DATATYPES ${UA_SCHEMA_DIR}/datatypes_subscriptions.txt)
-    endif()
+    # The client subscription API is compiled even without server subscriptions.
+    list(APPEND UA_NS0_DATATYPES ${UA_SCHEMA_DIR}/datatypes_subscriptions.txt)
 
     if(UA_ENABLE_SUBSCRIPTIONS_EVENTS)
         list(APPEND UA_NS0_NODESETS Opc.Ua.NodeSet2.EventsMinimal.xml)
+        list(APPEND UA_NS0_DATATYPES ${UA_SCHEMA_DIR}/datatypes_events.txt)
     endif()
 
     if(UA_ENABLE_HISTORIZING)
@@ -1432,9 +1433,9 @@ else()
     list(APPEND UA_NS0_DATATYPES ${UA_SCHEMA_DIR}/datatypes_dataaccess.txt)
     list(APPEND UA_NS0_NODESETS Opc.Ua.NodeSet2.Part8_Subset.xml)
 
-    if(UA_ENABLE_TYPEDESCRIPTION)
-        list(APPEND UA_NS0_DATATYPES ${UA_SCHEMA_DIR}/datatypes_typedescription.txt)
-    endif()
+    # Remote DataType discovery in the client also needs these types when the
+    # optional type and member names (UA_ENABLE_TYPEDESCRIPTION) are disabled.
+    list(APPEND UA_NS0_DATATYPES ${UA_SCHEMA_DIR}/datatypes_typedescription.txt)
 endif()
 
 set(UA_NS0_NODEIDS ${UA_SCHEMA_DIR}/NodeIds.csv)
