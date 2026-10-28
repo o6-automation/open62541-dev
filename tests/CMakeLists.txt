@@ -14,6 +14,15 @@ endif()
 
 # Check dependency
 find_package(Check REQUIRED)
+
+# Architecture contract tests use a host semaphore test double; hardware
+# tests are still needed to exercise an actual FreeRTOS scheduler.
+if(UNIX AND NOT CMAKE_CROSSCOMPILING)
+    add_test(NAME freertos_lock_contract
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/arch/freertos/test_locks.py
+                --cc ${CMAKE_C_COMPILER})
+endif()
 set(LIBS ${CHECK_LIBRARIES} ${open62541_LIBRARIES})
 if(NOT WIN32 AND NOT APPLE AND NOT (CMAKE_HOST_SYSTEM_NAME MATCHES "OpenBSD") AND NOT (CMAKE_HOST_SYSTEM_NAME MATCHES "FreeBSD"))
     find_library(SUBUNIT_LIB subunit)
