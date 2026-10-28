@@ -28,4 +28,89 @@
 # define UA_realloc realloc
 #endif
 
+/* The compiler accepting __thread/_Thread_local does not imply that the
+ * FreeRTOS port switches compiler TLS. These buffers are only used inside
+ * functions; automatic storage also makes callback re-entry independent. */
+#undef UA_STATIC_THREAD_LOCAL
+#define UA_STATIC_THREAD_LOCAL
+
+#if UA_MULTITHREADING >= 100
+#include <stdlib.h>
+#include <FreeRTOS.h>
+#include <task.h>
+#include <semphr.h>
+
+#if configUSE_MUTEXES != 1 || configUSE_RECURSIVE_MUTEXES != 1
+#error "open62541 multithreading requires configUSE_MUTEXES=1 and configUSE_RECURSIVE_MUTEXES=1"
+#endif
+#if INCLUDE_xTaskGetCurrentTaskHandle != 1
+#error "open62541 multithreading requires INCLUDE_xTaskGetCurrentTaskHandle=1"
+#endif
+#if configSUPPORT_STATIC_ALLOCATION != 1 && configSUPPORT_DYNAMIC_ALLOCATION != 1
+#error "open62541 multithreading requires static or dynamic FreeRTOS allocation"
+#endif
+
+typedef struct {
+    SemaphoreHandle_t mutex;
+#if configSUPPORT_STATIC_ALLOCATION == 1
+    StaticSemaphore_t storage;
+#endif
+    TaskHandle_t owner;
+    unsigned count;
+} UA_Lock;
+
+/* The lock API has no error return. Never continue with an unusable mutex,
+ * including when assertions are disabled. Do not put API calls in asserts. */
+static UA_INLINE void
+UA_FreeRTOS_checkLock(bool ok) {
+    configASSERT(ok);
+    if(!ok)
+        abort();
+}
+
+static UA_INLINE void
+UA_LOCK_INIT(UA_Lock *lock) {
+#if configSUPPORT_STATIC_ALLOCATION == 1
+    lock->mutex = xSemaphoreCreateRecursiveMutexStatic(&lock->storage);
+#else
+    lock->mutex = xSemaphoreCreateRecursiveMutex();
+#endif
+    UA_FreeRTOS_checkLock(lock->mutex != NULL);
+    lock->owner = NULL;
+    lock->count = 0;
+}
+
+static UA_INLINE void
+UA_LOCK_DESTROY(UA_Lock *lock) {
+    UA_FreeRTOS_checkLock(lock->count == 0);
+    vSemaphoreDelete(lock->mutex);
+    lock->mutex = NULL;
+}
+
+static UA_INLINE void
+UA_LOCK(UA_Lock *lock) {
+    /* portMAX_DELAY is finite when INCLUDE_vTaskSuspend is disabled. Retry
+     * rather than returning to the caller without owning the mutex. */
+    while(xSemaphoreTakeRecursive(lock->mutex, portMAX_DELAY) != pdTRUE) {}
+    lock->owner = xTaskGetCurrentTaskHandle();
+    lock->count++;
+}
+
+static UA_INLINE void
+UA_UNLOCK(UA_Lock *lock) {
+    UA_FreeRTOS_checkLock(lock->count > 0 &&
+                         lock->owner == xTaskGetCurrentTaskHandle());
+    if(--lock->count == 0)
+        lock->owner = NULL;
+    BaseType_t ret = xSemaphoreGiveRecursive(lock->mutex);
+    UA_FreeRTOS_checkLock(ret == pdTRUE);
+}
+
+static UA_INLINE void
+UA_LOCK_ASSERT(UA_Lock *lock) {
+    (void)lock;
+    UA_assert(lock->count > 0 && lock->owner == xTaskGetCurrentTaskHandle());
+}
+#endif /* UA_MULTITHREADING >= 100 */
+
 #endif /* UA_FREERTOS_H_ */
