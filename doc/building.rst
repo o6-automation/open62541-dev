@@ -264,6 +264,35 @@ Main Build Options
    ``FreeRTOSConfig.h``. The FreeRTOS kernel is linked with the application,
    for example with the static library open62541.a.
 
+FreeRTOS multithreading
+^^^^^^^^^^^^^^^^^^^^^^
+
+The ``freertos-lwip`` architecture supports ``UA_MULTITHREADING=100`` using
+FreeRTOS recursive mutexes. Set ``configUSE_MUTEXES=1``,
+``configUSE_RECURSIVE_MUTEXES=1`` and ``INCLUDE_xTaskGetCurrentTaskHandle=1``
+in ``FreeRTOSConfig.h``. Static mutex storage is used when
+``configSUPPORT_STATIC_ALLOCATION=1``; otherwise dynamic allocation must be
+enabled. A failed mutex allocation invokes ``configASSERT`` and, if that
+returns, ``abort``: the lock API cannot return allocation errors safely.
+
+Create, use and destroy the stack from task context, with the scheduler
+running. Mutex-based API calls are not ISR-safe. Stop all users before
+deleting a client, server or event loop; only APIs marked ``UA_THREADSAFE``
+may be called concurrently. ``UA_MULTITHREADING=0`` remains appropriate when
+all stack calls are serialized by the application.
+
+The FreeRTOS architecture uses automatic storage for temporary buffers
+instead of compiler TLS. This avoids depending on toolchain-specific TLS
+context switching, at the cost of additional task stack usage. Size task
+stacks for the enabled features and measure their high-water marks.
+
+The allocator and user callbacks must also be safe for the application's
+concurrent use. In particular, newlib's ``configUSE_NEWLIB_REENTRANT`` does
+not replace the malloc locking hooks. Configure the crypto library and
+network stack for the application's threading model as well. All consumers
+must use the same FreeRTOS headers, port and configuration as open62541;
+``UA_FREERTOS_EXTERNAL`` propagates ``FREERTOS_INCLUDE_DIRS`` in CMake builds.
+
 Select build artefacts
 ^^^^^^^^^^^^^^^^^^^^^^
 
