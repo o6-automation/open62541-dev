@@ -777,7 +777,7 @@ if((CMAKE_COMPILER_IS_GNUCC OR CMAKE_C_COMPILER_ID MATCHES "Clang") AND
     endif()
 
     # Threading support
-    if(UA_MULTITHREADING GREATER_EQUAL 100 AND NOT WIN32)
+    if(UA_MULTITHREADING GREATER_EQUAL 100 AND UA_ARCHITECTURE_POSIX)
         check_add_cc_flag("-pthread")
     endif()
 
@@ -1651,6 +1651,15 @@ endfunction()
 include_directories_public("${PROJECT_SOURCE_DIR}/include"
                            "${PROJECT_SOURCE_DIR}/plugins/include"
                            "${PROJECT_BINARY_DIR}/src_generated")
+
+# The FreeRTOS architecture header exposes the mutex type to consumers when
+# multithreading is enabled. They must use the same FreeRTOSConfig.h and port.
+if(UA_ARCHITECTURE_FREERTOS AND UA_FREERTOS_EXTERNAL)
+    foreach(_freertos_include IN LISTS FREERTOS_INCLUDE_DIRS)
+        target_include_directories(open62541 SYSTEM PUBLIC
+            $<BUILD_INTERFACE:${_freertos_include}>)
+    endforeach()
+endif()
 
 # Ensure that the open62541::open62541 alias can be used inside open62541's build
 add_library(open62541::open62541 ALIAS open62541)
