@@ -797,7 +797,7 @@ castImplicit(const UA_Variant *in, const UA_DataType *outType, UA_Variant *out) 
         /* Try casting between numericals (also works for Boolean and StatusCode
          * input). The conversion can fail if the limits of the output type are
          * exceeded and then results in a NULL value. */
-        castNumerical(in, outType, out);
+        UA_castNumerical(in, outType, out);
     }
 
     return res;

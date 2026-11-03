@@ -154,6 +154,10 @@ struct UA_Server {
     UA_Driver *discoveryDriver;
     UA_Driver *pubSubDriver;
 
+    /* Number of entries in config.drivers that have been created. Entries
+     * added later are created during the next startup. */
+    size_t configDriversCreated;
+
     UA_AsyncManager asyncManager;
 
     /* Custom datatypes that are internally created and cleaned up at the end of
@@ -309,6 +313,9 @@ getHttpUrlSecurity(const UA_String *url, UA_Boolean *secure);
 
 UA_ConnectionManager *
 findConnectionManager(UA_EventLoop *eventLoop, const UA_String *protocol);
+
+const UA_DriverRegistration *
+getDriverRegistration(const UA_ServerConfig *config, const UA_String *name);
 
 /***********************/
 /* References Handling */

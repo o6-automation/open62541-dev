@@ -2005,6 +2005,11 @@ typedef void
                                  UA_ApplicationNotificationType type,
                                  const UA_KeyValueMap payload);
 
+/* Result of a driver call. The result is only valid during the callback. */
+typedef void
+(*UA_DriverCallCallback)(void *context, UA_StatusCode status,
+                         const UA_KeyValueMap *result);
+
 struct UA_Driver {
     UA_Driver *next; /* linked-list */
 
@@ -2054,6 +2059,15 @@ struct UA_Driver {
      * The server frees its drivers when deleted. To free a driver manually,
      * first detach it with UA_Server_removeDriver. */
     UA_StatusCode (*free)(UA_Driver *sc);
+
+    /* Optional. Drivers can offer calls to the application and to other
+     * drivers, see ``UA_Server_callDriver``. The input is only valid during
+     * the method call. The callback is called exactly once, also if the call
+     * fails asynchronously. If an error is returned, the callback is not
+     * called. */
+    UA_StatusCode (*call)(UA_Driver *drv, const UA_String call,
+                          const UA_KeyValueMap *input,
+                          UA_DriverCallCallback callback, void *context);
 };
 
 /* Adds the Driver to the server. Starts the driver if the server is already
@@ -2071,6 +2085,68 @@ UA_Server_removeDriver(UA_Server *server, UA_Driver *drv);
 /* Get the first entry of the server's driver linked list. */
 UA_EXPORT UA_Driver *
 UA_Server_getDrivers(UA_Server *server);
+
+/* Call a started driver by its name. This is how the application and the
+ * drivers use each other. The calls and their input and result keys are
+ * documented with each driver. */
+UA_StatusCode UA_EXPORT UA_THREADSAFE
+UA_Server_callDriver(UA_Server *server, const char *driver, const char *call,
+                     const UA_KeyValueMap *input,
+                     UA_DriverCallCallback callback, void *context);
+
+/**
+ * Drivers from the Configuration
+ * ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+ * Drivers can also be created from the server configuration. A driver
+ * implementation publishes a registration with a unique name, a factory and
+ * the schema of its parameters. The configuration lists the driver instances
+ * by registration name, instance name and parameters (see
+ * ``UA_ServerConfig_registerDriver`` and ``UA_ServerConfig_addDriver``). The
+ * server creates the configured instances during startup. So registrations
+ * can still be added after the server was created, e.g. from a JSON
+ * configuration file. The instance name becomes the name of the driver, which
+ * other drivers use to call it (``UA_Server_callDriver``).
+ *
+ * Before the factory is called, the parameters are validated against the
+ * schema. A missing required parameter fails the startup. Numeric scalars are
+ * cast to the declared numeric type if the value fits (floating point values
+ * are rounded), as the JSON configuration produces only Int64 and Double
+ * numbers. A String is accepted for a declared ByteString. Parameters that are
+ * not part of the schema are logged and passed on unchanged. Nested
+ * parameters are KeyValuePair arrays (objects) or Variant arrays.
+ *
+ * Parameter names use lowercase words separated by hyphens, like the
+ * parameters of the other drivers and ConnectionManagers (e.g.
+ * ``listen-address``). In JSON5 such keys need quotes. */
+
+typedef struct {
+    const char *name;
+    /* Index in UA_TYPES, e.g. UA_TYPES_STRING. The index is used instead of a
+     * UA_DataType pointer so that registrations can be static constants. */
+    UA_UInt16 typeIndex;
+    UA_Boolean isArray;
+    UA_Boolean required;
+} UA_DriverParameter;
+
+typedef struct {
+    const char *name;
+
+    /* Schema of the parameters. If NULL, the parameters are passed on without
+     * validation. */
+    const UA_DriverParameter *parameters;
+    size_t parametersSize;
+
+    /* Create a driver that is not yet started. The parameters are validated
+     * and converted to the schema. They need to be copied into the driver. */
+    UA_StatusCode (*create)(UA_Server *server, const UA_KeyValueMap params,
+                            UA_Driver **outDriver);
+} UA_DriverRegistration;
+
+typedef struct {
+    UA_String driver; /* Name of the registration */
+    UA_String name;   /* Instance name. Empty for the registration name. */
+    UA_KeyValueMap params;
+} UA_DriverConfiguration;
 
 /**
  * Statistics
@@ -2480,6 +2556,16 @@ struct UA_ServerConfig {
     UA_ByteString httpPrivateKey;   /* TLS private key, DER or PEM */
     UA_String httpPrivateKeyPassword;
 
+    /* Drivers
+     * ~~~~~~~
+     * Driver instances that the server creates during startup from the
+     * registered implementations. See the section on drivers from the
+     * configuration. */
+    size_t driverRegistrationsSize;
+    const UA_DriverRegistration **driverRegistrations;
+    size_t driversSize;
+    UA_DriverConfiguration *drivers;
+
     /* Security and Encryption
      * ~~~~~~~~~~~~~~~~~~~~~~~ */
     size_t securityPoliciesSize;
@@ -2752,6 +2838,21 @@ UA_DEPRECATED static UA_INLINE void
 UA_ServerConfig_clean(UA_ServerConfig *config) {
     UA_ServerConfig_clear(config);
 }
+
+/* Register a driver implementation for the creation from the configuration.
+ * The registration is not copied and must outlive the configuration. Returns
+ * UA_STATUSCODE_BADALREADYEXISTS if a registration with the same name exists. */
+UA_StatusCode UA_EXPORT
+UA_ServerConfig_registerDriver(UA_ServerConfig *config,
+                               const UA_DriverRegistration *registration);
+
+/* Add a driver instance to the configuration. The name is optional (NULL
+ * uses the registration name) and must be unique in the server. The
+ * parameters are copied. The registration is resolved when the server starts,
+ * so it can be registered afterwards. */
+UA_StatusCode UA_EXPORT
+UA_ServerConfig_addDriver(UA_ServerConfig *config, const char *driver,
+                          const char *name, const UA_KeyValueMap params);
 
 /* Adds certificates and Certificate Revocation Lists (CRLs) to a specific
  * certificate group on the server.

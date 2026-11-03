@@ -281,6 +281,172 @@ UA_Server_getDrivers(UA_Server *server) {
     return server->drivers;
 }
 
+/**********************************/
+/* Drivers from the Configuration */
+/**********************************/
+
+/* Convert a parameter value in-place to the type declared in the schema */
+static UA_StatusCode
+convertDriverParameter(UA_Variant *value, const UA_DriverParameter *param) {
+    if(param->typeIndex >= UA_TYPES_COUNT)
+        return UA_STATUSCODE_BADINTERNALERROR;
+    const UA_DataType *type = &UA_TYPES[param->typeIndex];
+    UA_Boolean isArray = !UA_Variant_isScalar(value);
+    if(isArray != param->isArray)
+        return UA_STATUSCODE_BADTYPEMISMATCH;
+    if(value->type == type)
+        return UA_STATUSCODE_GOOD;
+
+    /* String and ByteString have the same memory layout */
+    if(value->type == &UA_TYPES[UA_TYPES_STRING] &&
+       type == &UA_TYPES[UA_TYPES_BYTESTRING]) {
+        value->type = type;
+        return UA_STATUSCODE_GOOD;
+    }
+
+    /* Numeric scalars are cast to the declared type if the value fits */
+    if(isArray || !UA_DataType_isNumeric(value->type) ||
+       !UA_DataType_isNumeric(type))
+        return UA_STATUSCODE_BADTYPEMISMATCH;
+    UA_Variant cast;
+    UA_castNumerical(value, type, &cast);
+    if(UA_Variant_isEmpty(&cast))
+        return UA_STATUSCODE_BADOUTOFRANGE;
+    UA_Variant_clear(value);
+    *value = cast;
+    return UA_STATUSCODE_GOOD;
+}
+
+static const UA_DriverParameter *
+findDriverParameter(const UA_DriverRegistration *reg, const UA_QualifiedName *key) {
+    if(key->namespaceIndex != 0)
+        return NULL;
+    for(size_t i = 0; i < reg->parametersSize; i++) {
+        UA_String name = UA_STRING((char *)(uintptr_t)reg->parameters[i].name);
+        if(UA_String_equal(&name, &key->name))
+            return &reg->parameters[i];
+    }
+    return NULL;
+}
+
+/* Copy the configured parameters and validate them against the schema */
+static UA_StatusCode
+prepareDriverParams(UA_Server *server, const UA_DriverRegistration *reg,
+                    const UA_DriverConfiguration *dc, UA_KeyValueMap *params) {
+    UA_StatusCode res = UA_KeyValueMap_copy(&dc->params, params);
+    if(res != UA_STATUSCODE_GOOD || !reg->parameters)
+        return res;
+
+    for(size_t i = 0; i < params->mapSize; i++) {
+        if(!findDriverParameter(reg, &params->map[i].key))
+            UA_LOG_WARNING(server->config.logging, UA_LOGCATEGORY_SERVER,
+                           "Driver \"%S\": Unknown parameter \"%S\"",
+                           dc->driver, params->map[i].key.name);
+    }
+
+    for(size_t i = 0; i < reg->parametersSize; i++) {
+        const UA_DriverParameter *param = &reg->parameters[i];
+        UA_QualifiedName key = UA_QUALIFIEDNAME(0, (char *)(uintptr_t)param->name);
+        UA_Variant *value = (UA_Variant *)(uintptr_t)UA_KeyValueMap_get(params, key);
+        if(!value || UA_Variant_isEmpty(value)) {
+            if(!param->required)
+                continue;
+            UA_LOG_ERROR(server->config.logging, UA_LOGCATEGORY_SERVER,
+                         "Driver \"%S\": The parameter \"%s\" is required",
+                         dc->driver, param->name);
+            return UA_STATUSCODE_BADCONFIGURATIONERROR;
+        }
+        res = convertDriverParameter(value, param);
+        if(res != UA_STATUSCODE_GOOD) {
+            UA_LOG_ERROR(server->config.logging, UA_LOGCATEGORY_SERVER,
+                         "Driver \"%S\": Invalid value for the parameter \"%s\" (%s)",
+                         dc->driver, param->name, UA_StatusCode_name(res));
+            return UA_STATUSCODE_BADCONFIGURATIONERROR;
+        }
+    }
+    return UA_STATUSCODE_GOOD;
+}
+
+static UA_Driver *
+findDriver(UA_Server *server, const UA_String *name) {
+    for(UA_Driver *drv = server->drivers; drv; drv = drv->next) {
+        if(UA_String_equal(&drv->name, name))
+            return drv;
+    }
+    return NULL;
+}
+
+UA_StatusCode
+UA_Server_callDriver(UA_Server *server, const char *driver, const char *call,
+                     const UA_KeyValueMap *input,
+                     UA_DriverCallCallback callback, void *context) {
+    if(!server || !driver || !call || !callback)
+        return UA_STATUSCODE_BADINVALIDARGUMENT;
+    lockServer(server);
+    UA_String name = UA_STRING((char *)(uintptr_t)driver);
+    UA_Driver *drv = findDriver(server, &name);
+    UA_StatusCode res = UA_STATUSCODE_BADNOTFOUND;
+    if(drv && !drv->call)
+        res = UA_STATUSCODE_BADNOTSUPPORTED;
+    else if(drv && drv->state != UA_LIFECYCLESTATE_STARTED)
+        res = UA_STATUSCODE_BADINVALIDSTATE;
+    else if(drv)
+        res = drv->call(drv, UA_STRING((char *)(uintptr_t)call),
+                        input ? input : &UA_KEYVALUEMAP_NULL, callback, context);
+    unlockServer(server);
+    return res;
+}
+
+/* Create the drivers of the configuration that were not created before */
+static UA_StatusCode
+createConfigDrivers(UA_Server *server) {
+    UA_ServerConfig *config = &server->config;
+    for(; server->configDriversCreated < config->driversSize;
+        server->configDriversCreated++) {
+        const UA_DriverConfiguration *dc =
+            &config->drivers[server->configDriversCreated];
+        const UA_DriverRegistration *reg =
+            getDriverRegistration(config, &dc->driver);
+        if(!reg) {
+            UA_LOG_ERROR(config->logging, UA_LOGCATEGORY_SERVER,
+                         "No registration for the configured driver \"%S\"",
+                         dc->driver);
+            return UA_STATUSCODE_BADNOTFOUND;
+        }
+
+        /* The instance name must be unique, other drivers call it by name */
+        const UA_String *name = (dc->name.length > 0) ? &dc->name : &dc->driver;
+        if(findDriver(server, name)) {
+            UA_LOG_ERROR(config->logging, UA_LOGCATEGORY_SERVER,
+                         "A driver with the name \"%S\" already exists", *name);
+            return UA_STATUSCODE_BADALREADYEXISTS;
+        }
+
+        UA_KeyValueMap params = UA_KEYVALUEMAP_NULL;
+        UA_StatusCode res = prepareDriverParams(server, reg, dc, &params);
+        UA_Driver *drv = NULL;
+        if(res == UA_STATUSCODE_GOOD) {
+            res = reg->create(server, params, &drv);
+            if(res == UA_STATUSCODE_GOOD && !drv)
+                res = UA_STATUSCODE_BADINTERNALERROR;
+        }
+        UA_KeyValueMap_clear(&params);
+        if(res == UA_STATUSCODE_GOOD) {
+            drv->name = *name; /* Owned by the configuration */
+            res = addDriver(server, drv);
+            if(res != UA_STATUSCODE_GOOD)
+                drv->free(drv);
+        }
+        if(res != UA_STATUSCODE_GOOD) {
+            UA_LOG_ERROR(config->logging, UA_LOGCATEGORY_SERVER,
+                         "Could not create the configured driver \"%S\" (%s)",
+                         dc->driver, UA_StatusCode_name(res));
+            return res;
+        }
+    }
+    return UA_STATUSCODE_GOOD;
+}
+
 static void
 stopDrivers(UA_Server *server) {
     for(UA_Driver *drv = server->drivers; drv; drv = drv->next) {
@@ -1263,6 +1429,13 @@ UA_Server_run_startup(UA_Server *server) {
 
     /* Start all drivers. The async manager is required for Read/Write/Call.
      * A failed transport aborts the startup only if the
+    /* Create the drivers of the configuration. Registrations can be added
+     * until now, also after the server was created from a JSON file. */
+    retVal = createConfigDrivers(server);
+    if(retVal != UA_STATUSCODE_GOOD)
+        goto undo;
+
+    /* Start all drivers. A failed transport aborts the startup only if the
      * server cannot be reached otherwise. Other drivers can fail in normal
      * setups (e.g. mDNS without multicast) and are only logged. */
     UA_StatusCode transportRes = UA_STATUSCODE_GOOD;
