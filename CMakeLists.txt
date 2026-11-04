@@ -377,6 +377,7 @@ option(UA_ENABLE_MQTT "Enable MQTT connections for the EventLoop" OFF)
 mark_as_advanced(UA_ENABLE_MQTT)
 if(UA_ENABLE_MQTT)
     set(UA_FILE_MQTT "${PROJECT_SOURCE_DIR}/deps/mqtt-c/src/mqtt.c")
+    message(WARNING "The MQTT-C library (UA_ENABLE_MQTT) is deprecated and has known, unfixed issues. Only use it with a trusted broker over a protected connection.")
     if(NOT EXISTS "${UA_FILE_MQTT}")
         message(FATAL_ERROR "UA_ENABLE_MQTT requires the mqtt-c dependency. "
                             "Fetch submodules or provide deps/mqtt-c locally.")
@@ -520,6 +521,9 @@ if("${UA_ARCHITECTURE}" STREQUAL "posix-lwip")
 elseif("${UA_ARCHITECTURE}" STREQUAL "win32")
     list(APPEND open62541_LIBRARIES "ws2_32")
     list(APPEND open62541_LIBRARIES "iphlpapi")
+    # bcrypt provides BCryptGenRandom, used as a random source for
+    # identifiers that must not repeat across server processes
+    list(APPEND open62541_LIBRARIES "bcrypt")
 endif()
 
 if(UA_ENABLE_ENCRYPTION_OPENSSL)
@@ -528,10 +532,6 @@ if(UA_ENABLE_ENCRYPTION_OPENSSL)
     find_package(OpenSSL REQUIRED)
     list(APPEND open62541_LIBRARIES "${OPENSSL_LIBRARIES}")
     list(APPEND pkgcfg_requiresprivate "openssl")
-    if(WIN32)
-        # Add bestcrypt for windows systems
-        list(APPEND open62541_LIBRARIES bcrypt)
-    endif()
 endif()
 
 if(UA_ENABLE_ENCRYPTION_LIBRESSL)
@@ -540,8 +540,7 @@ if(UA_ENABLE_ENCRYPTION_LIBRESSL)
     list(APPEND open62541_LIBRARIES ${LIBRESSL_LIBRARIES})
     list(APPEND pkgcfg_requiresprivate "openssl")
     if(WIN32)
-        # Add bestcrypt for random generator and ws2_32 for crypto
-        list(APPEND open62541_LIBRARIES ws2_32 bcrypt)
+        list(APPEND open62541_LIBRARIES ws2_32)
     endif()
 endif()
 
@@ -552,10 +551,6 @@ if(UA_ENABLE_ENCRYPTION_MBEDTLS)
     find_package(MbedTLS REQUIRED)
     list(APPEND open62541_LIBRARIES ${MBEDTLS_LIBRARIES})
     list(APPEND pkgcfg_requiresprivate "mbedtls")
-    if(WIN32)
-        # Add bestcrypt for windows systems
-        list(APPEND open62541_LIBRARIES bcrypt)
-    endif()
 endif()
 
 if(UA_ENABLE_TPM2_SECURITY)
@@ -884,8 +879,20 @@ if(MSVC)
   endif()
 endif()
 
-if(UA_BUILD_FUZZING OR UA_BUILD_OSS_FUZZ)
-    add_compile_options(-include "${PROJECT_SOURCE_DIR}/tests/fuzz/fuzz_arch.h")
+option(UA_ENABLE_MALLOC_SINGLETON "Enable allocator hooks for allocation failure tests" OFF)
+mark_as_advanced(UA_ENABLE_MALLOC_SINGLETON)
+if(UA_ENABLE_MALLOC_SINGLETON)
+    add_compile_definitions(UA_ENABLE_MALLOC_SINGLETON)
+    if(NOT UA_BUILD_FUZZING AND NOT UA_BUILD_OSS_FUZZ)
+        add_compile_definitions(UA_ENABLE_MALLOC_SINGLETON_IMPLEMENTATION)
+    endif()
+endif()
+if(UA_BUILD_FUZZING OR UA_BUILD_OSS_FUZZ OR UA_ENABLE_MALLOC_SINGLETON)
+    if(MSVC)
+        add_compile_options("/FI${PROJECT_SOURCE_DIR}/tests/fuzz/fuzz_arch.h")
+    else()
+        add_compile_options("SHELL:-include \"${PROJECT_SOURCE_DIR}/tests/fuzz/fuzz_arch.h\"")
+    endif()
 endif()
 
 #########################
@@ -939,7 +946,7 @@ set(lib_headers ${PROJECT_SOURCE_DIR}/deps/open62541_queue.h
                 ${PROJECT_SOURCE_DIR}/deps/yxml.h
                 ${PROJECT_SOURCE_DIR}/deps/ziptree.h
                 ${PROJECT_SOURCE_DIR}/deps/parse_num.h
-                ${PROJECT_SOURCE_DIR}/src/ua_types_encoding_binary.h
+                ${PROJECT_SOURCE_DIR}/src/ua_types_encoding.h
                 ${PROJECT_BINARY_DIR}/src_generated/open62541/transport_generated.h
                 ${PROJECT_SOURCE_DIR}/src/ua_securechannel.h
                 ${PROJECT_SOURCE_DIR}/src/util/ua_util_internal.h
@@ -956,7 +963,7 @@ if(UA_ENABLE_AMALGAMATION OR (UA_ENABLE_ENCRYPTION AND UA_ARCHITECTURE_WIN32))
 endif()
 
 set(lib_sources ${PROJECT_SOURCE_DIR}/src/ua_types.c
-                ${PROJECT_SOURCE_DIR}/src/ua_types_definition.c
+                ${PROJECT_SOURCE_DIR}/src/ua_types_description.c
                 ${PROJECT_SOURCE_DIR}/src/ua_types_encoding_binary.c
                 ${PROJECT_BINARY_DIR}/src_generated/open62541/types_generated.c
                 ${PROJECT_BINARY_DIR}/src_generated/open62541/transport_generated.c
@@ -1009,10 +1016,13 @@ if(UA_ENABLE_DRIVER_GDS_RECEIVER)
     list(APPEND exported_headers
          ${PROJECT_SOURCE_DIR}/include/open62541/driver/gds_receiver.h)
     list(APPEND lib_headers
+         ${PROJECT_SOURCE_DIR}/drivers/gds_common/gds_common.h
          ${PROJECT_SOURCE_DIR}/drivers/gds_receiver/gds_receiver_internal.h)
     list(APPEND lib_sources
+         ${PROJECT_SOURCE_DIR}/drivers/gds_common/gds_common.c
          ${PROJECT_SOURCE_DIR}/drivers/gds_receiver/gds_receiver.c
-         ${PROJECT_SOURCE_DIR}/drivers/gds_receiver/gds_receiver_ns0.c)
+         ${PROJECT_SOURCE_DIR}/drivers/gds_receiver/gds_receiver_ns0.c
+         ${PROJECT_SOURCE_DIR}/drivers/gds_receiver/gds_receiver_trustlist.c)
 endif()
 
 if(UA_ENABLE_RBAC)
@@ -1075,8 +1085,8 @@ if(UA_ENABLE_JSON_ENCODING)
     if(NOT UA_ENABLE_TYPEDESCRIPTION)
         message(FATAL_ERROR "JSON encoding requires parsing and type descriptions to be enabled")
     endif()
-    list(APPEND lib_headers ${PROJECT_SOURCE_DIR}/deps/cj5.h
-                            ${PROJECT_SOURCE_DIR}/src/ua_types_encoding_json.h)
+    # The encoding header uses cj5 types. Keep cj5 first for amalgamation.
+    list(PREPEND lib_headers ${PROJECT_SOURCE_DIR}/deps/cj5.h)
     list(APPEND lib_sources ${PROJECT_SOURCE_DIR}/deps/cj5.c
                             ${PROJECT_SOURCE_DIR}/src/ua_types_encoding_json.c)
     if(UA_ENABLE_PUBSUB)
@@ -1108,7 +1118,6 @@ if(UA_ENABLE_XML_ENCODING)
     if(NOT UA_ENABLE_TYPEDESCRIPTION)
         message(FATAL_ERROR "XML encoding requires parsing and type descriptions to be enabled")
     endif()
-    list(APPEND lib_headers ${PROJECT_SOURCE_DIR}/src/ua_types_encoding_xml.h)
     list(APPEND lib_sources ${PROJECT_SOURCE_DIR}/src/ua_types_encoding_xml.c)
 else()
     message(WARNING "UA_ENABLE_XML_ENCODING is not enabled. Value attributes will not be extracted from XML.")
@@ -1262,7 +1271,9 @@ if(UA_ENABLE_DRIVER_FILE_TRANSFER)
          ${PROJECT_SOURCE_DIR}/drivers/file_transfer/file_transfer_ns0.c
          ${PROJECT_SOURCE_DIR}/drivers/file_transfer/file_transfer_file.c
          ${PROJECT_SOURCE_DIR}/drivers/file_transfer/file_transfer_directory.c
-         ${PROJECT_SOURCE_DIR}/drivers/file_transfer/file_transfer_backend_localfs.c)
+         ${PROJECT_SOURCE_DIR}/drivers/file_transfer/file_transfer_backend_localfs.c
+         ${PROJECT_SOURCE_DIR}/drivers/file_transfer/file_transfer_backend_memory.c
+         ${PROJECT_SOURCE_DIR}/drivers/file_transfer/file_transfer_temporary.c)
 endif()
 
 # For file based server and client configuration
@@ -1405,12 +1416,12 @@ else()
         endif()
     endif()
 
-    if(UA_ENABLE_SUBSCRIPTIONS)
-        list(APPEND UA_NS0_DATATYPES ${UA_SCHEMA_DIR}/datatypes_subscriptions.txt)
-    endif()
+    # The client subscription API is compiled even without server subscriptions.
+    list(APPEND UA_NS0_DATATYPES ${UA_SCHEMA_DIR}/datatypes_subscriptions.txt)
 
     if(UA_ENABLE_SUBSCRIPTIONS_EVENTS)
         list(APPEND UA_NS0_NODESETS Opc.Ua.NodeSet2.EventsMinimal.xml)
+        list(APPEND UA_NS0_DATATYPES ${UA_SCHEMA_DIR}/datatypes_events.txt)
     endif()
 
     if(UA_ENABLE_HISTORIZING)
@@ -1432,9 +1443,9 @@ else()
     list(APPEND UA_NS0_DATATYPES ${UA_SCHEMA_DIR}/datatypes_dataaccess.txt)
     list(APPEND UA_NS0_NODESETS Opc.Ua.NodeSet2.Part8_Subset.xml)
 
-    if(UA_ENABLE_TYPEDESCRIPTION)
-        list(APPEND UA_NS0_DATATYPES ${UA_SCHEMA_DIR}/datatypes_typedescription.txt)
-    endif()
+    # Remote DataType discovery in the client also needs these types when the
+    # optional type and member names (UA_ENABLE_TYPEDESCRIPTION) are disabled.
+    list(APPEND UA_NS0_DATATYPES ${UA_SCHEMA_DIR}/datatypes_typedescription.txt)
 endif()
 
 set(UA_NS0_NODEIDS ${UA_SCHEMA_DIR}/NodeIds.csv)
@@ -1533,6 +1544,12 @@ else()
     add_custom_target(open62541-code-generation DEPENDS open62541-generator-types
                                                         open62541-generator-transport
                                                         open62541-generator-statuscode)
+endif()
+
+if(UA_ENABLE_AMALGAMATION)
+    # Serialize shared generators before their outputs are concatenated. File
+    # dependencies alone can launch duplicate generators in parallel Make builds.
+    add_dependencies(open62541-amalgamation open62541-code-generation)
 endif()
 
 # Generate Nodeset injector source files

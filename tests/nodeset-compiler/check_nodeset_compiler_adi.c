@@ -4,6 +4,7 @@
 
 #include <open62541/server.h>
 #include <open62541/server_config_default.h>
+#include <stdlib.h>
 
 #include "check.h"
 #include "namespace_tests_adi_generated.h"
@@ -26,13 +27,13 @@ static void teardown(void) {
 
 
 START_TEST(Server_addDiNodeset) {
-    UA_StatusCode retval = namespace_tests_di_generated(server);
+    UA_StatusCode retval = namespace_tests_di_generated(server, true);
     ck_assert_uint_eq(retval, UA_STATUSCODE_GOOD);
 }
 END_TEST
 
 START_TEST(Server_addAdiNodeset) {
-    UA_StatusCode retval = namespace_tests_adi_generated(server);
+    UA_StatusCode retval = namespace_tests_adi_generated(server, true);
     ck_assert_uint_eq(retval, UA_STATUSCODE_GOOD);
 }
 END_TEST

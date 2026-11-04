@@ -1277,6 +1277,8 @@ UA_Server_addDataTypeNode(UA_Server *server,
  * array of the server. Then the DataType is automatically decoded in messages
  * received by the server. Also the ``DataTypeDefinition`` attribute of the
  * corresponding DataTypeNode can then be read via the Read service.
+ * Simple aliases used as structure members are resolved to their storage
+ * representation without modifying the supplied description.
  *
  * The memory layout of the internally generated ``UA_DataType`` corresponds to
  * the matching C-structure including padding.
@@ -1290,6 +1292,38 @@ UA_Server_addDataTypeNode(UA_Server *server,
 UA_EXPORT UA_THREADSAFE UA_StatusCode
 UA_Server_addDataTypeFromDescription(UA_Server *server,
                                      const UA_ExtensionObject *description);
+
+/* Zero-initialize the options. Additional fields may be added in the future.
+ * All pointers are borrowed for the duration of the call. */
+typedef struct {
+    /* Map source namespace indexes to server indexes using local2Remote.
+     * Applies to the description AND both encoding-ID overrides below.
+     * NULL: all supplied indexes already refer to server namespaces. */
+    const UA_NamespaceMapping *namespaceMapping;
+
+    /* Optional overrides, expressed in the SAME source namespace context as
+     * the description. Both binaryEncodingId and xmlEncodingId are mapped
+     * through namespaceMapping when it is present.
+     * NULL: retain the description's encoding ID, if available.
+     * A pointer to a null NodeId explicitly clears the encoding ID. */
+    const UA_NodeId *binaryEncodingId;
+    const UA_NodeId *xmlEncodingId;
+} UA_AddDataTypeFromDescriptionOptions;
+
+/* Extended description loading. The description must contain a decoded
+ * SimpleTypeDescription, EnumDescription or StructureDescription. All its
+ * namespace indexes, including member references and the QualifiedName, use
+ * the source context specified by the options. Mapping precedes server-side
+ * member resolution and native layout construction.
+ *
+ * The options can be NULL. Inputs remain unchanged. The server owns the
+ * resulting datatype, including copies of both encoding IDs. Registration
+ * happens only after all conversion and encoding-ID allocation succeeds.
+ * An already registered datatype returns BADNODEIDEXISTS. */
+UA_EXPORT UA_THREADSAFE UA_StatusCode
+UA_Server_addDataTypeFromDescriptionEx(
+    UA_Server *server, const UA_ExtensionObject *description,
+    const UA_AddDataTypeFromDescriptionOptions *options);
 
 /* The same as UA_Server_addDataTypeFromDescription, but with the description
  * already converted into a UA_DataType. Makes a copy of the UA_DataType
@@ -1930,21 +1964,30 @@ UA_Server_findServersOnNetwork(UA_Server *server, UA_String endpointUrl,
                                size_t *outServersSize,
                                UA_ServerOnNetwork **outServers);
 
-/* Register a remote server. If the server name was previously known, the
- * existing entry gets updated. The parameter kv-map can be extended with
- * additional parameters in the future. Currently supported are:
+/* Register a received or local server. If the server name was previously
+ * known, the existing entry gets updated. The parameter kv-map can be extended
+ * with additional parameters in the future. Currently supported are:
  *
  * 0:remote-address [String]
  *    IP-address or other host identifier from which the information
  *    was received.
  * 0:ttl [UInt32]
- *    Time-to-live of DNS information. Zero means infinite. */
+ *    Time-to-live of DNS information. Zero means infinite.
+ * 0:announce [Boolean]
+ *    Announce the entry on the network, for example by an attached mDNS
+ *    driver. Default is false.
+ *
+ * The entry of a registered server (see RegisterServer) is changed only by the
+ * registration. For such an entry, UA_STATUSCODE_BADNOTWRITABLE is returned. */
 UA_StatusCode UA_EXPORT UA_THREADSAFE
 UA_Server_registerServerOnNetwork(UA_Server *server,
                                   const UA_ServerOnNetwork *son,
                                   const UA_KeyValueMap params);
 
-/* Remove the entry of the remote server with the matching ServerName */
+/* Remove the entry of the remote server with the matching ServerName. The entry
+ * of a registered server (see RegisterServer) is removed only with the
+ * registration. For such an entry, UA_STATUSCODE_BADNODELETERIGHTS is
+ * returned. */
 UA_StatusCode UA_EXPORT UA_THREADSAFE
 UA_Server_deregisterServerOnNetwork(UA_Server *server,
                                     UA_String serverName);
@@ -2562,6 +2605,11 @@ struct UA_ServerConfig {
 
     /* Discovery
      * ~~~~~~~~~ */
+    /* Bitmask of the UA_SERVERCAPABILITY_* constants. At startup, the
+     * capabilities that are announced are derived from this bitmask and the
+     * ApplicationType (Part 12, 7.10.14). */
+    UA_UInt64 serverCapabilities;
+
     /* Enable the internal management of RegisteredServers (besides the local
      * server itself) via the RegisterServer and FindServer services. */
     UA_Boolean registeredServersEnabled;
@@ -2583,8 +2631,18 @@ struct UA_ServerConfig {
     /* Enable the internal management of ServerOnNetwork entries and the
      * FindServersOnNetwork Service. This is used in conjunction with mDNS to
      * implement a Discovery Server that detects other servers on the
-     * network. */
+     * network. If registeredServersEnabled is also set, every registered
+     * server gets a ServerOnNetwork entry under its mDNS name (the
+     * mdnsServerName from RegisterServer2 or else the first ServerName). See
+     * announceRegisteredServers for the announcement of these entries. */
     UA_Boolean serversOnNetworkEnabled;
+
+    /* Announce the ServerOnNetwork entries of locally registered servers on the
+     * network. The entries are created and returned by FindServersOnNetwork
+     * also without this. An attached mDNS driver with the 0:announce parameter
+     * announces them. Default is true, as an LDS-ME announces all applications
+     * that it knows about (OPC 10000-12, 5.1). */
+    UA_Boolean announceRegisteredServers;
 
     /* Subscriptions
      * ~~~~~~~~~~~~~ */
