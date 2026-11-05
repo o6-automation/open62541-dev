@@ -39,18 +39,6 @@
  * tests create a new server with the same PKI directory. */
 #if defined(CAN_SIGN_CSR) && (defined(__linux__) || defined(UA_ARCHITECTURE_WIN32))
 #define CAN_RESTART_WITH_FILESTORE
-#include <stdlib.h>
-#include <string.h>
-#ifdef _WIN32
-# include <windows.h>
-# define TEST_PATH_MAX MAX_PATH
-#else
-# include <dirent.h>
-# include <limits.h>
-# include <sys/stat.h>
-# include <unistd.h>
-# define TEST_PATH_MAX PATH_MAX
-#endif
 #endif
 
 /* Not the default port 4840. The server sets SO_REUSEPORT. A test server of
@@ -96,6 +84,27 @@ startServer(void) {
     config->applicationDescription.applicationUri =
         UA_STRING_ALLOC("urn:open62541.unconfigured.application");
 
+#ifdef UA_ENABLE_RBAC
+    /* The GDS Methods are restricted to the SecurityAdmin role. Map the
+     * anonymous session of the test client to it. */
+    UA_NodeId secAdminId = UA_NODEID_NUMERIC(0, UA_NS0ID_WELLKNOWNROLE_SECURITYADMIN);
+    UA_Role secAdmin;
+    res = UA_Server_getRoleById(server, secAdminId, &secAdmin);
+    ck_assert_uint_eq(res, UA_STATUSCODE_GOOD);
+    UA_IdentityMappingRuleType *rules = (UA_IdentityMappingRuleType *)
+        UA_realloc(secAdmin.identityMappingRules,
+                   (secAdmin.identityMappingRulesSize + 1) *
+                   sizeof(UA_IdentityMappingRuleType));
+    ck_assert_ptr_nonnull(rules);
+    secAdmin.identityMappingRules = rules;
+    UA_IdentityMappingRuleType_init(&rules[secAdmin.identityMappingRulesSize]);
+    rules[secAdmin.identityMappingRulesSize].criteriaType = UA_IDENTITYCRITERIATYPE_ANONYMOUS;
+    secAdmin.identityMappingRulesSize++;
+    res = UA_Server_updateRole(server, &secAdmin);
+    UA_Role_clear(&secAdmin);
+    ck_assert_uint_eq(res, UA_STATUSCODE_GOOD);
+#endif
+
     ck_assert_uint_eq(UA_Server_run_startup(server), UA_STATUSCODE_GOOD);
     UA_atomic_store(&running, true);
     THREAD_CREATE(server_thread, serverloop);
@@ -130,70 +139,7 @@ static void teardown(void) {
 
 /* The PKI directory of the filestore. Every test gets a new directory, so no
  * state of an earlier test is used. */
-static char storePath[TEST_PATH_MAX];
-
-static UA_Boolean
-createTempDir(void) {
-#ifdef _WIN32
-    for(int i = 0; i < 100; i++) {
-        snprintf(storePath, sizeof(storePath), "ua_gds_csr_pki_%lu_%d",
-                 GetTickCount(), i);
-        if(CreateDirectoryA(storePath, NULL))
-            return true;
-    }
-    return false;
-#else
-    snprintf(storePath, sizeof(storePath), "/tmp/ua_gds_csr_pki_XXXXXX");
-    return mkdtemp(storePath) != NULL;
-#endif
-}
-
-/* Recursively remove a directory */
-static void
-removeDir(const char *path) {
-#ifdef _WIN32
-    char search[MAX_PATH + 3];
-    snprintf(search, sizeof(search), "%s\\*", path);
-    WIN32_FIND_DATAA ffd;
-    HANDLE hFind = FindFirstFileA(search, &ffd);
-    if(hFind == INVALID_HANDLE_VALUE)
-        return;
-    do {
-        if(strcmp(ffd.cFileName, ".") == 0 || strcmp(ffd.cFileName, "..") == 0)
-            continue;
-        char full[MAX_PATH + 1];
-        snprintf(full, sizeof(full), "%s\\%s", path, ffd.cFileName);
-        if(ffd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)
-            removeDir(full);
-        else
-            DeleteFileA(full);
-    } while(FindNextFileA(hFind, &ffd) != 0);
-    FindClose(hFind);
-    RemoveDirectoryA(path);
-#else
-    DIR *dir = opendir(path);
-    if(!dir)
-        return;
-    struct dirent *entry;
-    while((entry = readdir(dir)) != NULL) {
-        if(strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0)
-            continue;
-        char full[TEST_PATH_MAX];
-        int n = snprintf(full, sizeof(full), "%s/%s", path, entry->d_name);
-        if(n < 0 || (size_t)n >= sizeof(full))
-            continue;
-        struct stat st;
-        if(stat(full, &st) != 0)
-            continue;
-        if(S_ISDIR(st.st_mode))
-            removeDir(full);
-        else
-            unlink(full);
-    }
-    closedir(dir);
-    rmdir(path);
-#endif
-}
+static char storePath[256];
 
 /* Helper: create the server with its original certificate and private key and
  * the filestore in storePath. The server loads the TrustList from the
@@ -208,7 +154,7 @@ createFilestoreServer(void) {
 }
 
 static void setupFilestore(void) {
-    ck_assert(createTempDir());
+    ck_assert(UA_UnitTest_createTempDir("ua_gds_csr_pki", storePath, sizeof(storePath)));
     createFilestoreServer();
 
     /* The filestore writes the TrustList to the PKI directory */
@@ -228,7 +174,7 @@ static void setupFilestore(void) {
 
 static void teardownFilestore(void) {
     stopServer();
-    removeDir(storePath);
+    UA_UnitTest_removeDir(storePath);
 }
 
 /* Helper: restart the server. The new server has the configuration of the

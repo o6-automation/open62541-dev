@@ -5,6 +5,7 @@
 #include <open62541/server.h>
 
 #include "../common.h"
+#include "test_helpers.h"
 
 #include <check.h>
 #include <stdlib.h>
@@ -12,93 +13,11 @@
 
 #ifdef _WIN32
 # include <windows.h>
-#else
-# include <dirent.h>
-# include <limits.h>
-# include <sys/stat.h>
-# include <unistd.h>
-#endif
-
-#ifdef _WIN32
 # define TEST_PATH_MAX MAX_PATH
 #else
+# include <limits.h>
 # define TEST_PATH_MAX PATH_MAX
 #endif
-
-/* Create a temporary directory. Caller must free the returned string. */
-static char *
-createTempDir(void) {
-#if defined(_WIN32)
-    char dirname[MAX_PATH + 1];
-    for(int i = 0; i < 100; i++) {
-        snprintf(dirname, sizeof(dirname), "ua_pki_%lu_%d",
-                 GetTickCount(), i);
-        if(CreateDirectoryA(dirname, NULL))
-            return _strdup(dirname);
-    }
-    return NULL;
-#else
-    char tmpdir[] = "/tmp/ua_pki_test_XXXXXX";
-    const char *pkiDir = mkdtemp(tmpdir);
-    if(!pkiDir)
-        return NULL;
-    return strdup(pkiDir);
-#endif
-}
-
-/* Recursively remove a directory */
-static void
-removeDir(const char *path) {
-#if defined(_WIN32)
-    char search[MAX_PATH + 3];
-    snprintf(search, sizeof(search), "%s\\*", path);
-    WIN32_FIND_DATAA ffd;
-    HANDLE hFind = FindFirstFileA(search, &ffd);
-    if(hFind == INVALID_HANDLE_VALUE)
-        return;
-    do {
-        if(strcmp(ffd.cFileName, ".") == 0 || strcmp(ffd.cFileName, "..") == 0)
-            continue;
-        char full[MAX_PATH + 1];
-        snprintf(full, sizeof(full), "%s\\%s", path, ffd.cFileName);
-        if(ffd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)
-            removeDir(full);
-        else
-            DeleteFileA(full);
-    } while(FindNextFileA(hFind, &ffd) != 0);
-    FindClose(hFind);
-    RemoveDirectoryA(path);
-#else
-    DIR *dir = opendir(path);
-    if(!dir)
-        return;
-
-    struct dirent *entry;
-    while((entry = readdir(dir)) != NULL) {
-        if(strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0)
-            continue;
-
-        char full[TEST_PATH_MAX];
-        int n = snprintf(full, sizeof(full), "%s/%s", path, entry->d_name);
-        if(n < 0 || (size_t)n >= sizeof(full))
-            continue;
-
-        struct stat st;
-        if(stat(full, &st) != 0)
-            continue;
-
-        if(S_ISDIR(st.st_mode)) {
-            removeDir(full);
-            continue;
-        }
-
-        unlink(full);
-    }
-
-    closedir(dir);
-    rmdir(path);
-#endif
-}
 
 /* Test: pkiFolder in JSON config actually configures the filestore
  * certificate group, rather than leaving the AcceptAll default in place.
@@ -108,8 +27,8 @@ START_TEST(server_from_json_with_pkifolder) {
     UA_StatusCode retval;
 
     /* Build a JSON config with pkiFolder pointing to a real temp dir */
-    char *pkiDir = createTempDir();
-    ck_assert_ptr_ne(pkiDir, NULL);
+    char pkiDir[TEST_PATH_MAX];
+    ck_assert(UA_UnitTest_createTempDir("ua_pki_test", pkiDir, sizeof(pkiDir)));
 
     char pkiFolder[TEST_PATH_MAX];
     int pkiFolderLen = snprintf(pkiFolder, sizeof(pkiFolder), "%s/pki", pkiDir);
@@ -166,10 +85,7 @@ START_TEST(server_from_json_with_pkifolder) {
     UA_Server_delete(server);
 
     /* Clean up temp dir */
-    if(pkiDir) {
-        removeDir(pkiDir);
-        UA_free(pkiDir);
-    }
+    UA_UnitTest_removeDir(pkiDir);
 }
 END_TEST
 

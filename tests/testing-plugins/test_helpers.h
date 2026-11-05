@@ -33,6 +33,18 @@ UA_Server_newForUnitTestWithSecurityPolicies_Filestore(UA_UInt16 portNumber,
                                                        const UA_String storePath);
 #endif /* defined(__linux__) || defined(UA_ARCHITECTURE_WIN32) */
 
+/* Create a new and empty directory for the files of a test. The name of the
+ * directory starts with the prefix. On Windows, the directory is in the
+ * current working directory, else in /tmp. The path is written to the buffer
+ * path with the size pathSize. Returns true if the directory was created. */
+UA_Boolean
+UA_UnitTest_createTempDir(const char *prefix, char *path, size_t pathSize);
+
+/* Recursively remove a directory and its contents. A symbolic link (a reparse
+ * point on Windows) is removed, but the target of the link is not entered. */
+void
+UA_UnitTest_removeDir(const char *path);
+
 UA_Client * UA_Client_newForUnitTest(void);
 
 UA_StatusCode

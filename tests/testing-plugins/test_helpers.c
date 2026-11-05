@@ -9,6 +9,18 @@
 #include <open62541/plugin/log_stdout.h>
 #include <open62541/server_config_default.h>
 
+#include <stdio.h>
+#include <string.h>
+#ifdef _WIN32
+# include <windows.h>
+#else
+# include <dirent.h>
+# include <limits.h>
+# include <stdlib.h>
+# include <sys/stat.h>
+# include <unistd.h>
+#endif
+
 #define TESTING_LOGLEVEL UA_LOGLEVEL_INFO
 
 static void
@@ -80,6 +92,83 @@ UA_Server_newForUnitTestWithSecurityPolicies_Filestore(UA_UInt16 portNumber,
     return UA_Server_newWithConfig(&config);
 }
 #endif /* defined(__linux__) || defined(UA_ARCHITECTURE_WIN32) */
+
+UA_Boolean
+UA_UnitTest_createTempDir(const char *prefix, char *path, size_t pathSize) {
+#ifdef _WIN32
+    for(int i = 0; i < 100; i++) {
+        int n = snprintf(path, pathSize, "%s_%lu_%d", prefix,
+                         (unsigned long)GetTickCount(), i);
+        if(n < 0 || (size_t)n >= pathSize)
+            return false;
+        if(CreateDirectoryA(path, NULL))
+            return true;
+    }
+    return false;
+#else
+    int n = snprintf(path, pathSize, "/tmp/%s_XXXXXX", prefix);
+    if(n < 0 || (size_t)n >= pathSize)
+        return false;
+    return mkdtemp(path) != NULL;
+#endif
+}
+
+void
+UA_UnitTest_removeDir(const char *path) {
+#ifdef _WIN32
+    char search[MAX_PATH + 3];
+    int n = snprintf(search, sizeof(search), "%s\\*", path);
+    if(n < 0 || (size_t)n >= sizeof(search))
+        return;
+    WIN32_FIND_DATAA ffd;
+    HANDLE hFind = FindFirstFileA(search, &ffd);
+    if(hFind == INVALID_HANDLE_VALUE)
+        return;
+    do {
+        if(strcmp(ffd.cFileName, ".") == 0 || strcmp(ffd.cFileName, "..") == 0)
+            continue;
+        char full[MAX_PATH + 1];
+        n = snprintf(full, sizeof(full), "%s\\%s", path, ffd.cFileName);
+        if(n < 0 || (size_t)n >= sizeof(full))
+            continue;
+        /* A symbolic link or junction to a directory is a reparse point with
+         * the directory attribute. Remove the link, do not enter it. */
+        if((ffd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) &&
+           !(ffd.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT))
+            UA_UnitTest_removeDir(full);
+        else if(ffd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)
+            RemoveDirectoryA(full);
+        else
+            DeleteFileA(full);
+    } while(FindNextFileA(hFind, &ffd) != 0);
+    FindClose(hFind);
+    RemoveDirectoryA(path);
+#else
+    DIR *dir = opendir(path);
+    if(!dir)
+        return;
+    struct dirent *entry;
+    while((entry = readdir(dir)) != NULL) {
+        if(strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0)
+            continue;
+        char full[PATH_MAX];
+        int n = snprintf(full, sizeof(full), "%s/%s", path, entry->d_name);
+        if(n < 0 || (size_t)n >= sizeof(full))
+            continue;
+        /* lstat does not follow a symbolic link. A link to a directory is
+         * removed with unlink, its target is not entered. */
+        struct stat st;
+        if(lstat(full, &st) != 0)
+            continue;
+        if(S_ISDIR(st.st_mode))
+            UA_UnitTest_removeDir(full);
+        else
+            unlink(full);
+    }
+    closedir(dir);
+    rmdir(path);
+#endif
+}
 
 static void
 testClientNotificationCallback(UA_Client *client,
