@@ -801,7 +801,9 @@ countTypeRead(const UA_Node *node, UA_UInt32 mask, UA_BrowseDirection direction)
         return;
     if(mask == ~(UA_UInt32)0 && direction == UA_BROWSEDIRECTION_BOTH)
         fullTypeReads++;
-    if(mask == 0 && direction == UA_BROWSEDIRECTION_INVALID)
+    /* The destructor gets the NodeId of the type besides its lifecycle */
+    if((mask & ~(UA_UInt32)UA_NODEATTRIBUTESMASK_NODEID) == 0 &&
+       direction == UA_BROWSEDIRECTION_INVALID)
         lifecycleTypeReads++;
 }
 
@@ -1988,6 +1990,91 @@ START_TEST(DeleteReference_BidirectionalSecondDirection) {
     ck_assert_uint_ne(st, UA_STATUSCODE_GOOD);
 } END_TEST
 
+/* Counts the reads of the watched node that do not request its NodeClass.
+ * Node management reads the NodeClass of the ReferenceType and of the
+ * AddReferences target. With nodeClassBrowseNameOnly, only the reads that
+ * also request the BrowseName count: editing a reference does not need the
+ * NodeClass, validating the target does. */
+static const UA_Node *
+(*nodeClassOriginalGetNode)(UA_Nodestore *ns, const UA_NodeId *nodeId,
+                            UA_UInt32 attributeMask, UA_ReferenceTypeSet references,
+                            UA_BrowseDirection referenceDirections);
+static UA_Node *
+(*nodeClassOriginalGetEditNode)(UA_Nodestore *ns, const UA_NodeId *nodeId,
+                                UA_UInt32 attributeMask, UA_ReferenceTypeSet references,
+                                UA_BrowseDirection referenceDirections);
+static UA_NodeId nodeClassWatched;
+static UA_Boolean nodeClassBrowseNameOnly;
+static size_t nodeClassReads, nodeClassMissing;
+
+static void
+countNodeClassRead(const UA_NodeId *nodeId, UA_UInt32 attributeMask) {
+    if(!UA_NodeId_equal(nodeId, &nodeClassWatched))
+        return;
+    if(nodeClassBrowseNameOnly &&
+       !(attributeMask & UA_NODEATTRIBUTESMASK_BROWSENAME))
+        return;
+    nodeClassReads++;
+    if(!(attributeMask & UA_NODEATTRIBUTESMASK_NODECLASS))
+        nodeClassMissing++;
+}
+
+static const UA_Node *
+nodeClassGetNode(UA_Nodestore *ns, const UA_NodeId *nodeId, UA_UInt32 attributeMask,
+                 UA_ReferenceTypeSet references, UA_BrowseDirection referenceDirections) {
+    countNodeClassRead(nodeId, attributeMask);
+    return nodeClassOriginalGetNode(ns, nodeId, attributeMask, references,
+                                    referenceDirections);
+}
+
+static UA_Node *
+nodeClassGetEditNode(UA_Nodestore *ns, const UA_NodeId *nodeId, UA_UInt32 attributeMask,
+                     UA_ReferenceTypeSet references, UA_BrowseDirection referenceDirections) {
+    countNodeClassRead(nodeId, attributeMask);
+    return nodeClassOriginalGetEditNode(ns, nodeId, attributeMask, references,
+                                        referenceDirections);
+}
+
+START_TEST(AddDeleteReference_ReadsRequestNodeClass) {
+    UA_NodeId objectsNodeId = UA_NODEID_NUMERIC(0, UA_NS0ID_OBJECTSFOLDER);
+    UA_NodeId sourceId = addObjInstance(objectsNodeId, "nodeClassSrc");
+    UA_NodeId targetId = addObjInstance(objectsNodeId, "nodeClassTgt");
+    UA_NodeId refTypeId = registerRefType("HasNodeClassRef", "IsNodeClassRefOf");
+    UA_ExpandedNodeId targetExpId;
+    UA_ExpandedNodeId_init(&targetExpId);
+    targetExpId.nodeId = targetId;
+
+    UA_Nodestore *ns = UA_Server_getConfig(server)->nodestore;
+    nodeClassOriginalGetNode = ns->getNode;
+    nodeClassOriginalGetEditNode = ns->getEditNode;
+    ns->getNode = nodeClassGetNode;
+    ns->getEditNode = nodeClassGetEditNode;
+
+    /* The ReferenceType in AddReferences and DeleteReferences */
+    nodeClassWatched = refTypeId;
+    nodeClassBrowseNameOnly = false;
+    nodeClassReads = nodeClassMissing = 0;
+    UA_StatusCode st = UA_Server_addReference(server, sourceId, refTypeId, targetExpId, true);
+    ck_assert_uint_eq(st, UA_STATUSCODE_GOOD);
+    st = UA_Server_deleteReference(server, sourceId, refTypeId, true, targetExpId, true);
+    ck_assert_uint_eq(st, UA_STATUSCODE_GOOD);
+    ck_assert_uint_ge(nodeClassReads, 2);
+    ck_assert_uint_eq(nodeClassMissing, 0);
+
+    /* The AddReferences target, whose BrowseName is hashed and whose NodeClass
+     * is compared */
+    nodeClassWatched = targetId;
+    nodeClassBrowseNameOnly = true;
+    nodeClassReads = nodeClassMissing = 0;
+    st = UA_Server_addReference(server, sourceId, refTypeId, targetExpId, true);
+    ck_assert_uint_eq(st, UA_STATUSCODE_GOOD);
+    ck_assert_uint_gt(nodeClassReads, 0);
+    ck_assert_uint_eq(nodeClassMissing, 0);
+
+    ns->getNode = nodeClassOriginalGetNode;
+    ns->getEditNode = nodeClassOriginalGetEditNode;
+} END_TEST
+
 START_TEST(SetNodeTypeLifecycle) {
     /* Set a lifecycle callback on BaseObjectType */
     UA_NodeTypeLifecycle nlc;
@@ -2531,6 +2618,7 @@ int main(void) {
     tcase_add_test(tc_addreferences, DeleteReference_InvalidRefType_rejected);
     tcase_add_test(tc_addreferences, DeleteReference_SourceNodeUnknown_rejected);
     tcase_add_test(tc_addreferences, DeleteReference_BidirectionalSecondDirection);
+    tcase_add_test(tc_addreferences, AddDeleteReference_ReadsRequestNodeClass);
     suite_add_tcase(s, tc_addreferences);
 
     TCase *tc_ext = tcase_create("extendedCoverage");
