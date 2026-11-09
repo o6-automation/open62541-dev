@@ -208,6 +208,12 @@ jobs:
               name: "Debug Build & Unit Tests without multithreading (gcc)"
               cmd_action: unit_tests_nomt
 
+          # RBAC and the GDS role permissions on a single Ubuntu version
+          - os: ubuntu-24.04
+            build:
+              name: "Debug Build & Unit Tests with RBAC (gcc)"
+              cmd_action: unit_tests_rbac
+
           # Libwebsockets Build for specific Ubuntu version
           - os: ubuntu-24.04
             build:
