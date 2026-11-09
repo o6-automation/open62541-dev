@@ -1426,6 +1426,126 @@ START_TEST(SetVariableValueSource) {
     UA_DataValue_delete(externalValuePtr);
 } END_TEST
 
+static UA_NodeId
+addExternalVariable(const UA_NodeId parent, const UA_NodeId refType,
+                    const UA_QualifiedName name, UA_DataValue **value) {
+    UA_VariableAttributes attr = UA_VariableAttributes_default;
+    attr.valueRank = UA_VALUERANK_SCALAR;
+    UA_NodeId id;
+    UA_StatusCode res =
+        UA_Server_addVariableNode(server, UA_NODEID_NULL, parent, refType, name,
+                                  UA_NODEID_NUMERIC(0, UA_NS0ID_BASEDATAVARIABLETYPE),
+                                  attr, NULL, &id);
+    ck_assert_uint_eq(res, UA_STATUSCODE_GOOD);
+    UA_ValueSourceNotifications notifications = {externalOnRead, externalOnWrite};
+    res = UA_Server_setVariableNode_externalValueSource(server, id, value,
+                                                        &notifications);
+    ck_assert_uint_eq(res, UA_STATUSCODE_GOOD);
+    return id;
+}
+
+static UA_DataValue *
+newInt32DataValue(UA_Int32 i) {
+    UA_DataValue *dv = UA_DataValue_new();
+    ck_assert_ptr_nonnull(dv);
+    UA_Variant_setScalarCopy(&dv->value, &i, &UA_TYPES[UA_TYPES_INT32]);
+    dv->hasValue = true;
+    return dv;
+}
+
+/* The value of an external source belongs to the application. A copy of the
+ * node points to the same value and keeps the notifications. */
+START_TEST(CopyExternalValueSource) {
+    UA_DataValue *external = newInt32DataValue(42);
+    UA_NodeId varId =
+        addExternalVariable(UA_NODEID_NUMERIC(0, UA_NS0ID_OBJECTSFOLDER),
+                            UA_NODEID_NUMERIC(0, UA_NS0ID_ORGANIZES),
+                            UA_QUALIFIEDNAME(1, "CopyExternal"), &external);
+
+    const UA_Node *node = UA_NODESTORE_GET(server, &varId);
+    ck_assert_ptr_nonnull(node);
+    UA_Node *copy = UA_Node_copy_alloc(node);
+    UA_NODESTORE_RELEASE(server, node);
+    ck_assert_ptr_nonnull(copy);
+    const UA_VariableNode *vn = &copy->variableNode;
+    ck_assert_int_eq(vn->valueSourceType, UA_VALUESOURCETYPE_EXTERNAL);
+    ck_assert_ptr_eq((void *)vn->valueSource.external.value, (void *)&external);
+    ck_assert(vn->valueSource.external.notifications.onRead == externalOnRead);
+    ck_assert(vn->valueSource.external.notifications.onWrite == externalOnWrite);
+    UA_Node_clear(copy);
+    UA_free(copy);
+
+    ck_assert_uint_eq(UA_Server_deleteNode(server, varId, true),
+                      UA_STATUSCODE_GOOD);
+    ck_assert_int_eq(*(UA_Int32 *)external->value.data, 42);
+    UA_DataValue_delete(external);
+} END_TEST
+
+/* UA_NS0ID_MODELLINGRULE_MANDATORY is not available in Minimal Nodeset */
+#ifdef UA_GENERATED_NAMESPACE_ZERO
+/* An instance gets its own internal copy of the value of an external source
+ * in the instance declaration */
+START_TEST(InstantiateExternalValueSource) {
+    UA_ObjectTypeAttributes otAttr = UA_ObjectTypeAttributes_default;
+    UA_NodeId typeId;
+    UA_StatusCode res =
+        UA_Server_addObjectTypeNode(server, UA_NODEID_NULL,
+                                    UA_NODEID_NUMERIC(0, UA_NS0ID_BASEOBJECTTYPE),
+                                    UA_NODEID_NUMERIC(0, UA_NS0ID_HASSUBTYPE),
+                                    UA_QUALIFIEDNAME(1, "ExternalSourceType"),
+                                    otAttr, NULL, &typeId);
+    ck_assert_uint_eq(res, UA_STATUSCODE_GOOD);
+
+    UA_DataValue *external = newInt32DataValue(42);
+    UA_NodeId declId =
+        addExternalVariable(typeId, UA_NODEID_NUMERIC(0, UA_NS0ID_HASCOMPONENT),
+                            UA_QUALIFIEDNAME(1, "ExternalValue"), &external);
+    res = UA_Server_addReference(server, declId,
+                                 UA_NODEID_NUMERIC(0, UA_NS0ID_HASMODELLINGRULE),
+                                 UA_EXPANDEDNODEID_NUMERIC(0, UA_NS0ID_MODELLINGRULE_MANDATORY),
+                                 true);
+    ck_assert_uint_eq(res, UA_STATUSCODE_GOOD);
+
+    UA_ObjectAttributes oAttr = UA_ObjectAttributes_default;
+    UA_NodeId objId;
+    res = UA_Server_addObjectNode(server, UA_NODEID_NULL,
+                                  UA_NODEID_NUMERIC(0, UA_NS0ID_OBJECTSFOLDER),
+                                  UA_NODEID_NUMERIC(0, UA_NS0ID_ORGANIZES),
+                                  UA_QUALIFIEDNAME(1, "ExternalSourceObject"),
+                                  typeId, oAttr, NULL, &objId);
+    ck_assert_uint_eq(res, UA_STATUSCODE_GOOD);
+
+    UA_QualifiedName childName = UA_QUALIFIEDNAME(1, "ExternalValue");
+    UA_BrowsePathResult bpr =
+        UA_Server_browseSimplifiedBrowsePath(server, objId, 1, &childName);
+    ck_assert_uint_eq(bpr.statusCode, UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(bpr.targetsSize, 1);
+    UA_NodeId childId = bpr.targets[0].targetId.nodeId;
+
+    const UA_Node *child = UA_NODESTORE_GET(server, &childId);
+    ck_assert_ptr_nonnull(child);
+    ck_assert_int_eq(child->variableNode.valueSourceType,
+                     UA_VALUESOURCETYPE_INTERNAL);
+    UA_NODESTORE_RELEASE(server, child);
+
+    /* Changing the external value does not change the instance */
+    *(UA_Int32 *)external->value.data = 43;
+    UA_Variant v;
+    res = UA_Server_readValue(server, childId, &v);
+    ck_assert_uint_eq(res, UA_STATUSCODE_GOOD);
+    ck_assert(UA_Variant_hasScalarType(&v, &UA_TYPES[UA_TYPES_INT32]));
+    ck_assert_int_eq(*(UA_Int32 *)v.data, 42);
+    UA_Variant_clear(&v);
+    UA_BrowsePathResult_clear(&bpr);
+
+    ck_assert_uint_eq(UA_Server_deleteNode(server, objId, true),
+                      UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(UA_Server_deleteNode(server, typeId, true),
+                      UA_STATUSCODE_GOOD);
+    UA_DataValue_delete(external);
+} END_TEST
+#endif
+
 /* === Context API tests === */
 
 START_TEST(Context_GetSetNodeContext) {
@@ -1665,6 +1785,10 @@ int main(void) {
     tcase_add_test(tc_ext, SetNodeTypeLifecycle);
     tcase_add_test(tc_ext, SetAdminSessionContext);
     tcase_add_test(tc_ext, SetVariableValueSource);
+    tcase_add_test(tc_ext, CopyExternalValueSource);
+#ifdef UA_GENERATED_NAMESPACE_ZERO
+    tcase_add_test(tc_ext, InstantiateExternalValueSource);
+#endif
     tcase_add_test(tc_ext, Context_GetSetNodeContext);
     tcase_add_test(tc_ext, Context_SetNodeContext_InvalidNodeId);
     tcase_add_test(tc_ext, Context_GetNodeContext_UnknownNodeId);

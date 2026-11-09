@@ -460,12 +460,11 @@ UA_CommonVariableNode_copy(const UA_VariableNode *src, UA_VariableNode *dst) {
     retval = UA_NodeId_copy(&src->dataType, &dst->dataType);
     dst->valueRank = src->valueRank;
     dst->valueSourceType = src->valueSourceType;
+    /* An external value belongs to the application. The copy points to the
+     * same value. */
     dst->valueSource = src->valueSource;
     if(src->valueSourceType == UA_VALUESOURCETYPE_INTERNAL)
         retval |= UA_DataValue_copy(&src->valueSource.internal.value,
-                                    &dst->valueSource.internal.value);
-    else if(src->valueSourceType == UA_VALUESOURCETYPE_EXTERNAL)
-        retval |= UA_DataValue_copy(*src->valueSource.external.value,
                                     &dst->valueSource.internal.value);
     return retval;
 }

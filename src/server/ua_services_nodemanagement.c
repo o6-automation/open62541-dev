@@ -757,22 +757,28 @@ copyObjectVariableChild(UA_Server *server, UA_Session *session,
     node->head.context = NULL;
     node->head.constructed = false;
 
-    /* The value source callbacks are copied by default. But we don't want
-     * to keep it here. UA_Node_copy stores the value of an external source
-     * as an internal value, which overwrites the external notifications. So
-     * the internal notifications are cleared for both. */
+    /* The child does not keep the value source of the instance declaration.
+     * It gets an internal value without notifications: a copy of the value of
+     * an external source, and an empty value instead of the callbacks. */
     if(node->head.nodeClass == UA_NODECLASS_VARIABLE ||
        node->head.nodeClass == UA_NODECLASS_VARIABLETYPE) {
-        if(node->variableNode.valueSourceType == UA_VALUESOURCETYPE_INTERNAL ||
-           node->variableNode.valueSourceType == UA_VALUESOURCETYPE_EXTERNAL) {
-            memset(&node->variableNode.valueSource.internal.notifications, 0,
-                   sizeof(UA_ValueSourceNotifications));
-        } else {
-            memset(&node->variableNode.valueSource.callback, 0,
-                   sizeof(UA_CallbackValueSource));
-
+        UA_VariableNode *vn = &node->variableNode;
+        if(vn->valueSourceType == UA_VALUESOURCETYPE_EXTERNAL) {
+            const UA_DataValue *value = (const UA_DataValue*)
+                UA_atomic_load((void**)vn->valueSource.external.value);
+            UA_DataValue copy;
+            res = UA_DataValue_copy(value, &copy);
+            if(res != UA_STATUSCODE_GOOD) {
+                UA_NODESTORE_DELETE(server, node);
+                return res;
+            }
+            vn->valueSource.internal.value = copy;
+        } else if(vn->valueSourceType == UA_VALUESOURCETYPE_CALLBACK) {
+            UA_DataValue_init(&vn->valueSource.internal.value);
         }
-        node->variableNode.valueSourceType = UA_VALUESOURCETYPE_INTERNAL;
+        memset(&vn->valueSource.internal.notifications, 0,
+               sizeof(UA_ValueSourceNotifications));
+        vn->valueSourceType = UA_VALUESOURCETYPE_INTERNAL;
     }
 
     /* Reset the NodeId (random numeric id will be assigned in the nodestore) */
