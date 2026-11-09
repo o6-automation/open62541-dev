@@ -562,6 +562,23 @@ function unit_tests_nomt {
     make gcov
 }
 
+# RBAC is off by default. Run the tests that depend on it, including the GDS
+# Push Management with its SecurityAdmin role permissions.
+function unit_tests_rbac {
+    rm -rf build; mkdir -p build; cd build
+    cmake -DCMAKE_BUILD_TYPE=Debug \
+          -DUA_BUILD_UNIT_TESTS=ON \
+          -DUA_ENABLE_RBAC=ON \
+          -DUA_ENABLE_ENCRYPTION=OPENSSL \
+          -DUA_ENABLE_DRIVER_GDS_RECEIVER=ON \
+          -DUA_FORCE_WERROR=ON \
+          -DUA_NAMESPACE_ZERO=FULL \
+          ..
+    make ${MAKEOPTS}
+    set_capabilities
+    ctest --output-on-failure -R 'rbac|gds'
+}
+
 function unit_tests_alarms {
     rm -rf build; mkdir -p build; cd build
     cmake -DCMAKE_BUILD_TYPE=Debug \
