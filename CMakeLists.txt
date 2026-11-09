@@ -1236,13 +1236,13 @@ if(UA_ENABLE_LWS)
     list(APPEND plugin_sources
          ${PROJECT_SOURCE_DIR}/arch/posix/eventloop_posix_lws.h
          ${PROJECT_SOURCE_DIR}/arch/posix/eventloop_posix_http_internal.h
+         ${PROJECT_SOURCE_DIR}/arch/posix/eventloop_posix_http_compression.h
          ${PROJECT_SOURCE_DIR}/arch/posix/eventloop_posix_http.c
          ${PROJECT_SOURCE_DIR}/arch/posix/eventloop_posix_http_client.c
          ${PROJECT_SOURCE_DIR}/deps/picohttpparser.h
          ${PROJECT_SOURCE_DIR}/deps/picohttpparser.c
          ${PROJECT_SOURCE_DIR}/arch/posix/eventloop_posix_http_parser.h
          ${PROJECT_SOURCE_DIR}/arch/posix/eventloop_posix_http_parser.c
-         ${PROJECT_SOURCE_DIR}/arch/posix/eventloop_posix_http_compression.h
          ${PROJECT_SOURCE_DIR}/arch/posix/eventloop_posix_http_compression.c
          ${PROJECT_SOURCE_DIR}/arch/posix/eventloop_posix_http_server.c
          ${PROJECT_SOURCE_DIR}/arch/posix/eventloop_posix_websocket_lws.c
