@@ -265,6 +265,19 @@ START_TEST(Client_commonAttributes_requireBrowse) {
     UA_Server_delete(server);
 } END_TEST
 
+/* A failed test ends before it stops its server thread and deletes its
+ * server. The thread would then run on the server of the next test. The tests
+ * clear running right before they delete their server. */
+static void
+cleanupServerTest(void) {
+    if(!running)
+        return;
+    running = false;
+    THREAD_JOIN(server_thread);
+    UA_Server_run_shutdown(server);
+    UA_Server_delete(server);
+}
+
 static Suite* testSuite_Client(void) {
     Suite *s = suite_create("Client");
     TCase *tc_client_user = tcase_create("Client User/Password");
@@ -276,6 +289,7 @@ static Suite* testSuite_Client(void) {
     suite_add_tcase(s,tc_client_user);
 
     TCase *tc_server = tcase_create("Server-Side Access Control");
+    tcase_add_checked_fixture(tc_server, NULL, cleanupServerTest);
     tcase_add_test(tc_server, Server_sessionParameter);
     tcase_add_test(tc_server, Server_setSessionParameter);
     tcase_add_test(tc_server, Client_commonAttributes_requireBrowse);
