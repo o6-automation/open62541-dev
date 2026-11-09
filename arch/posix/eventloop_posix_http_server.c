@@ -63,7 +63,9 @@ connectionStateName(HTTPAcceptedConnectionState state) {
     }
 }
 
-static UA_Boolean
+/* Only used in UA_assert. Inline, so that builds without assertions do not
+ * warn about an unused function. */
+static UA_INLINE UA_Boolean
 connectionTransitionAllowed(HTTPAcceptedConnectionState from,
                             HTTPAcceptedConnectionState to) {
     if(from == to)
