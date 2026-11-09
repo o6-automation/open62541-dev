@@ -2020,8 +2020,10 @@ END_TEST
 START_TEST(add_certificate_replaced_input_metadata) {
     UA_Client *client = createSecureClient();
 
-    UA_StatusCode retval = UA_Client_deleteNode(
-        client,
+    /* Replace the argument metadata as the server administrator. With RBAC,
+     * the test session may not delete or add nodes there. */
+    UA_StatusCode retval = UA_Server_deleteNode(
+        server,
         UA_NODEID_NUMERIC(0,
             UA_NS0ID_SERVERCONFIGURATION_CERTIFICATEGROUPS_DEFAULTAPPLICATIONGROUP_TRUSTLIST_ADDCERTIFICATE_INPUTARGUMENTS),
         true);
@@ -2043,15 +2045,15 @@ START_TEST(add_certificate_replaced_input_metadata) {
     UA_Variant_setArray(&attr.value, &argument, 1,
                         &UA_TYPES[UA_TYPES_ARGUMENT]);
 
-    retval = UA_Client_addVariableNode(
-        client,
+    retval = UA_Server_addVariableNode(
+        server,
         UA_NODEID_NUMERIC(0,
             UA_NS0ID_SERVERCONFIGURATION_CERTIFICATEGROUPS_DEFAULTAPPLICATIONGROUP_TRUSTLIST_ADDCERTIFICATE_INPUTARGUMENTS),
         UA_NODEID_NUMERIC(0,
             UA_NS0ID_SERVERCONFIGURATION_CERTIFICATEGROUPS_DEFAULTAPPLICATIONGROUP_TRUSTLIST_ADDCERTIFICATE),
         UA_NODEID_NUMERIC(0, UA_NS0ID_HASPROPERTY),
         UA_QUALIFIEDNAME(0, "InputArguments"),
-        UA_NODEID_NUMERIC(0, UA_NS0ID_PROPERTYTYPE), attr, NULL);
+        UA_NODEID_NUMERIC(0, UA_NS0ID_PROPERTYTYPE), attr, NULL, NULL);
     ck_assert_uint_eq(retval, UA_STATUSCODE_GOOD);
 
     /* Prime the method-call stack with a Boolean as the second argument. The
