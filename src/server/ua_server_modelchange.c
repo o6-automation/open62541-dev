@@ -103,6 +103,29 @@ getTypeDefinition(const UA_NodeHead *head, UA_NodeId *typeId) {
     return context.res;
 }
 
+/* Get the affected Node with what the metadata uses: the NodeClass and the
+ * forward HasTypeDefinition references. With propertyRefs, also the forward
+ * HasProperty references (including subtypes) to the NodeVersion Property;
+ * propertyRefs then returns that ReferenceType set for getNodeVersionProperty.
+ * Returns UA_STATUSCODE_BADNOTFOUND if the Node does not exist. */
+static UA_StatusCode
+getMetadataNode(UA_Server *server, const UA_NodeId *affected,
+                UA_ReferenceTypeSet *propertyRefs, const UA_Node **node) {
+    UA_ReferenceTypeSet refs = UA_REFTYPESET(UA_REFERENCETYPEINDEX_HASTYPEDEFINITION);
+    if(propertyRefs) {
+        const UA_NodeId hasProperty = UA_NODEID_NUMERIC(0, UA_NS0ID_HASPROPERTY);
+        UA_StatusCode res =
+            referenceTypeIndices(server, &hasProperty, propertyRefs, true);
+        if(res != UA_STATUSCODE_GOOD)
+            return res;
+        refs = UA_ReferenceTypeSet_union(refs, *propertyRefs);
+    }
+    *node = UA_NODESTORE_GET_SELECTIVE(server, affected,
+                                       UA_NODEATTRIBUTESMASK_NODECLASS,
+                                       refs, UA_BROWSEDIRECTION_FORWARD);
+    return (*node) ? UA_STATUSCODE_GOOD : UA_STATUSCODE_BADNOTFOUND;
+}
+
 /* Add NodeVersion bookkeeping when an existing semantic-only entry later also
  * receives a structural ModelChange verb. */
 static UA_StatusCode
@@ -112,13 +135,13 @@ addNodeVersionTracking(UA_Server *server, UA_ModelChangeAccumulator *acc,
     if(!UA_NodeId_isNull(&entry->nodeVersionId))
         return UA_STATUSCODE_GOOD;
 
-    /* Metadata uses forward references only (type definition and properties). */
-    const UA_Node *node = UA_NODESTORE_GET_SELECTIVE(server, affected, 0,
-                              UA_REFERENCETYPESET_ALL, UA_BROWSEDIRECTION_FORWARD);
-    if(!node)
-        return UA_STATUSCODE_BADNOTFOUND;
-    UA_StatusCode res =
-        getNodeVersionProperty(server, &node->head, &entry->nodeVersionId);
+    UA_ReferenceTypeSet propertyRefs;
+    const UA_Node *node = NULL;
+    UA_StatusCode res = getMetadataNode(server, affected, &propertyRefs, &node);
+    if(res != UA_STATUSCODE_GOOD)
+        return res;
+    res = getNodeVersionProperty(server, &node->head, &propertyRefs,
+                                 &entry->nodeVersionId);
     UA_NODESTORE_RELEASE(server, node);
     if(res == UA_STATUSCODE_GOOD)
         entry->nodeVersion = nextNodeVersion(server);
@@ -172,12 +195,18 @@ UA_ModelChangeAccumulator_record(UA_Server *server,
     }
 
     /* A new entry needs metadata from the affected Node. Missing Nodes are
-     * ignored: this can occur for changes reported after external teardown. */
-    /* Metadata uses forward references only (type definition and properties). */
-    const UA_Node *node = UA_NODESTORE_GET_SELECTIVE(server, affected, 0,
-                              UA_REFERENCETYPESET_ALL, UA_BROWSEDIRECTION_FORWARD);
-    if(!node)
+     * ignored: this can occur for changes reported after external teardown.
+     * The NodeVersion Property is only looked up for structural changes (see
+     * below), so only these need the HasProperty references. */
+    UA_ReferenceTypeSet propertyRefs = UA_REFERENCETYPESET_NONE;
+    UA_Boolean nodeVersion = (verb & UA_MODELCHANGE_VALID_VERBS) != 0;
+    const UA_Node *node = NULL;
+    UA_StatusCode res =
+        getMetadataNode(server, affected, nodeVersion ? &propertyRefs : NULL, &node);
+    if(res == UA_STATUSCODE_BADNOTFOUND)
         return UA_STATUSCODE_GOOD;
+    if(res != UA_STATUSCODE_GOOD)
+        return res;
 
     /* Capture the TypeDefinition while the Node is available. This is needed
      * in the Event payload and cannot be recovered after a Node deletion. */
@@ -197,9 +226,9 @@ UA_ModelChangeAccumulator_record(UA_Server *server,
      * deliberately skip this lookup and remain valid without NodeVersion. */
     UA_NodeId nodeVersionId;
     UA_NodeId_init(&nodeVersionId);
-    UA_StatusCode res = UA_STATUSCODE_GOOD;
-    if(verb & UA_MODELCHANGE_VALID_VERBS)
-        res = getNodeVersionProperty(server, &node->head, &nodeVersionId);
+    if(nodeVersion)
+        res = getNodeVersionProperty(server, &node->head, &propertyRefs,
+                                     &nodeVersionId);
     UA_NODESTORE_RELEASE(server, node);
     if(res == UA_STATUSCODE_BADNOTFOUND) {
         /* Keep a simultaneous semantic change even if the model change cannot

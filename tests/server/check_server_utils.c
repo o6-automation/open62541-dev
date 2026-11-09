@@ -27,10 +27,13 @@ static void teardown(void) {
 static UA_StatusCode
 findNodeVersion(const UA_NodeId nodeId, UA_NodeId *outPropertyId) {
     lockServer(server);
+    UA_ReferenceTypeSet propertyRefs;
+    const UA_NodeId hasProperty = UA_NODEID_NUMERIC(0, UA_NS0ID_HASPROPERTY);
+    UA_StatusCode res = referenceTypeIndices(server, &hasProperty, &propertyRefs, true);
+    ck_assert_uint_eq(res, UA_STATUSCODE_GOOD);
     const UA_Node *node = UA_NODESTORE_GET(server, &nodeId);
     ck_assert_ptr_ne(node, NULL);
-    UA_StatusCode res =
-        getNodeVersionProperty(server, &node->head, outPropertyId);
+    res = getNodeVersionProperty(server, &node->head, &propertyRefs, outPropertyId);
     UA_NODESTORE_RELEASE(server, node);
     unlockServer(server);
     return res;

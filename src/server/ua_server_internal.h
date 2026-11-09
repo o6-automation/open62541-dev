@@ -548,11 +548,13 @@ UA_UInt16 addNamespace(UA_Server *server, const UA_String name);
 UA_Boolean
 UA_Node_hasSubTypeOrInstances(const UA_NodeHead *head);
 
-/* Return the NodeVersion Property of the node. HasProperty subtypes are
- * included. The returned NodeId is a deep copy and has to be cleared by the
- * caller. */
+/* Return the NodeVersion Property of the node. It is looked up through the
+ * forward references in propertyRefs: HasProperty and its subtypes, as returned
+ * by referenceTypeIndices. The returned NodeId is a deep copy and has to be
+ * cleared by the caller. */
 UA_StatusCode
 getNodeVersionProperty(UA_Server *server, const UA_NodeHead *head,
+                       const UA_ReferenceTypeSet *propertyRefs,
                        UA_NodeId *outPropertyId);
 
 #ifdef UA_ENABLE_SUBSCRIPTIONS_EVENTS
