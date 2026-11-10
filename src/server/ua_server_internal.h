@@ -158,6 +158,11 @@ struct UA_Server {
      * added later are created during the next startup. */
     size_t configDriversCreated;
 
+    /* Names of the drivers from the configuration. Nested drivers have
+     * composed names, e.g. "machine/rest/http". */
+    size_t driverNamesSize;
+    UA_String *driverNames;
+
     UA_AsyncManager asyncManager;
 
     /* Custom datatypes that are internally created and cleaned up at the end of

@@ -2086,13 +2086,25 @@ UA_Server_removeDriver(UA_Server *server, UA_Driver *drv);
 UA_EXPORT UA_Driver *
 UA_Server_getDrivers(UA_Server *server);
 
-/* Call a started driver by its name. This is how the application and the
- * drivers use each other. The calls and their input and result keys are
- * documented with each driver. */
+/* Call a started driver by its full name, e.g. ``machine/rest`` for a nested
+ * driver. This is how the application uses the drivers. The calls and their
+ * input and result keys are documented with each driver. */
 UA_StatusCode UA_EXPORT UA_THREADSAFE
 UA_Server_callDriver(UA_Server *server, const char *driver, const char *call,
                      const UA_KeyValueMap *input,
                      UA_DriverCallCallback callback, void *context);
+
+/* Call a driver from another driver (the scope). This is how drivers use each
+ * other. The name is resolved like a reference in the configuration (see the
+ * section on nested drivers): first among the drivers nested in the scope,
+ * then among those nested in its parent and so on up to the top level. An
+ * empty name is the only driver nested in the scope. Without a scope, this is
+ * ``UA_Server_callDriver``. */
+UA_StatusCode UA_EXPORT UA_THREADSAFE
+UA_Server_callDriverFrom(UA_Server *server, const UA_Driver *scope,
+                         const char *driver, const char *call,
+                         const UA_KeyValueMap *input,
+                         UA_DriverCallCallback callback, void *context);
 
 /**
  * Drivers from the Configuration
@@ -2117,7 +2129,37 @@ UA_Server_callDriver(UA_Server *server, const char *driver, const char *call,
  *
  * Parameter names use lowercase words separated by hyphens, like the
  * parameters of the other drivers and ConnectionManagers (e.g.
- * ``listen-address``). In JSON5 such keys need quotes. */
+ * ``listen-address``). In JSON5 such keys need quotes.
+ *
+ * Nested Drivers
+ * ^^^^^^^^^^^^^^
+ * A driver can contain the drivers it uses in the parameter ``drivers``. The
+ * entries have the same form as the top level: ``driver``, the optional
+ * ``name`` (default: the registration name) and the parameters. A nested
+ * driver gets the name of its parent and its own name, separated by a slash.
+ * So the same block can be used for several machines without name clashes:
+ *
+ * .. code-block:: json5
+ *
+ *    drivers: [
+ *      { driver: "binding", name: "press1",
+ *        variables: { Speed: { call: "readMachine", type: "Double",
+ *                              from: "body.speed" } },
+ *        drivers: [
+ *          { driver: "rest",        // press1/rest
+ *            calls: { readMachine: { method: "GET", path: "/machine" } },
+ *            drivers: [ { driver: "http",   // press1/rest/http
+ *                         url: "http://192.168.0.10:8000/api" } ] } ] }
+ *    ]
+ *
+ * A reference to another driver (e.g. ``endpoint`` in the REST driver) is
+ * resolved first among the drivers nested in the referencing driver, then
+ * among those nested in its parent and so on up to the top level. A reference
+ * can also be a path (``rest/http``). If a driver contains exactly one nested
+ * driver, the reference can be left out, as in the example above. A reference
+ * that cannot be resolved fails the call with ``BadNotFound``. Nested
+ * drivers are created before the driver that contains them, and that driver
+ * is stopped before them. Names must not contain a slash. */
 
 typedef struct {
     const char *name;

@@ -12,7 +12,6 @@
 
 #ifdef UA_ENABLE_DRIVER_REST
 
-/* A request that waits for its response */
 typedef struct HttpRequest {
     LIST_ENTRY(HttpRequest) next;
     UA_UInt32 handle;
@@ -26,13 +25,12 @@ typedef struct HttpRequest {
 typedef struct {
     UA_Driver drv;
     UA_ConnectionManager *cm;
-    uintptr_t connectionId; /* 0 while not connected */
+    uintptr_t connectionId;
 
-    /* From the url parameter. The strings point into the parameters. */
     UA_String host;
     UA_UInt16 port;
     UA_Boolean secure;
-    UA_String basePath; /* Without leading slash */
+    UA_String basePath;
 
     UA_UInt32 lastHandle;
     LIST_HEAD(, HttpRequest) requests;
@@ -64,7 +62,6 @@ getParam(const UA_KeyValueMap *params, const char *name, UA_UInt16 typeIndex) {
                                     &UA_TYPES[typeIndex]);
 }
 
-/* Headers as a KeyValuePair array, or NULL */
 static const UA_Variant *
 getHeaders(const UA_KeyValueMap *params) {
     const UA_Variant *v = UA_KeyValueMap_get(params, UA_QUALIFIEDNAME(0, "headers"));
@@ -116,7 +113,6 @@ findRequest(HttpDriver *hd, const UA_KeyValueMap *params) {
     return NULL;
 }
 
-/* Collect the response of a request until it is complete */
 static void
 processResponse(HttpDriver *hd, const UA_KeyValueMap *params, UA_ByteString msg) {
     HttpRequest *req = findRequest(hd, params);
@@ -165,12 +161,11 @@ httpNetworkCallback(UA_ConnectionManager *cm, uintptr_t connectionId,
         return;
     }
     if(hd->connectionId == 0)
-        hd->connectionId = connectionId; /* Reported when the connection opens */
+        hd->connectionId = connectionId;
     if(state == UA_CONNECTIONSTATE_ESTABLISHED)
         processResponse(hd, params, msg);
 }
 
-/* The connection to the endpoint is opened with the first request */
 static UA_StatusCode
 openEndpointConnection(HttpDriver *hd) {
     UA_KeyValuePair p[5];
@@ -204,7 +199,6 @@ openEndpointConnection(HttpDriver *hd) {
     return res;
 }
 
-/* Default headers first, the headers of the request can add more */
 static UA_StatusCode
 mergeHeaders(const UA_Variant *defaults, const UA_Variant *extra, UA_Variant *out) {
     size_t d = defaults ? defaults->arrayLength : 0;
@@ -217,7 +211,8 @@ mergeHeaders(const UA_Variant *defaults, const UA_Variant *extra, UA_Variant *ou
     for(size_t i = 0; i < d; i++)
         res |= UA_KeyValuePair_copy(&((UA_KeyValuePair *)defaults->data)[i], &headers[i]);
     for(size_t i = 0; i < e; i++)
-        res |= UA_KeyValuePair_copy(&((UA_KeyValuePair *)extra->data)[i], &headers[d + i]);
+        res |= UA_KeyValuePair_copy(&((UA_KeyValuePair *)extra->data)[i],
+                                    &headers[d + i]);
     UA_Variant_setArray(out, headers, d + e, &UA_TYPES[UA_TYPES_KEYVALUEPAIR]);
     return res;
 }
@@ -241,7 +236,6 @@ httpCall(UA_Driver *drv, const UA_String call, const UA_KeyValueMap *input,
     req->callback = callback;
     req->context = context;
 
-    /* The path of the request below the path of the url */
     const UA_String *path = (const UA_String *)getParam(input, "path", UA_TYPES_STRING);
     UA_String subPath = path ? *path : UA_STRING_NULL;
     if(subPath.length > 0 && subPath.data[0] == '/') {
@@ -257,7 +251,6 @@ httpCall(UA_Driver *drv, const UA_String call, const UA_KeyValueMap *input,
     UA_Variant_init(&headers);
     res |= mergeHeaders(getHeaders(&drv->params), getHeaders(input), &headers);
 
-    /* The body is consumed by the ConnectionManager */
     const UA_Variant *bodyValue = UA_KeyValueMap_get(input, UA_QUALIFIEDNAME(0, "body"));
     UA_ByteString body = UA_BYTESTRING_NULL;
     if(bodyValue && UA_Variant_isScalar(bodyValue) &&
@@ -268,7 +261,8 @@ httpCall(UA_Driver *drv, const UA_String call, const UA_KeyValueMap *input,
     UA_KeyValuePair p[4];
     memset(p, 0, sizeof(p));
     p[0].key = UA_QUALIFIEDNAME(0, "method");
-    UA_Variant_setScalar(&p[0].value, (void *)(uintptr_t)&call, &UA_TYPES[UA_TYPES_STRING]);
+    UA_Variant_setScalar(&p[0].value, (void *)(uintptr_t)&call,
+                         &UA_TYPES[UA_TYPES_STRING]);
     p[1].key = UA_QUALIFIEDNAME(0, "path");
     UA_Variant_setScalar(&p[1].value, &fullPath, &UA_TYPES[UA_TYPES_STRING]);
     p[2].key = UA_QUALIFIEDNAME(0, "headers");
@@ -303,7 +297,6 @@ httpStart(UA_Driver *drv) {
         return UA_STATUSCODE_BADINTERNALERROR;
     UA_ServerConfig *config = UA_Server_getConfig(drv->server);
 
-    /* Parse the url */
     static const UA_String schemes[2] = {
         UA_STRING_STATIC("http://"), UA_STRING_STATIC("https://")};
     const UA_String *url = (const UA_String *)
@@ -328,7 +321,6 @@ httpStart(UA_Driver *drv) {
         return UA_STATUSCODE_BADCONFIGURATIONERROR;
     }
 
-    /* Find the HTTP ConnectionManager */
     const UA_String *cmName = (const UA_String *)
         getParam(&drv->params, "connection-manager", UA_TYPES_STRING);
     static const UA_String http = UA_STRING_STATIC("http");
@@ -353,7 +345,6 @@ httpStart(UA_Driver *drv) {
     return UA_STATUSCODE_GOOD;
 }
 
-/* Stopping is asynchronous until the connection is closed */
 static void
 httpStop(UA_Driver *drv) {
     HttpDriver *hd = (HttpDriver *)drv;

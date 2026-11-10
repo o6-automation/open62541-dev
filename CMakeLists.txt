@@ -172,7 +172,7 @@ if(UA_ARCHITECTURE_POSIX AND NOT UA_ARCHITECTURE_LWIP AND
 endif()
 option(UA_ENABLE_DRIVER_MDNS_MDNSD "Enable the bundled mdnsd mDNS discovery driver" ${MDNS_MDNSD_DEFAULT})
 mark_as_advanced(UA_ENABLE_DRIVER_MDNS_MDNSD)
-option(UA_ENABLE_DRIVER_REST "Enable the HTTP and REST client drivers" OFF)
+option(UA_ENABLE_DRIVER_REST "Enable the HTTP, REST and binding drivers" OFF)
 mark_as_advanced(UA_ENABLE_DRIVER_REST)
 if(UA_ENABLE_DRIVER_REST AND NOT UA_ENABLE_JSON_ENCODING)
     message(FATAL_ERROR "The REST driver requires UA_ENABLE_JSON_ENCODING")
@@ -1034,10 +1034,13 @@ endif()
 if(UA_ENABLE_DRIVER_REST)
     list(APPEND exported_headers
          ${PROJECT_SOURCE_DIR}/include/open62541/driver/http.h
-         ${PROJECT_SOURCE_DIR}/include/open62541/driver/rest.h)
+         ${PROJECT_SOURCE_DIR}/include/open62541/driver/rest.h
+         ${PROJECT_SOURCE_DIR}/include/open62541/driver/binding.h)
     list(APPEND lib_sources
          ${PROJECT_SOURCE_DIR}/drivers/http/http_driver.c
-         ${PROJECT_SOURCE_DIR}/drivers/rest/rest_driver.c)
+         ${PROJECT_SOURCE_DIR}/drivers/driver_params.c
+         ${PROJECT_SOURCE_DIR}/drivers/rest/rest_driver.c
+         ${PROJECT_SOURCE_DIR}/drivers/binding/binding_driver.c)
 endif()
 
 if(UA_ENABLE_RBAC)

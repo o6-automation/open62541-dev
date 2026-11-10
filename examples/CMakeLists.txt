@@ -170,8 +170,23 @@ endif()
 
 if(UA_ENABLE_LWS)
     add_example(server_lws_http_client lws/server_lws_http_client.c)
-    add_example(server_lws_http_client_post lws/server_lws_http_client_post.c)
     add_example(server_websocket lws/server_websocket.c)
+    if(UA_ENABLE_DRIVER_REST)
+        add_example(server_lws_http_minimal lws/server_lws_http_minimal.c)
+        add_example(server_lws_http_client_post lws/server_lws_http_client_post.c)
+        add_example(server_lws_rest_client lws/server_lws_rest_client.c)
+        add_example(server_lws_driver_hierarchy lws/server_lws_driver_hierarchy.c)
+        add_example(server_lws_binding_minimal lws/server_lws_binding_minimal.c)
+        foreach(target server_lws_rest_client server_lws_driver_hierarchy)
+            target_compile_definitions(${target} PRIVATE
+                REST_CLIENT_CONFIG="${CMAKE_CURRENT_SOURCE_DIR}/lws/server_lws_rest_client.json5")
+        endforeach()
+    endif()
+endif()
+
+# The http driver with an own HTTP implementation instead of libwebsockets
+if(UA_ENABLE_DRIVER_REST AND UA_ARCHITECTURE_POSIX)
+    add_example(server_http_without_lws lws/server_http_without_lws.c)
 endif()
 
 add_subdirectory(nodeset)

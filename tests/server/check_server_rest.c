@@ -171,22 +171,86 @@ static const char *config =
     "{tcpEnabled:false,drivers:["
     "{driver:'http',name:'machine',url:'http://localhost:8000/api',"
     " headers:{accept:'application/json'}},"
-    "{driver:'rest',name:'machine-api',calls:{"
+    "{driver:'rest',name:'machine-api',defaults:{user:'opc'},calls:{"
     " login:{endpoint:'machine',method:'POST',path:'/login',"
     "        headers:{'content-type':'application/json'},"
     "        body:'{\"user\":\"${input.user}\"}'},"
-    " getJob:{endpoint:'machine',path:'/jobs/${input.job}',"
+    " getJob:{endpoint:'machine',method:'GET',path:'/jobs/${input.job}',"
     "         headers:{authorization:'Bearer ${login.body.token}'},after:'login'},"
-    " secondItem:{endpoint:'machine',path:'/items/${getJob.body.items.1.id}',"
+    " secondItem:{endpoint:'machine',method:'GET',path:'/items/${getJob.body.items.1.id}',"
     "             after:'getJob'},"
     " setJob:{endpoint:'machine',method:'PUT',path:'/jobs/42',body:'${input.data}'},"
-    " broken:{endpoint:'machine',path:'/${input.missing}'}}}]}";
+    " broken:{endpoint:'machine',method:'GET',path:'/${input.missing}'},"
+    /* A device that is not HTTP: any keys are passed to the endpoint driver */
+    " readRegister:{endpoint:'plc',method:'read',address:'${input.address}',"
+    "               options:{unit:'${input.unit}',retries:3},list:['a','${input.unit}']},"
+    " useRegister:{endpoint:'plc',method:'write',after:'readRegister',"
+    "              value:'${readRegister.options.unit}-${readRegister.address}-"
+    "${readRegister.list.1}-${readRegister.options.retries}-${readRegister.method}'}}},"
+    "{driver:'device',name:'plc'},"
+    /* The endpoint nested in the REST driver: no endpoint key needed */
+    "{driver:'rest',name:'nested-api',calls:{"
+    " job:{method:'GET',path:'/jobs/42',headers:{authorization:'Bearer abc123'}}},"
+    " drivers:[{driver:'http',url:'http://localhost:8000/api'}]}]}";
+
+/* A driver for a device that is not HTTP. It answers with its input and the
+ * name of the call. */
+static UA_StatusCode
+deviceCall(UA_Driver *drv, const UA_String call, const UA_KeyValueMap *input,
+           UA_DriverCallCallback callback, void *context) {
+    (void)drv;
+    UA_KeyValueMap result = UA_KEYVALUEMAP_NULL;
+    UA_StatusCode res = UA_KeyValueMap_copy(input, &result);
+    res |= UA_KeyValueMap_setScalar(&result, UA_QUALIFIEDNAME(0, "method"),
+                                    (void *)(uintptr_t)&call, &UA_TYPES[UA_TYPES_STRING]);
+    if(res == UA_STATUSCODE_GOOD)
+        callback(context, UA_STATUSCODE_GOOD, &result);
+    UA_KeyValueMap_clear(&result);
+    return res;
+}
+
+static UA_StatusCode
+deviceStart(UA_Driver *drv) {
+    drv->state = UA_LIFECYCLESTATE_STARTED;
+    return UA_STATUSCODE_GOOD;
+}
+
+static void
+deviceStop(UA_Driver *drv) {
+    drv->state = UA_LIFECYCLESTATE_STOPPED;
+}
+
+static UA_StatusCode
+deviceFree(UA_Driver *drv) {
+    UA_free(drv);
+    return UA_STATUSCODE_GOOD;
+}
+
+static UA_StatusCode
+deviceCreate(UA_Server *s, const UA_KeyValueMap params, UA_Driver **outDriver) {
+    (void)s;
+    (void)params;
+    UA_Driver *drv = (UA_Driver *)UA_calloc(1, sizeof(UA_Driver));
+    if(!drv)
+        return UA_STATUSCODE_BADOUTOFMEMORY;
+    drv->start = deviceStart;
+    drv->stop = deviceStop;
+    drv->free = deviceFree;
+    drv->call = deviceCall;
+    *outDriver = drv;
+    return UA_STATUSCODE_GOOD;
+}
+
+static const UA_DriverRegistration deviceRegistration = {
+    "device", NULL, 0, deviceCreate
+};
 
 static void setup(void) {
     results = 0;
     mockResponds = true;
     server = UA_Server_newFromFile(UA_STRING((char *)(uintptr_t)config));
     ck_assert_ptr_nonnull(server);
+    UA_ServerConfig_registerDriver(UA_Server_getConfig(server), &deviceRegistration);
     TestConnectionManager_CallbackOverloads overloads;
     memset(&overloads, 0, sizeof(overloads));
     overloads.openConnection = mockOpen;
@@ -232,6 +296,27 @@ START_TEST(HttpRequest) {
     ck_assert(contains(&resultBody, "abc123"));
 } END_TEST
 
+static UA_Driver *
+driverByName(UA_Server *s, const char *name) {
+    UA_String n = UA_STRING((char *)(uintptr_t)name);
+    for(UA_Driver *drv = UA_Server_getDrivers(s); drv; drv = drv->next) {
+        if(UA_String_equal(&drv->name, &n))
+            return drv;
+    }
+    return NULL;
+}
+
+START_TEST(NestedEndpoint) {
+    ck_assert_uint_eq(UA_Server_callDriver(server, "nested-api", "job", NULL,
+                                           onResult, NULL), UA_STATUSCODE_GOOD);
+    ck_assert(equals(&lastPath, "/api/jobs/42"));
+    ck_assert_uint_eq(results, 1);
+    ck_assert_uint_eq(resultHttpStatus, 200);
+    ck_assert(contains(&resultBody, "Milling"));
+    /* The nested http driver has the composed name */
+    ck_assert_ptr_nonnull(driverByName(server, "nested-api/http"));
+} END_TEST
+
 START_TEST(ChainWithPlaceholders) {
     UA_KeyValueMap input = UA_KEYVALUEMAP_NULL;
     UA_String user = UA_STRING("opc");
@@ -257,6 +342,19 @@ START_TEST(ChainWithPlaceholders) {
     ck_assert(equals(&lastPath, "/api/items/8"));
     ck_assert(contains(&resultBody, "Bolt"));
     UA_KeyValueMap_clear(&input);
+} END_TEST
+
+START_TEST(DefaultsFromConfig) {
+    /* The user comes from the defaults, only the job is given */
+    UA_KeyValueMap input = UA_KEYVALUEMAP_NULL;
+    UA_Int64 job = 42;
+    UA_KeyValueMap_setScalar(&input, UA_QUALIFIEDNAME(0, "job"), &job,
+                             &UA_TYPES[UA_TYPES_INT64]);
+    ck_assert_uint_eq(UA_Server_callDriver(server, "machine-api", "getJob", &input,
+                                           onResult, NULL), UA_STATUSCODE_GOOD);
+    UA_KeyValueMap_clear(&input);
+    ck_assert_uint_eq(resultHttpStatus, 200);
+    ck_assert(contains(&resultBody, "Milling"));
 } END_TEST
 
 START_TEST(ChainStopsAtHttpError) {
@@ -285,6 +383,39 @@ START_TEST(WriteWithBody) {
     ck_assert_uint_eq(resultHttpStatus, 204);
     ck_assert(equals(&lastMethod, "PUT"));
     ck_assert(contains(&lastBody, "\"speed\":1200"));
+} END_TEST
+
+static UA_String deviceValue, deviceMethod;
+
+static void
+onDeviceResult(void *context, UA_StatusCode status, const UA_KeyValueMap *result) {
+    (void)context;
+    ck_assert_uint_eq(status, UA_STATUSCODE_GOOD);
+    results++;
+    UA_String_copy((const UA_String *)UA_KeyValueMap_getScalar(
+        result, UA_QUALIFIEDNAME(0, "value"), &UA_TYPES[UA_TYPES_STRING]), &deviceValue);
+    UA_String_copy((const UA_String *)UA_KeyValueMap_getScalar(
+        result, UA_QUALIFIEDNAME(0, "method"), &UA_TYPES[UA_TYPES_STRING]), &deviceMethod);
+}
+
+START_TEST(OtherProtocol) {
+    UA_KeyValueMap input = UA_KEYVALUEMAP_NULL;
+    UA_String address = UA_STRING("40001");
+    UA_String unit = UA_STRING("bar");
+    UA_KeyValueMap_setScalar(&input, UA_QUALIFIEDNAME(0, "address"), &address,
+                             &UA_TYPES[UA_TYPES_STRING]);
+    UA_KeyValueMap_setScalar(&input, UA_QUALIFIEDNAME(0, "unit"), &unit,
+                             &UA_TYPES[UA_TYPES_STRING]);
+    ck_assert_uint_eq(UA_Server_callDriver(server, "machine-api", "useRegister", &input,
+                                           onDeviceResult, NULL), UA_STATUSCODE_GOOD);
+    UA_KeyValueMap_clear(&input);
+    ck_assert_uint_eq(results, 1);
+    /* Values from an object, from an array, a number and the call name of
+     * the first result */
+    ck_assert(equals(&deviceValue, "bar-40001-bar-3-read"));
+    ck_assert(equals(&deviceMethod, "write"));
+    UA_String_clear(&deviceValue);
+    UA_String_clear(&deviceMethod);
 } END_TEST
 
 START_TEST(InvalidCalls) {
@@ -320,12 +451,19 @@ START_TEST(InvalidConfiguration) {
     server = UA_Server_newFromFile(UA_STRING(
         "{tcpEnabled:false,drivers:["
         "{driver:'rest',name:'bad',calls:{a:{endpoint:'x',after:'b'},"
-        "b:{endpoint:'x',after:'a'}}}]}"));
+        "b:{endpoint:'x',after:'a'}}},"
+        "{driver:'rest',name:'unknown-endpoint',calls:{a:{endpoint:'nobody',method:'GET'}}},"
+        "{driver:'rest',name:'no-endpoint',calls:{a:{method:'GET'}}}]}"));
     ck_assert_ptr_nonnull(server);
     /* Like other drivers, the failed start is only logged */
     ck_assert_uint_eq(UA_Server_run_startup(server), UA_STATUSCODE_GOOD);
     ck_assert_uint_eq(UA_Server_callDriver(server, "bad", "a", NULL, onResult, NULL),
                       UA_STATUSCODE_BADINVALIDSTATE);
+    /* A wrong endpoint fails the call */
+    ck_assert_uint_eq(UA_Server_callDriver(server, "unknown-endpoint", "a", NULL,
+                                           onResult, NULL), UA_STATUSCODE_BADNOTFOUND);
+    ck_assert_uint_eq(UA_Server_callDriver(server, "no-endpoint", "a", NULL,
+                                           onResult, NULL), UA_STATUSCODE_BADNOTFOUND);
 } END_TEST
 
 static Suite *testSuite_Rest(void) {
@@ -334,8 +472,11 @@ static Suite *testSuite_Rest(void) {
     tcase_add_checked_fixture(tc, setup, teardown);
     tcase_add_test(tc, HttpRequest);
     tcase_add_test(tc, ChainWithPlaceholders);
+    tcase_add_test(tc, DefaultsFromConfig);
     tcase_add_test(tc, ChainStopsAtHttpError);
     tcase_add_test(tc, WriteWithBody);
+    tcase_add_test(tc, OtherProtocol);
+    tcase_add_test(tc, NestedEndpoint);
     tcase_add_test(tc, InvalidCalls);
     tcase_add_test(tc, ShutdownCompletesOpenCalls);
     tcase_add_test(tc, InvalidConfiguration);
