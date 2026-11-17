@@ -98,6 +98,7 @@ generate_rst(${PROJECT_SOURCE_DIR}/include/open62541/driver/alarms_conditions.h 
 generate_rst(${PROJECT_SOURCE_DIR}/include/open62541/driver/gds_receiver.h ${DOC_SRC_DIR}/driver_gds_receiver.rst)
 generate_rst(${PROJECT_SOURCE_DIR}/include/open62541/driver/file_transfer.h ${DOC_SRC_DIR}/driver_file_transfer.rst)
 generate_rst(${PROJECT_SOURCE_DIR}/include/open62541/driver/gds_pull.h ${DOC_SRC_DIR}/driver_gds_pull.rst)
+generate_rst(${PROJECT_SOURCE_DIR}/include/open62541/driver/logobject.h ${DOC_SRC_DIR}/driver_logobject.rst)
 
 # Doc from tutorial code
 generate_rst(${PROJECT_SOURCE_DIR}/examples/tutorial_datatypes.c ${DOC_SRC_DIR}/tutorial_datatypes.rst)

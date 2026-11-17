@@ -1,5 +1,4 @@
 Drivers
-=======
 
 Drivers integrate external functionality with a server instance. Unlike the
 core SDK, driver implementations can be architecture- and operating
@@ -17,3 +16,4 @@ generic ``UA_Driver`` interface and lifecycle hooks.
    driver_gds_receiver
    driver_file_transfer
    driver_gds_pull
+   driver_logobject
