@@ -1,0 +1,28 @@
+{
+  drivers: [
+    { driver: "http", name: "press",
+      url: "http://localhost:8001/api",
+      headers: { accept: "application/json", "content-type": "application/json" } },
+
+    { driver: "rest", name: "press-api",
+      defaults: { user: "opcua", password: "secret", machine: "press1" },
+      calls: {
+        login: {
+          endpoint: "press", method: "POST", path: "/login",
+          body: "{\"user\":\"${input.user}\",\"password\":\"${input.password}\"}" },
+        readMachine: {
+          endpoint: "press", method: "GET", path: "/machines/${input.machine}",
+          headers: { authorization: "Bearer ${login.body.token}" },
+          after: "login" },
+        setSpeed: {
+          endpoint: "press", method: "PUT", path: "/machines/${input.machine}/speed",
+          headers: { authorization: "Bearer ${login.body.token}" },
+          body: "{\"speed\":${input.speed}}",
+          after: "login" },
+        currentJob: {
+          endpoint: "press", method: "GET", path: "/jobs/${readMachine.body.jobs.0.id}",
+          headers: { authorization: "Bearer ${login.body.token}" },
+          after: "readMachine" }
+    } }
+  ]
+}
