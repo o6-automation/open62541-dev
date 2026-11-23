@@ -61,6 +61,10 @@ typedef enum UA_GDSPullRequesterNotification {
      * it does not match the private key it was requested for. */
     UA_GDSPULL_CERTIFICATE_INSTALLATION_FAILED,
 
+    /* The download of the assigned remote TrustList of the CertificateManager
+     * has begun. It ends with TRUSTLIST_UPDATED or TRUSTLIST_FAILED. */
+    UA_GDSPULL_TRUSTLIST_DOWNLOAD_STARTED,
+
     /* A local TrustList was successfully updated with the assigned remote TrustList
      * of the CertificateManager. */
     UA_GDSPULL_TRUSTLIST_UPDATED,
@@ -164,11 +168,20 @@ UA_GDSPull_new(const UA_KeyValueMap params);
  * - REQUEST_FAILED, CERTIFICATE_INSTALLED, CERTIFICATE_INSTALLATION_FAILED:
  *   certificate-group-id, certificate-type-id [NodeId], status-code
  *   [StatusCode]
+ * - TRUSTLIST_DOWNLOAD_STARTED: certificate-group-id [NodeId]
  * - TRUSTLIST_UPDATED, TRUSTLIST_FAILED: certificate-group-id [NodeId],
  *   status-code [StatusCode]
  *
  * The certificate-group-id is always the local id of the mapping. The payload
- * is only valid during the callback. */
+ * is only valid during the callback.
+ *
+ * Every TRUSTLIST_UPDATED and TRUSTLIST_FAILED ends exactly one
+ * TRUSTLIST_DOWNLOAD_STARTED of the same CertificateGroup. A TrustList whose
+ * LastUpdateTime is unchanged is not downloaded and notifies neither. A
+ * failure before the download, e.g. of GetTrustList, notifies
+ * TRUSTLIST_DOWNLOAD_STARTED directly before TRUSTLIST_FAILED. A download cut
+ * off by the cycle timeout, stop() or a lost connection ends with
+ * TRUSTLIST_FAILED and Bad_ConnectionClosed once the connection is gone. */
 UA_EXPORT void
 UA_GDSPull_setNotificationCallback(
     UA_GDSPullRequester *pull, UA_GDSPullRequesterNotificationCallback callback,

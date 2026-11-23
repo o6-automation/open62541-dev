@@ -185,6 +185,7 @@ struct UA_GDSPullContext {
         UA_UInt32 fileHandle;
         UA_ByteString data;
         UA_StatusCode readStatus; /* Why the download was aborted */
+        UA_Boolean downloading; /* TRUSTLIST_DOWNLOAD_STARTED is not ended */
     } trustList;
 
     /* The CertificateGroups managed via PullManagement. Supplied from
@@ -326,11 +327,34 @@ notify_trustList(UA_GDSPullContext *ctx, UA_GDSPullRequesterNotification type,
     payload[1].key = UA_QUALIFIEDNAME(0, "status-code");
     UA_Variant_setScalar(&payload[1].value, &status,
                          &UA_TYPES[UA_TYPES_STATUSCODE]);
-    UA_KeyValueMap payloadMap = { 2, payload };
+    UA_KeyValueMap payloadMap = {
+        (type == UA_GDSPULL_TRUSTLIST_DOWNLOAD_STARTED) ? 1 : 2, payload };
 
     ctx->conf.notificationCallback((UA_GDSPullRequester *)ctx,
                                    ctx->conf.notificationCallbackContext, type,
                                    payloadMap);
+}
+
+static void
+UA_GDSPull_startTrustListDownload(UA_GDSPullContext *ctx) {
+    if(ctx->trustList.downloading)
+        return;
+    ctx->trustList.downloading = true;
+    notify_trustList(ctx, UA_GDSPULL_TRUSTLIST_DOWNLOAD_STARTED,
+                     &ctx->groups[ctx->groupIndex].localGroupId,
+                     UA_STATUSCODE_GOOD);
+}
+
+/* A failure before the download notifies TRUSTLIST_DOWNLOAD_STARTED as well,
+ * so that every TRUSTLIST_UPDATED and TRUSTLIST_FAILED ends one */
+static void
+UA_GDSPull_endTrustListDownload(UA_GDSPullContext *ctx, UA_StatusCode status) {
+    UA_GDSPull_startTrustListDownload(ctx);
+    ctx->trustList.downloading = false;
+    notify_trustList(ctx,
+                     (status == UA_STATUSCODE_GOOD) ? UA_GDSPULL_TRUSTLIST_UPDATED
+                                                    : UA_GDSPULL_TRUSTLIST_FAILED,
+                     &ctx->groups[ctx->groupIndex].localGroupId, status);
 }
 
 static void
@@ -1766,12 +1790,11 @@ UA_GDSPull_continueTrustList(UA_GDSPullContext *ctx) {
 }
 
 /* The remote TrustList of the current group could not be downloaded. The
- * local TrustList is kept. A download cut off by stop() is not reported. */
+ * local TrustList is kept. stop() before the download began is not reported. */
 static UA_StatusCode
 UA_GDSPull_failTrustList(UA_GDSPullContext *ctx, UA_StatusCode status) {
-    if(ctx->drv.state == UA_LIFECYCLESTATE_STARTED)
-        notify_trustList(ctx, UA_GDSPULL_TRUSTLIST_FAILED,
-                         &ctx->groups[ctx->groupIndex].localGroupId, status);
+    if(ctx->drv.state == UA_LIFECYCLESTATE_STARTED || ctx->trustList.downloading)
+        UA_GDSPull_endTrustListDownload(ctx, status);
     return UA_GDSPull_continueTrustList(ctx);
 }
 
@@ -2034,6 +2057,7 @@ static UA_StatusCode
 UA_GDSPull_workflowStepOpenTrustList(UA_Client *client,
                                      UA_GDSPullContext *ctx) {
     struct UA_GDSPullGroup *group = &ctx->groups[ctx->groupIndex];
+    UA_GDSPull_startTrustListDownload(ctx);
 
     UA_Byte mode = UA_OPENFILEMODE_READ;
     UA_Variant input;
@@ -2204,8 +2228,7 @@ UA_GDSPull_workflowStepCommit(UA_Client *client, UA_GDSPullContext *ctx) {
                        "The local CertificateGroup %N cannot store a "
                        "TrustList. The download is discarded.",
                        group->localGroupId);
-        notify_trustList(ctx, UA_GDSPULL_TRUSTLIST_FAILED,
-                         &group->localGroupId, UA_STATUSCODE_BADNOTSUPPORTED);
+        UA_GDSPull_endTrustListDownload(ctx, UA_STATUSCODE_BADNOTSUPPORTED);
         return UA_GDSPull_continueTrustList(ctx);
     }
 
@@ -2237,10 +2260,7 @@ UA_GDSPull_workflowStepCommit(UA_Client *client, UA_GDSPullContext *ctx) {
             UA_GDSChannels_closeUntrusted(&ctx->channels, ctx->drv.server,
                                           certGroup);
     }
-    notify_trustList(ctx,
-                     (res == UA_STATUSCODE_GOOD) ? UA_GDSPULL_TRUSTLIST_UPDATED
-                                                 : UA_GDSPULL_TRUSTLIST_FAILED,
-                     &group->localGroupId, res);
+    UA_GDSPull_endTrustListDownload(ctx, res);
     UA_TrustListDataType_clear(&trustList);
     return UA_GDSPull_continueTrustList(ctx);
 }
@@ -2329,6 +2349,8 @@ UA_GDSPull_deleteClientCallback(void *application, void *context) {
     ctx->abortedStep = UA_GDSPULLSTEP_IDLE;
     UA_Client_delete(ctx->client);
     ctx->client = NULL;
+    if(ctx->trustList.downloading)
+        UA_GDSPull_endTrustListDownload(ctx, UA_STATUSCODE_BADCONNECTIONCLOSED);
     ctx->currentStep = UA_GDSPULLSTEP_IDLE;
     ctx->deleteClientQueued = false;
     ctx->gdsNsIndex = 0;
