@@ -8,6 +8,7 @@
  *    Copyright 2025 (c) o6 Automation GmbH (Author: Julius Pfrommer)
  */
 
+#include <open62541/plugin/certificategroup.h>
 #include <open62541/plugin/securitypolicy.h>
 #include <open62541/plugin/securitypolicy_default.h>
 
@@ -22,7 +23,16 @@
 typedef struct {
     UA_SecurityPolicy *innerPolicy;
     UA_String storePath;
+    /* The key the inner policy generated for its CSR. An UpdateCertificate
+     * without a key installs it, and only the filestore can keep it. */
+    UA_ByteString csrPrivateKey;
 } Filestore_Context;
+
+static void
+clearCsrPrivateKey(Filestore_Context *pc) {
+    UA_ByteString_memZero(&pc->csrPrivateKey);
+    UA_ByteString_clear(&pc->csrPrivateKey);
+}
 
 static bool
 checkCertificateInFilestore(char *path, const UA_ByteString newCertificate) {
@@ -573,8 +583,13 @@ updateCertificate_filestore(UA_SecurityPolicy *sp,
 
     sp->localCertificate = isp->localCertificate;
 
-    retval = writeCertificateAndPrivateKeyToFilestore(pc->storePath,
-                                                      newCertificate, newPrivateKey);
+    UA_Boolean csrKey = newPrivateKey.length == 0 && pc->csrPrivateKey.length > 0 &&
+        UA_CertificateUtils_checkKeyPair(&newCertificate, &pc->csrPrivateKey) ==
+        UA_STATUSCODE_GOOD;
+    retval = writeCertificateAndPrivateKeyToFilestore(
+        pc->storePath, newCertificate, csrKey ? pc->csrPrivateKey : newPrivateKey);
+    if(retval == UA_STATUSCODE_GOOD && csrKey)
+        clearCsrPrivateKey(pc);
     UA_ByteString_clear(&localCertificateTmp);
 
     return retval;
@@ -589,7 +604,13 @@ createSigningRequest_filestore(UA_SecurityPolicy *sp,
                                UA_ByteString *newPrivateKey) {
     Filestore_Context *pc = (Filestore_Context *) sp->policyContext;
     UA_SecurityPolicy *isp = pc->innerPolicy;
-    return isp->createSigningRequest(isp, subjectName, nonce, params, csr, newPrivateKey);
+    /* The inner policy discards the key of an earlier CSR */
+    clearCsrPrivateKey(pc);
+    UA_StatusCode retval =
+        isp->createSigningRequest(isp, subjectName, nonce, params, csr, newPrivateKey);
+    if(retval == UA_STATUSCODE_GOOD && newPrivateKey && newPrivateKey->length > 0)
+        retval = UA_ByteString_copy(newPrivateKey, &pc->csrPrivateKey);
+    return retval;
 }
 
 static UA_StatusCode
@@ -620,6 +641,7 @@ clear_filestore(UA_SecurityPolicy *sp) {
 
     pc->innerPolicy->clear(pc->innerPolicy);
     UA_String_clear(&pc->storePath);
+    clearCsrPrivateKey(pc);
     UA_free(pc->innerPolicy);
     UA_free(pc);
     sp->policyContext = NULL;
