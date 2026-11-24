@@ -310,6 +310,7 @@ function unit_tests_libwebsockets {
           -DUA_ENABLE_JSON_ENCODING=ON \
           -DUA_ENABLE_LWS=ON \
           -DUA_ENABLE_ENCRYPTION=OPENSSL \
+          -DUA_ENABLE_DRIVER_REST=ON \
           -DUA_ENABLE_HTTP_COMPRESSION=ON \
           -DUA_ENABLE_LWS_MQTT=${LWS_MQTT:-ON} \
           -DUA_ENABLE_PUBSUB=OFF \
