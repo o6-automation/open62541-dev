@@ -921,6 +921,250 @@ PARSE_JSON(HttpConfigurationField) {
     return UA_STATUSCODE_GOOD;
 }
 
+/* Type of the next token without advancing. The end is reported as null. */
+static cj5_token_type
+peekTokenType(ParsingCtx *ctx) {
+    if(ctx->index + 1 >= ctx->result.num_tokens)
+        return CJ5_TOKEN_NULL;
+    return ctx->result.tokens[ctx->index + 1].type;
+}
+
+/* Read a string token as a C string. The result must be freed. */
+static char *
+getTokenString(ParsingCtx *ctx, unsigned int index) {
+    if(index >= ctx->result.num_tokens)
+        return NULL;
+    cj5_token tok = ctx->result.tokens[index];
+    if(tok.type != CJ5_TOKEN_STRING)
+        return NULL;
+    char *field = (char*)UA_malloc(tok.size + 1);
+    if(!field)
+        return NULL;
+    unsigned int strLen = 0;
+    if(cj5_get_str(&ctx->result, index, field, &strLen) !=
+       CJ5_ERROR_NONE) {
+        UA_free(field);
+        return NULL;
+    }
+    return field;
+}
+
+/* Driver parameters are parsed without knowing the schema of the driver. The
+ * server converts the values to the schema when it creates the driver.
+ *
+ * - string -> String
+ * - true/false -> Boolean
+ * - integer -> Int64, other numbers -> Double
+ * - array of strings -> String array, other arrays -> Variant array
+ * - object -> KeyValuePair array
+ * - {file: "path"} -> ByteString with the file content */
+static UA_StatusCode
+DriverParameterValue_parseJson(ParsingCtx *ctx, UA_Variant *value);
+
+static UA_StatusCode
+DriverParameterArray_parseJson(ParsingCtx *ctx, UA_Variant *value) {
+    cj5_token tok = nextToken(ctx);
+    size_t size = tok.size;
+    UA_Variant *items = (UA_Variant*)UA_Array_new(size, &UA_TYPES[UA_TYPES_VARIANT]);
+    if(!items)
+        return UA_STATUSCODE_BADOUTOFMEMORY;
+    UA_StatusCode retval = UA_STATUSCODE_GOOD;
+    UA_Boolean allStrings = true;
+    for(size_t i = 0; i < size && retval == UA_STATUSCODE_GOOD; i++) {
+        retval = DriverParameterValue_parseJson(ctx, &items[i]);
+        allStrings &= UA_Variant_hasScalarType(&items[i], &UA_TYPES[UA_TYPES_STRING]);
+    }
+    if(retval != UA_STATUSCODE_GOOD || !allStrings) {
+        if(retval == UA_STATUSCODE_GOOD)
+            UA_Variant_setArray(value, items, size, &UA_TYPES[UA_TYPES_VARIANT]);
+        else
+            UA_Array_delete(items, size, &UA_TYPES[UA_TYPES_VARIANT]);
+        return retval;
+    }
+
+    /* Move the strings into a String array */
+    UA_String *strings = (UA_String*)UA_Array_new(size, &UA_TYPES[UA_TYPES_STRING]);
+    if(!strings) {
+        UA_Array_delete(items, size, &UA_TYPES[UA_TYPES_VARIANT]);
+        return UA_STATUSCODE_BADOUTOFMEMORY;
+    }
+    for(size_t i = 0; i < size; i++) {
+        strings[i] = *(UA_String*)items[i].data;
+        UA_free(items[i].data);
+        UA_Variant_init(&items[i]);
+    }
+    UA_Array_delete(items, size, &UA_TYPES[UA_TYPES_VARIANT]);
+    UA_Variant_setArray(value, strings, size, &UA_TYPES[UA_TYPES_STRING]);
+    return UA_STATUSCODE_GOOD;
+}
+
+static UA_StatusCode
+DriverParameterObject_parseJson(ParsingCtx *ctx, UA_Variant *value) {
+    cj5_token tok = nextToken(ctx);
+    size_t size = tok.size / 2;
+    UA_KeyValuePair *pairs = (UA_KeyValuePair*)
+        UA_Array_new(size, &UA_TYPES[UA_TYPES_KEYVALUEPAIR]);
+    if(!pairs)
+        return UA_STATUSCODE_BADOUTOFMEMORY;
+    UA_StatusCode retval = UA_STATUSCODE_GOOD;
+    for(size_t i = 0; i < size && retval == UA_STATUSCODE_GOOD; i++) {
+        nextToken(ctx);
+        char *key = getTokenString(ctx, ctx->index);
+        if(!key) {
+            retval = UA_STATUSCODE_BADDECODINGERROR;
+            break;
+        }
+        pairs[i].key = UA_QUALIFIEDNAME_ALLOC(0, key);
+        UA_free(key);
+        retval = DriverParameterValue_parseJson(ctx, &pairs[i].value);
+    }
+    if(retval != UA_STATUSCODE_GOOD) {
+        UA_Array_delete(pairs, size, &UA_TYPES[UA_TYPES_KEYVALUEPAIR]);
+        return retval;
+    }
+    UA_Variant_setArray(value, pairs, size, &UA_TYPES[UA_TYPES_KEYVALUEPAIR]);
+    return UA_STATUSCODE_GOOD;
+}
+
+/* {file: "path"} is replaced with the content of the file */
+static UA_Boolean
+isFileObject(ParsingCtx *ctx) {
+    unsigned int obj = ctx->index + 1;
+    if(obj + 2 >= ctx->result.num_tokens || ctx->result.tokens[obj].size != 2 ||
+       ctx->result.tokens[obj + 2].type != CJ5_TOKEN_STRING)
+        return false;
+    char *key = getTokenString(ctx, obj + 1);
+    UA_Boolean isFile = (key && strcmp(key, "file") == 0);
+    UA_free(key);
+    return isFile;
+}
+
+static UA_StatusCode
+DriverParameterFile_parseJson(ParsingCtx *ctx, UA_Variant *value) {
+    nextToken(ctx); /* object */
+    nextToken(ctx); /* key */
+    UA_ByteString content = UA_BYTESTRING_NULL;
+    UA_StatusCode retval = CertificateFileField_parseJson(ctx, &content, NULL);
+    if(retval == UA_STATUSCODE_GOOD && content.length == 0) {
+        UA_LOG_ERROR(ctx->logging, UA_LOGCATEGORY_APPLICATION,
+                     "Could not read the file of a driver parameter");
+        retval = UA_STATUSCODE_BADNOTFOUND;
+    }
+    if(retval == UA_STATUSCODE_GOOD)
+        retval = UA_Variant_setScalarCopy(value, &content,
+                                          &UA_TYPES[UA_TYPES_BYTESTRING]);
+    UA_ByteString_clear(&content);
+    return retval;
+}
+
+static UA_StatusCode
+DriverParameterValue_parseJson(ParsingCtx *ctx, UA_Variant *value) {
+    UA_StatusCode retval = UA_STATUSCODE_GOOD;
+    switch(peekTokenType(ctx)) {
+    case CJ5_TOKEN_STRING: {
+        UA_String s = UA_STRING_NULL;
+        retval = StringField_parseJson(ctx, &s, NULL);
+        if(retval == UA_STATUSCODE_GOOD)
+            retval = UA_Variant_setScalarCopy(value, &s, &UA_TYPES[UA_TYPES_STRING]);
+        UA_String_clear(&s);
+        return retval;
+    }
+    case CJ5_TOKEN_BOOL: {
+        UA_Boolean b = false;
+        retval = BooleanField_parseJson(ctx, &b, NULL);
+        if(retval == UA_STATUSCODE_GOOD)
+            retval = UA_Variant_setScalarCopy(value, &b, &UA_TYPES[UA_TYPES_BOOLEAN]);
+        return retval;
+    }
+    case CJ5_TOKEN_NUMBER: {
+        cj5_token tok = nextToken(ctx);
+        UA_ByteString buf = getJsonPart(tok, ctx->json);
+        UA_Int64 i = 0;
+        if(UA_decodeJson(&buf, &i, &UA_TYPES[UA_TYPES_INT64], NULL) ==
+           UA_STATUSCODE_GOOD)
+            return UA_Variant_setScalarCopy(value, &i, &UA_TYPES[UA_TYPES_INT64]);
+        UA_Double d = 0.0;
+        retval = UA_decodeJson(&buf, &d, &UA_TYPES[UA_TYPES_DOUBLE], NULL);
+        if(retval == UA_STATUSCODE_GOOD)
+            retval = UA_Variant_setScalarCopy(value, &d, &UA_TYPES[UA_TYPES_DOUBLE]);
+        return retval;
+    }
+    case CJ5_TOKEN_ARRAY:
+        return DriverParameterArray_parseJson(ctx, value);
+    case CJ5_TOKEN_OBJECT:
+        if(isFileObject(ctx))
+            return DriverParameterFile_parseJson(ctx, value);
+        return DriverParameterObject_parseJson(ctx, value);
+    default:
+        return UA_STATUSCODE_BADDECODINGERROR;
+    }
+}
+
+/* One driver instance: {driver: "...", name: "...", <parameter>: <value>} */
+static UA_StatusCode
+DriverConfiguration_parseJson(ParsingCtx *ctx, UA_ServerConfig *config) {
+    cj5_token tok = nextToken(ctx);
+    if(tok.type != CJ5_TOKEN_OBJECT)
+        return UA_STATUSCODE_BADDECODINGERROR;
+    char *driver = NULL;
+    char *name = NULL;
+    UA_KeyValueMap params = UA_KEYVALUEMAP_NULL;
+    UA_StatusCode retval = UA_STATUSCODE_GOOD;
+    for(size_t j = tok.size / 2; j > 0 && retval == UA_STATUSCODE_GOOD; j--) {
+        nextToken(ctx);
+        char *field = getTokenString(ctx, ctx->index);
+        if(!field) {
+            retval = UA_STATUSCODE_BADDECODINGERROR;
+            break;
+        }
+        if(strcmp(field, "driver") == 0 || strcmp(field, "name") == 0) {
+            char **target = (field[0] == 'd') ? &driver : &name;
+            UA_free(*target);
+            nextToken(ctx);
+            *target = getTokenString(ctx, ctx->index);
+            if(!*target)
+                retval = UA_STATUSCODE_BADDECODINGERROR;
+        } else {
+            UA_Variant value;
+            UA_Variant_init(&value);
+            retval = DriverParameterValue_parseJson(ctx, &value);
+            if(retval == UA_STATUSCODE_GOOD)
+                retval = UA_KeyValueMap_set(&params, UA_QUALIFIEDNAME(0, field),
+                                            &value);
+            if(retval != UA_STATUSCODE_GOOD)
+                UA_LOG_ERROR(ctx->logging, UA_LOGCATEGORY_APPLICATION,
+                             "Invalid value for the driver parameter '%s'", field);
+            UA_Variant_clear(&value);
+        }
+        UA_free(field);
+    }
+
+    if(retval == UA_STATUSCODE_GOOD && (!driver || driver[0] == '\0')) {
+        UA_LOG_ERROR(ctx->logging, UA_LOGCATEGORY_APPLICATION,
+                     "A driver configuration has no 'driver' name");
+        retval = UA_STATUSCODE_BADDECODINGERROR;
+    }
+    if(retval == UA_STATUSCODE_GOOD)
+        retval = UA_ServerConfig_addDriver(config, driver, name, params);
+    UA_free(driver);
+    UA_free(name);
+    UA_KeyValueMap_clear(&params);
+    return retval;
+}
+
+PARSE_JSON(DriversField) {
+    UA_ServerConfig *config = (UA_ServerConfig*)configField;
+    cj5_token tok = nextToken(ctx);
+    if(tok.type != CJ5_TOKEN_ARRAY)
+        return UA_STATUSCODE_BADDECODINGERROR;
+    for(size_t i = tok.size; i > 0; i--) {
+        UA_StatusCode retval = DriverConfiguration_parseJson(ctx, config);
+        if(retval != UA_STATUSCODE_GOOD)
+            return retval;
+    }
+    return UA_STATUSCODE_GOOD;
+}
+
 static UA_StatusCode
 SecurityPolicyField_parseJson(ParsingCtx *ctx, UA_SecurityPolicy *field,
                               UA_ApplicationType applicationType,
@@ -1153,6 +1397,8 @@ parseJSONServerConfig(UA_ServerConfig *config, UA_ByteString json_config) {
                     retval = BooleanField_parseJson(&ctx, &config->httpAllowUnencrypted, NULL);
                 else if(strcmp(field, "http") == 0)
                     retval = HttpConfigurationField_parseJson(&ctx, config, NULL);
+                else if(strcmp(field, "drivers") == 0)
+                    retval = DriversField_parseJson(&ctx, config, NULL);
                 else if(strcmp(field, "securityPolicyNoneDiscoveryOnly") == 0)
                     retval = BooleanField_parseJson(&ctx, &config->securityPolicyNoneDiscoveryOnly, NULL);
                 else if(strcmp(field, "modellingRulesOnInstances") == 0)

@@ -8,6 +8,7 @@
 #include <open62541/server.h>
 
 #include <check.h>
+#include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
 
@@ -129,6 +130,16 @@ static const struct {
      UA_STATUSCODE_BADDECODINGERROR},
     {"{tcp:{tcpBufSize:-1}}", UA_STATUSCODE_BADDECODINGERROR},
     {"{http:{timeout:65536}}", UA_STATUSCODE_BADDECODINGERROR},
+    {"{drivers:{driver:'x'}}", UA_STATUSCODE_BADDECODINGERROR},
+    {"{drivers:['x']}", UA_STATUSCODE_BADDECODINGERROR},
+    {"{drivers:[{port:1}]}", UA_STATUSCODE_BADDECODINGERROR},
+    {"{drivers:[{driver:7}]}", UA_STATUSCODE_BADDECODINGERROR},
+    {"{drivers:[{driver:'x',a:null}]}", UA_STATUSCODE_BADDECODINGERROR},
+    {"{drivers:[{driver:'x',a:[null]}]}", UA_STATUSCODE_BADDECODINGERROR},
+    {"{drivers:[{driver:'x',a:{b:{c:null}}}]}", UA_STATUSCODE_BADDECODINGERROR},
+    {"{drivers:[{driver:'x',name:7}]}", UA_STATUSCODE_BADDECODINGERROR},
+    {"{drivers:[{driver:'x',a:{file:'/nonexistent/driver.pem'}}]}",
+     UA_STATUSCODE_BADNOTFOUND},
 #ifdef UA_ENABLE_SUBSCRIPTIONS
     {"{subscriptions:{publishingIntervalLimits:{min:false}}}",
      UA_STATUSCODE_BADDECODINGERROR},
@@ -159,6 +170,77 @@ START_TEST(LoadFromFile_InvalidConfigurationClearsResources) {
     ck_assert_ptr_null(config.applicationDescription.applicationName.locale.data);
     ck_assert_ptr_null(config.securityPolicies);
     ck_assert_uint_eq(config.securityPoliciesSize, 0);
+    ck_assert_ptr_null(config.drivers);
+    ck_assert_uint_eq(config.driversSize, 0);
+} END_TEST
+
+START_TEST(LoadFromFile_Drivers) {
+    /* A file whose content becomes a ByteString parameter */
+    const char *path = "check_server_config_json_driver.pem";
+    FILE *f = fopen(path, "wb");
+    ck_assert_ptr_nonnull(f);
+    ck_assert_uint_eq(fwrite("PEM", 1, 3, f), 3);
+    ck_assert_int_eq(fclose(f), 0);
+
+    UA_ByteString json = UA_STRING(
+        "{drivers:[{driver:'probe',port:4840,ratio:0.5,negative:-3,"
+        "enabled:true,names:['a','b'],key:{file:'check_server_config_json_driver.pem'}},"
+        "{driver:'other',name:'nested',calls:{get:{method:'GET',ports:[1,2]}}}]}");
+    UA_ServerConfig config;
+    UA_StatusCode res = UA_ServerConfig_loadFromFile(&config, json);
+    remove(path);
+    ck_assert_uint_eq(res, UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(config.driversSize, 2);
+
+    UA_String probe = UA_STRING("probe");
+    UA_String other = UA_STRING("other");
+    ck_assert(UA_String_equal(&config.drivers[0].driver, &probe));
+    ck_assert(UA_String_equal(&config.drivers[1].driver, &other));
+    UA_String nested = UA_STRING("nested");
+    ck_assert(UA_String_equal(&config.drivers[1].name, &nested));
+    ck_assert_uint_eq(config.drivers[0].name.length, 0);
+
+    /* Objects become KeyValuePair arrays, mixed arrays Variant arrays */
+    const UA_Variant *calls = UA_KeyValueMap_get(&config.drivers[1].params,
+                                                 UA_QUALIFIEDNAME(0, "calls"));
+    ck_assert(UA_Variant_hasArrayType(calls, &UA_TYPES[UA_TYPES_KEYVALUEPAIR]));
+    ck_assert_uint_eq(calls->arrayLength, 1);
+    const UA_KeyValuePair *get = (const UA_KeyValuePair *)calls->data;
+    UA_KeyValueMap getMap = {get->value.arrayLength, (UA_KeyValuePair *)get->value.data};
+    ck_assert(UA_Variant_hasArrayType(&get->value, &UA_TYPES[UA_TYPES_KEYVALUEPAIR]));
+    ck_assert_ptr_nonnull(UA_KeyValueMap_getScalar(&getMap, UA_QUALIFIEDNAME(0, "method"),
+                                                   &UA_TYPES[UA_TYPES_STRING]));
+    const UA_Variant *ports = UA_KeyValueMap_get(&getMap, UA_QUALIFIEDNAME(0, "ports"));
+    ck_assert(UA_Variant_hasArrayType(ports, &UA_TYPES[UA_TYPES_VARIANT]));
+    ck_assert_uint_eq(ports->arrayLength, 2);
+
+    const UA_KeyValueMap *params = &config.drivers[0].params;
+    ck_assert_uint_eq(params->mapSize, 6);
+    const UA_Int64 *port = (const UA_Int64*)UA_KeyValueMap_getScalar(
+        params, UA_QUALIFIEDNAME(0, "port"), &UA_TYPES[UA_TYPES_INT64]);
+    ck_assert_ptr_nonnull(port);
+    ck_assert_int_eq(*port, 4840);
+    const UA_Int64 *negative = (const UA_Int64*)UA_KeyValueMap_getScalar(
+        params, UA_QUALIFIEDNAME(0, "negative"), &UA_TYPES[UA_TYPES_INT64]);
+    ck_assert_ptr_nonnull(negative);
+    ck_assert_int_eq(*negative, -3);
+    const UA_Double *ratio = (const UA_Double*)UA_KeyValueMap_getScalar(
+        params, UA_QUALIFIEDNAME(0, "ratio"), &UA_TYPES[UA_TYPES_DOUBLE]);
+    ck_assert_ptr_nonnull(ratio);
+    ck_assert(*ratio == 0.5);
+    const UA_Boolean *enabled = (const UA_Boolean*)UA_KeyValueMap_getScalar(
+        params, UA_QUALIFIEDNAME(0, "enabled"), &UA_TYPES[UA_TYPES_BOOLEAN]);
+    ck_assert_ptr_nonnull(enabled);
+    ck_assert(*enabled);
+    const UA_Variant *names = UA_KeyValueMap_get(params, UA_QUALIFIEDNAME(0, "names"));
+    ck_assert(UA_Variant_hasArrayType(names, &UA_TYPES[UA_TYPES_STRING]));
+    ck_assert_uint_eq(names->arrayLength, 2);
+    const UA_ByteString *key = (const UA_ByteString*)UA_KeyValueMap_getScalar(
+        params, UA_QUALIFIEDNAME(0, "key"), &UA_TYPES[UA_TYPES_BYTESTRING]);
+    ck_assert_ptr_nonnull(key);
+    UA_ByteString pem = UA_BYTESTRING("PEM");
+    ck_assert(UA_ByteString_equal(key, &pem));
+    UA_ServerConfig_clear(&config);
 } END_TEST
 
 START_TEST(NewFromFile_InvalidConfiguration) {
@@ -228,6 +310,7 @@ static Suite *testSuite_ServerConfigJson(void) {
     tcase_add_test(tc_validation, NewFromFile_InvalidConfiguration);
     tcase_add_loop_test(tc_validation, LoadFromFile_ApplicationTypeNamesAndNumbers, 0, 6);
     tcase_add_test(tc_validation, LoadFromFile_HttpConfiguration);
+    tcase_add_test(tc_validation, LoadFromFile_Drivers);
     suite_add_tcase(s, tc_validation);
 
     return s;

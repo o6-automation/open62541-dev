@@ -48,6 +48,19 @@ UA_ServerConfig_clear(UA_ServerConfig *config) {
 
     UA_String_clear(&config->httpListenAddress);
 
+    /* Drivers. The registrations themselves are static. */
+    UA_free(config->driverRegistrations);
+    config->driverRegistrations = NULL;
+    config->driverRegistrationsSize = 0;
+    for(size_t i = 0; i < config->driversSize; i++) {
+        UA_String_clear(&config->drivers[i].driver);
+        UA_String_clear(&config->drivers[i].name);
+        UA_KeyValueMap_clear(&config->drivers[i].params);
+    }
+    UA_free(config->drivers);
+    config->drivers = NULL;
+    config->driversSize = 0;
+
     /* Security Policies */
     for(size_t i = 0; i < config->securityPoliciesSize; ++i) {
         UA_SecurityPolicy *policy = &config->securityPolicies[i];
@@ -125,4 +138,66 @@ UA_ServerConfig_clear(UA_ServerConfig *config) {
         config->rolesSize = 0;
     }
 #endif
+}
+
+const UA_DriverRegistration *
+getDriverRegistration(const UA_ServerConfig *config, const UA_String *name) {
+    for(size_t i = 0; i < config->driverRegistrationsSize; i++) {
+        UA_String regName =
+            UA_STRING((char *)(uintptr_t)config->driverRegistrations[i]->name);
+        if(UA_String_equal(&regName, name))
+            return config->driverRegistrations[i];
+    }
+    return NULL;
+}
+
+UA_StatusCode
+UA_ServerConfig_registerDriver(UA_ServerConfig *config,
+                               const UA_DriverRegistration *registration) {
+    if(!config || !registration || !registration->name || !registration->create)
+        return UA_STATUSCODE_BADINVALIDARGUMENT;
+    UA_String name = UA_STRING((char *)(uintptr_t)registration->name);
+    if(getDriverRegistration(config, &name))
+        return UA_STATUSCODE_BADALREADYEXISTS;
+    const UA_DriverRegistration **registrations = (const UA_DriverRegistration **)
+        UA_realloc((void *)config->driverRegistrations,
+                   sizeof(UA_DriverRegistration *) *
+                   (config->driverRegistrationsSize + 1));
+    if(!registrations)
+        return UA_STATUSCODE_BADOUTOFMEMORY;
+    registrations[config->driverRegistrationsSize] = registration;
+    config->driverRegistrations = registrations;
+    config->driverRegistrationsSize++;
+    return UA_STATUSCODE_GOOD;
+}
+
+UA_StatusCode
+UA_ServerConfig_addDriver(UA_ServerConfig *config, const char *driver,
+                          const char *name, const UA_KeyValueMap params) {
+    if(!config || !driver || driver[0] == '\0')
+        return UA_STATUSCODE_BADINVALIDARGUMENT;
+    UA_DriverConfiguration *drivers = (UA_DriverConfiguration *)
+        UA_realloc(config->drivers,
+                   sizeof(UA_DriverConfiguration) * (config->driversSize + 1));
+    if(!drivers)
+        return UA_STATUSCODE_BADOUTOFMEMORY;
+    config->drivers = drivers;
+
+    UA_DriverConfiguration *entry = &drivers[config->driversSize];
+    memset(entry, 0, sizeof(UA_DriverConfiguration));
+    UA_String driverName = UA_STRING((char *)(uintptr_t)driver);
+    UA_StatusCode res = UA_String_copy(&driverName, &entry->driver);
+    if(name) {
+        UA_String instanceName = UA_STRING((char *)(uintptr_t)name);
+        res |= UA_String_copy(&instanceName, &entry->name);
+    }
+    res |= UA_KeyValueMap_copy(&params, &entry->params);
+    if(res != UA_STATUSCODE_GOOD) {
+        UA_String_clear(&entry->driver);
+        UA_String_clear(&entry->name);
+        UA_KeyValueMap_clear(&entry->params);
+        return res;
+    }
+    config->driversSize++;
+    return UA_STATUSCODE_GOOD;
 }
