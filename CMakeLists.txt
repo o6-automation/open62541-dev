@@ -1035,11 +1035,13 @@ endif()
 if(UA_ENABLE_DRIVER_REST)
     list(APPEND exported_headers
          ${PROJECT_SOURCE_DIR}/include/open62541/driver/http.h
-         ${PROJECT_SOURCE_DIR}/include/open62541/driver/rest.h)
+         ${PROJECT_SOURCE_DIR}/include/open62541/driver/rest.h
+         ${PROJECT_SOURCE_DIR}/include/open62541/driver/binding.h)
     list(APPEND lib_sources
          ${PROJECT_SOURCE_DIR}/drivers/http/http_driver.c
          ${PROJECT_SOURCE_DIR}/drivers/driver_params.c
-         ${PROJECT_SOURCE_DIR}/drivers/rest/rest_driver.c)
+         ${PROJECT_SOURCE_DIR}/drivers/rest/rest_driver.c
+         ${PROJECT_SOURCE_DIR}/drivers/binding/binding_driver.c)
 endif()
 
 if(UA_ENABLE_RBAC)

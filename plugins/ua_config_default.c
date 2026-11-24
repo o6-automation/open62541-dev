@@ -26,6 +26,7 @@
 #include <open62541/client_config_default.h>
 #include <open62541/driver/http.h>
 #include <open62541/driver/rest.h>
+#include <open62541/driver/binding.h>
 
 #include "../deps/mp_printf.h"
 
@@ -389,6 +390,7 @@ setDefaultConfig(UA_ServerConfig *conf, UA_UInt16 portNumber) {
      * is expected if the defaults are applied twice. */
     UA_ServerConfig_registerDriver(conf, &UA_HttpDriver_registration);
     UA_ServerConfig_registerDriver(conf, &UA_RestDriver_registration);
+    UA_ServerConfig_registerDriver(conf, &UA_BindingDriver_registration);
 #endif
 
     /* --> Start setting the default static config <-- */
