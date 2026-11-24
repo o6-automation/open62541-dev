@@ -395,6 +395,9 @@ if(UA_ENABLE_JSON_ENCODING)
 endif()
 
 ua_add_test(server/check_server_driver_registry.c)
+if(UA_ENABLE_DRIVER_REST)
+    ua_add_test(server/check_server_rest.c)
+endif()
 
 ua_add_test(server/check_accesscontrol.c)
 ua_add_test(server/check_services_view.c)
