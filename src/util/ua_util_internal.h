@@ -102,6 +102,21 @@ isReservedPercentExtended(u8 c) {
             c == '`' || c == '/' || c == '\\' || c == '"' || c == '\'' );
 }
 
+/* Parse hostname, port and path of a URL whose scheme (including "://") has the
+ * given length. See UA_parseEndpointUrl. For eth, the part after the colon is
+ * returned as the path. */
+UA_StatusCode
+UA_parseUrlAfterScheme(const UA_String *url, size_t schemeLength,
+                       UA_Boolean eth, UA_String *outHostname,
+                       UA_UInt16 *outPort, UA_String *outPath);
+
+/* Cast a numeric scalar to another numeric type. Floating point values are
+ * rounded. On failure (out of range, NaN), the output is a null value. Boolean
+ * and StatusCode inputs count as numbers. A Boolean output is true for a
+ * nonzero input; it points to a constant and is not freed when cleared. */
+void
+UA_castNumerical(const UA_Variant *in, const UA_DataType *type, UA_Variant *out);
+
 /* Unescape string. The copyEscape boolean indicates whether a copy of the
  * string should be made if an escaped character is found. Otherwise the string
  * is unescaped in-place. */

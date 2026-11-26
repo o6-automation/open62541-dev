@@ -37,38 +37,6 @@ driverErrorStatus(const UA_KeyValueMap *result);
 char *
 driverCString(const UA_String *s);
 
-/* The next key or index of a path and the rest of the path. Paths use dots
- * (items.0.id) or the JSONPath notation (items[0]['id']). A wildcard ([*] or
- * .*) sets the flag, which can be NULL. */
-UA_String
-driverPathSegment(UA_String *path, UA_Boolean *wildcard);
-
-/* Follows the path through objects (KeyValuePair arrays) and arrays. A leading
- * "$" (the JSONPath root) is the value itself. Stops at JSON text (a String or
- * ByteString) with the rest of the path left in path. A scalar from a typed
- * array is placed in element. NULL if not found. */
-const UA_Variant *
-driverPathFind(const UA_Variant *v, UA_String *path, UA_Variant *element);
-
-UA_StatusCode
-driverPathAppend(const UA_Variant *v, UA_String path, UA_String *out);
-
-UA_Boolean
-driverPathHasWildcard(UA_String path);
-
-/* Copies of all values at a path with wildcards, as a Variant array in the
- * order of the data. Paths into JSON text parse the text. */
-UA_StatusCode
-driverPathCollect(const UA_Variant *v, UA_String path, UA_Variant *out);
-
-/* Does a JSONPath pattern (e.g. $.days[*].x) match a dotted path (days.0.x)? */
-UA_Boolean
-driverPathMatches(UA_String pattern, UA_String path);
-
-/* JSON as a value tree, mapped as documented for the polling of the REST driver */
-UA_StatusCode
-driverJsonParse(const UA_ByteString *doc, UA_Variant *out);
-
 /* Any numeric scalar as a Double. False for other values. */
 UA_Boolean
 driverNumber(const UA_Variant *v, UA_Double *out);

@@ -12,7 +12,7 @@
 
 _UA_BEGIN_DECLS
 
-#ifdef UA_ENABLE_DRIVER_REST
+#ifdef UA_ENABLE_DRIVER_HTTP
 
 /**
  * HTTP Driver
@@ -22,8 +22,9 @@ _UA_BEGIN_DECLS
  * or a third-party implementation). Like the other users of HTTP, the driver
  * does not create one: Register it explicitly before the server starts, e.g.
  * with ``UA_ConnectionManager_new_HTTP``. Other drivers and the application send
- * requests with ``UA_Server_callDriver``. The default server configuration
- * registers the driver under the name ``http``:
+ * requests with ``UA_Server_callDriver``. The driver is built with
+ * ``UA_ENABLE_DRIVER_HTTP``. The default server configuration registers it
+ * under the name ``http``:
  *
  * .. code-block:: json5
  *
@@ -70,7 +71,7 @@ extern UA_EXPORT const UA_DriverRegistration UA_HttpDriver_registration;
 UA_EXPORT UA_StatusCode
 UA_HttpDriver_new(const UA_KeyValueMap params, UA_Driver **outDriver);
 
-#endif /* UA_ENABLE_DRIVER_REST */
+#endif /* UA_ENABLE_DRIVER_HTTP */
 
 _UA_END_DECLS
 

@@ -2170,14 +2170,10 @@ UA_Server_callDriverFrom(UA_Server *server, const UA_Driver *scope,
  * .. code-block:: json5
  *
  *    drivers: [
- *      { driver: "binding", name: "press1",
- *        variables: { Speed: { call: "readMachine", type: "Double",
- *                              from: "body.speed" } },
- *        drivers: [
- *          { driver: "rest",        // press1/rest
- *            calls: { readMachine: { method: "GET", path: "/machine" } },
- *            drivers: [ { driver: "http",   // press1/rest/http
- *                         url: "http://192.168.0.10:8000/api" } ] } ] }
+ *      { driver: "rest", name: "press1",
+ *        calls: { readMachine: { method: "GET", path: "/machine" } },
+ *        drivers: [ { driver: "http",     // press1/http
+ *                     url: "http://192.168.0.10:8000/api" } ] }
  *    ]
  *
  * A reference to another driver (e.g. ``endpoint`` in the REST driver) is
@@ -2192,7 +2188,9 @@ UA_Server_callDriverFrom(UA_Server *server, const UA_Driver *scope,
 typedef struct {
     const char *name;
     /* Index in UA_TYPES, e.g. UA_TYPES_STRING. The index is used instead of a
-     * UA_DataType pointer so that registrations can be static constants. */
+     * UA_DataType pointer so that registrations can be static constants.
+     * UA_TYPES_VARIANT accepts any value (scalar or array); the driver checks
+     * it itself, e.g. for a parameter that is a boolean or an object. */
     UA_UInt16 typeIndex;
     UA_Boolean isArray;
     UA_Boolean required;
@@ -2909,6 +2907,13 @@ UA_ServerConfig_clean(UA_ServerConfig *config) {
 UA_StatusCode UA_EXPORT
 UA_ServerConfig_registerDriver(UA_ServerConfig *config,
                                const UA_DriverRegistration *registration);
+
+/* Create a driver from its registration, with the parameters checked and
+ * converted like those of the configuration. The driver is not added to the
+ * server, e.g. for a driver that another driver owns. */
+UA_StatusCode UA_EXPORT
+UA_Server_createDriver(UA_Server *server, const char *driver,
+                       const UA_KeyValueMap params, UA_Driver **outDriver);
 
 /* Add a driver instance to the configuration. The name is optional (NULL
  * uses the registration name) and must be unique in the server. The

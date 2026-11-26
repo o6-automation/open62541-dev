@@ -10,7 +10,7 @@
 #include "open62541_queue.h"
 #include "../driver_params.h"
 
-#ifdef UA_ENABLE_DRIVER_REST
+#ifdef UA_ENABLE_DRIVER_HTTP
 
 typedef struct HttpRequest {
     LIST_ENTRY(HttpRequest) next;
@@ -139,8 +139,9 @@ processResponse(HttpDriver *hd, const UA_KeyValueMap *params, UA_ByteString msg)
 
 static void
 finishStopIfDrained(HttpDriver *hd) {
-    if(hd->drv.state == UA_LIFECYCLESTATE_STOPPING && hd->connectionId == 0)
-        hd->drv.state = UA_LIFECYCLESTATE_STOPPED;
+    if(hd->drv.state != UA_LIFECYCLESTATE_STOPPING || hd->connectionId != 0)
+        return;
+    hd->drv.state = UA_LIFECYCLESTATE_STOPPED;
 }
 
 static void
@@ -280,53 +281,6 @@ httpCall(UA_Driver *drv, const UA_String call, const UA_KeyValueMap *input,
 /* Lifecycle */
 /*************/
 
-/* host[:port][/path] after the scheme, like UA_parseEndpointUrl. The outputs
- * point into the url. */
-static UA_StatusCode
-parseHttpUrl(const UA_String *url, size_t start, UA_String *host,
-             UA_UInt16 *port, UA_String *path) {
-    size_t curr = start;
-    UA_Boolean ipv6 = (curr < url->length && url->data[curr] == '[');
-    while(curr < url->length &&
-          (ipv6 ? url->data[curr] != ']' :
-           (url->data[curr] != ':' && url->data[curr] != '/')))
-        curr++;
-    if(ipv6) {
-        if(curr == url->length)
-            return UA_STATUSCODE_BADTCPENDPOINTURLINVALID;
-        curr++;
-        host->data = &url->data[start + 1]; /* Without the brackets */
-        host->length = curr - start - 2;
-    } else {
-        host->data = &url->data[start];
-        host->length = curr - start;
-    }
-    if(host->length == 0)
-        return UA_STATUSCODE_BADTCPENDPOINTURLINVALID;
-
-    if(curr < url->length && url->data[curr] == ':') {
-        UA_UInt32 number = 0;
-        size_t progress = UA_readNumber(&url->data[curr + 1],
-                                        url->length - curr - 1, &number);
-        if(progress == 0 || number > 65535)
-            return UA_STATUSCODE_BADTCPENDPOINTURLINVALID;
-        *port = (UA_UInt16)number;
-        curr += 1 + progress;
-    }
-    if(curr == url->length)
-        return UA_STATUSCODE_GOOD;
-    if(url->data[curr] != '/')
-        return UA_STATUSCODE_BADTCPENDPOINTURLINVALID;
-    curr++;
-    path->data = &url->data[curr];
-    path->length = url->length - curr;
-    if(path->length > 0 && path->data[path->length - 1] == '/')
-        path->length--; /* Without a trailing slash */
-    if(path->length == 0)
-        path->data = NULL;
-    return UA_STATUSCODE_GOOD;
-}
-
 static UA_StatusCode
 httpStart(UA_Driver *drv) {
     HttpDriver *hd = (HttpDriver *)drv;
@@ -347,8 +301,8 @@ httpStart(UA_Driver *drv) {
         hd->port = hd->secure ? 443 : 80;
         hd->host = UA_STRING_NULL;
         hd->basePath = UA_STRING_NULL;
-        res = parseHttpUrl(url, schemes[i].length, &hd->host, &hd->port,
-                           &hd->basePath);
+        res = UA_parseUrlAfterScheme(url, schemes[i].length, false,
+                                     &hd->host, &hd->port, &hd->basePath);
         break;
     }
     if(res != UA_STATUSCODE_GOOD) {
@@ -422,4 +376,4 @@ UA_HttpDriver_new(const UA_KeyValueMap params, UA_Driver **outDriver) {
     return UA_STATUSCODE_GOOD;
 }
 
-#endif /* UA_ENABLE_DRIVER_REST */
+#endif /* UA_ENABLE_DRIVER_HTTP */

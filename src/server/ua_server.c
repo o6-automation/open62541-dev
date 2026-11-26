@@ -285,53 +285,12 @@ UA_Server_getDrivers(UA_Server *server) {
 /* Drivers from the Configuration */
 /**********************************/
 
-/* Numbers of the JSON configuration (Int64, Double) as the declared numeric
- * type. Floating point values are rounded. A null value if it does not fit. */
-#define CAST_CONFIG_NUMBER(T, MIN, MAX)                                    \
-    ok = (r > (UA_Double)(MIN) - 1.0 && r < (UA_Double)(MAX) + 1.0);     \
-    if(ok)                                                              \
-        *(T *)data = (T)r;                                              \
-    break
-
-static void
-castConfigNumber(const UA_Variant *in, const UA_DataType *type, UA_Variant *out) {
-    UA_Variant_init(out);
-    UA_Double d;
-    if(in->type == &UA_TYPES[UA_TYPES_INT64])
-        d = (UA_Double)*(const UA_Int64 *)in->data;
-    else if(in->type == &UA_TYPES[UA_TYPES_DOUBLE])
-        d = *(const UA_Double *)in->data;
-    else
-        return;
-    void *data = UA_new(type);
-    if(!data)
-        return;
-    UA_Double r = (d < 0.0) ? d - 0.5 : d + 0.5; /* Truncated below */
-    UA_Boolean ok = true;
-    switch(type->typeKind) {
-    case UA_DATATYPEKIND_SBYTE:  CAST_CONFIG_NUMBER(UA_SByte, UA_SBYTE_MIN, UA_SBYTE_MAX);
-    case UA_DATATYPEKIND_BYTE:   CAST_CONFIG_NUMBER(UA_Byte, 0, UA_BYTE_MAX);
-    case UA_DATATYPEKIND_INT16:  CAST_CONFIG_NUMBER(UA_Int16, UA_INT16_MIN, UA_INT16_MAX);
-    case UA_DATATYPEKIND_UINT16: CAST_CONFIG_NUMBER(UA_UInt16, 0, UA_UINT16_MAX);
-    case UA_DATATYPEKIND_INT32:  CAST_CONFIG_NUMBER(UA_Int32, UA_INT32_MIN, UA_INT32_MAX);
-    case UA_DATATYPEKIND_UINT32: CAST_CONFIG_NUMBER(UA_UInt32, 0, UA_UINT32_MAX);
-    case UA_DATATYPEKIND_INT64:  CAST_CONFIG_NUMBER(UA_Int64, UA_INT64_MIN, UA_INT64_MAX);
-    case UA_DATATYPEKIND_UINT64: CAST_CONFIG_NUMBER(UA_UInt64, 0, UA_UINT64_MAX);
-    case UA_DATATYPEKIND_FLOAT:  *(UA_Float *)data = (UA_Float)d; break;
-    case UA_DATATYPEKIND_DOUBLE: *(UA_Double *)data = d; break;
-    default: ok = false; break;
-    }
-    if(!ok) {
-        UA_delete(data, type);
-        return;
-    }
-    UA_Variant_setScalar(out, data, type);
-}
-
 static UA_StatusCode
 convertDriverParameter(UA_Variant *value, const UA_DriverParameter *param) {
     if(param->typeIndex >= UA_TYPES_COUNT)
         return UA_STATUSCODE_BADINTERNALERROR;
+    if(param->typeIndex == UA_TYPES_VARIANT)
+        return UA_STATUSCODE_GOOD; /* Any value */
     const UA_DataType *type = &UA_TYPES[param->typeIndex];
     UA_Boolean isArray = !UA_Variant_isScalar(value);
     if(isArray != param->isArray)
@@ -350,7 +309,7 @@ convertDriverParameter(UA_Variant *value, const UA_DriverParameter *param) {
        !UA_DataType_isNumeric(type))
         return UA_STATUSCODE_BADTYPEMISMATCH;
     UA_Variant cast;
-    castConfigNumber(value, type, &cast);
+    UA_castNumerical(value, type, &cast);
     if(UA_Variant_isEmpty(&cast))
         return UA_STATUSCODE_BADOUTOFRANGE;
     UA_Variant_clear(value);
@@ -629,6 +588,30 @@ createDriverTree(UA_Server *server, const UA_String *scope, const UA_String *typ
                      "Could not create the configured driver \"%S\" (%s)",
                      *type, UA_StatusCode_name(res));
     UA_String_clear(&name);
+    return res;
+}
+
+UA_StatusCode
+UA_Server_createDriver(UA_Server *server, const char *driver,
+                       const UA_KeyValueMap params, UA_Driver **outDriver) {
+    if(!server || !driver || !outDriver)
+        return UA_STATUSCODE_BADINVALIDARGUMENT;
+    *outDriver = NULL;
+    lockServer(server);
+    UA_String type = UA_STRING((char *)(uintptr_t)driver);
+    const UA_DriverRegistration *reg = getDriverRegistration(&server->config, &type);
+    UA_KeyValueMap checked = UA_KEYVALUEMAP_NULL;
+    UA_StatusCode res = reg ? UA_KeyValueMap_copy(&params, &checked) :
+        UA_STATUSCODE_BADNOTFOUND;
+    if(res == UA_STATUSCODE_GOOD)
+        res = validateDriverParams(server, reg, &type, &checked);
+    if(res == UA_STATUSCODE_GOOD) {
+        res = reg->create(server, checked, outDriver);
+        if(res == UA_STATUSCODE_GOOD && !*outDriver)
+            res = UA_STATUSCODE_BADINTERNALERROR;
+    }
+    UA_KeyValueMap_clear(&checked);
+    unlockServer(server);
     return res;
 }
 

@@ -81,7 +81,7 @@ int main(int argc, const char **argv) {
     sendParams[1].key = UA_QUALIFIEDNAME(0, "method");
     UA_Variant_setScalar(&sendParams[1].value, &method, &UA_TYPES[UA_TYPES_STRING]);
     UA_UInt32 requestHandle = 0;
-    sendParams[2].key = UA_QUALIFIEDNAME(0, "request-handle");
+    sendParams[2].key = UA_QUALIFIEDNAME(0, "handle");
     UA_Variant_setScalar(&sendParams[2].value, &requestHandle,
                          &UA_TYPES[UA_TYPES_UINT32]);
     UA_KeyValueMap sendMap = {3, sendParams};

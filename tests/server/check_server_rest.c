@@ -24,6 +24,7 @@
 static UA_Server *server;
 static UA_ConnectionManager *mock;
 static UA_Boolean mockResponds;
+static UA_Boolean weatherDown; /* The weather API answers 503 */
 
 /* The last request */
 static UA_String lastMethod, lastPath, lastAuthorization, lastAccept;
@@ -83,6 +84,9 @@ answer(UA_ByteString *body) {
         text = "{\"name\":\"Bolt\"}";
     } else if(equals(&lastMethod, "PUT") && equals(&lastPath, "/api/jobs/42")) {
         status = 204;
+    } else if(equals(&lastMethod, "GET") && equals(&lastPath, "/api/weather") &&
+              weatherDown) {
+        status = 503;
     } else if(equals(&lastMethod, "GET") && equals(&lastPath, "/api/weather")) {
         /* Trimmed from the DWD API (stationOverviewExtended) */
         status = 200;
@@ -283,6 +287,7 @@ startServer(const char *json) {
 static void setup(void) {
     results = 0;
     mockResponds = true;
+    weatherDown = false;
     startServer(config);
 }
 
@@ -394,6 +399,53 @@ START_TEST(ChainStopsAtHttpError) {
     ck_assert_uint_eq(resultHttpStatus, 401);
     ck_assert(equals(&resultCall, "login"));
     ck_assert(equals(&lastPath, "/api/login")); /* getJob was not sent */
+} END_TEST
+
+static void restartServer(const char *json);
+
+/* A value cannot change the request around it */
+static const char *escapeConfig =
+    "{tcpEnabled:false,drivers:[{driver:'rest',name:'esc',"
+    " endpoint:{driver:'http',url:'http://localhost:8000/api'},calls:{"
+    " json:{method:'POST',path:'/login',"
+    "       body:'{\"user\":\"${input.user}\",\"n\":${input.n},\"s\":${input.s}}'},"
+    " path:{method:'GET',path:'/items/${input.id}'},"
+    " header:{method:'GET',path:'/jobs/42',headers:{authorization:'Bearer ${input.token}'}}}}]}";
+
+START_TEST(PlaceholdersAreEscaped) {
+    restartServer(escapeConfig);
+
+    /* JSON: escaped in a string, quoted as a value, numbers stay numbers */
+    UA_KeyValueMap input = UA_KEYVALUEMAP_NULL;
+    UA_String user = UA_STRING("a\"b\\c");
+    UA_Int32 n = 5;
+    UA_String s = UA_STRING("1,\"admin\":true");
+    UA_KeyValueMap_setScalar(&input, UA_QUALIFIEDNAME(0, "user"), &user,
+                             &UA_TYPES[UA_TYPES_STRING]);
+    UA_KeyValueMap_setScalar(&input, UA_QUALIFIEDNAME(0, "n"), &n, &UA_TYPES[UA_TYPES_INT32]);
+    UA_KeyValueMap_setScalar(&input, UA_QUALIFIEDNAME(0, "s"), &s, &UA_TYPES[UA_TYPES_STRING]);
+    ck_assert_uint_eq(UA_Server_callDriver(server, "esc", "json", &input, onResult, NULL),
+                      UA_STATUSCODE_GOOD);
+    UA_KeyValueMap_clear(&input);
+    ck_assert(contains(&lastBody, "\"user\":\"a\\\"b\\\\c\""));
+    ck_assert(contains(&lastBody, "\"n\":5"));
+    ck_assert(contains(&lastBody, "\"s\":\"1,\\\"admin\\\":true\""));
+
+    /* Path: percent-encoded */
+    UA_String id = UA_STRING("a/b c?x=1");
+    UA_KeyValueMap_setScalar(&input, UA_QUALIFIEDNAME(0, "id"), &id, &UA_TYPES[UA_TYPES_STRING]);
+    ck_assert_uint_eq(UA_Server_callDriver(server, "esc", "path", &input, onResult, NULL),
+                      UA_STATUSCODE_GOOD);
+    UA_KeyValueMap_clear(&input);
+    ck_assert(equals(&lastPath, "/api/items/a%2Fb%20c%3Fx%3D1"));
+
+    /* Header: a line break fails the call */
+    UA_String token = UA_STRING("x\r\nX-Evil: 1");
+    UA_KeyValueMap_setScalar(&input, UA_QUALIFIEDNAME(0, "token"), &token,
+                             &UA_TYPES[UA_TYPES_STRING]);
+    ck_assert_uint_eq(UA_Server_callDriver(server, "esc", "header", &input, onResult, NULL),
+                      UA_STATUSCODE_BADINVALIDARGUMENT);
+    UA_KeyValueMap_clear(&input);
 } END_TEST
 
 START_TEST(WriteWithBody) {
@@ -837,6 +889,275 @@ START_TEST(InvalidPollingConfig) {
     }
 } END_TEST
 
+/******************************/
+/* Endpoint URL, short config */
+/******************************/
+
+static void
+assertInt64Node(const char *nodeId, UA_Int64 expected) {
+    UA_Variant v;
+    UA_StatusCode res =
+        UA_Server_readValue(server, UA_NODEID_STRING(1, (char *)(uintptr_t)nodeId), &v);
+    ck_assert_msg(res == UA_STATUSCODE_GOOD, "%s: %s", nodeId, UA_StatusCode_name(res));
+    ck_assert(UA_Variant_hasScalarType(&v, &UA_TYPES[UA_TYPES_INT64]));
+    ck_assert_int_eq(*(UA_Int64 *)v.data, expected);
+    UA_Variant_clear(&v);
+}
+
+/* Only the URL: polled every second, the data as nodes */
+START_TEST(UrlOnly) {
+    restartServer("{tcpEnabled:false,drivers:["
+                  "{driver:'rest',name:'short',endpoint:{driver:'http',url:'http://localhost:8000/api/weather'}}]}");
+    UA_Driver *rest = UA_Server_getDriver(server, NULL, "short");
+    ck_assert_ptr_nonnull(rest);
+    ck_assert_int_eq(rest->state, UA_LIFECYCLESTATE_STARTED);
+    ck_assert_ptr_null(UA_Server_getDriver(server, NULL, "short/http"));
+    UA_Server_run_iterate(server, false);
+    ck_assert(equals(&lastMethod, "GET"));
+    ck_assert(equals(&lastPath, "/api/weather"));
+    ck_assert_uint_eq(openedPort, 8000);
+    UA_QualifiedName name;
+    ck_assert_uint_eq(UA_Server_readBrowseName(server, UA_NODEID_STRING(1, "short"), &name),
+                      UA_STATUSCODE_GOOD);
+    ck_assert(equals(&name.name, "short"));
+    UA_QualifiedName_clear(&name);
+    assertInt64Node("short.10865.days.1.temperatureMax", 65);
+
+    /* The default interval */
+    UA_String_clear(&lastPath);
+    UA_fakeSleep(1100);
+    UA_Server_run_iterate(server, false);
+    ck_assert(equals(&lastPath, "/api/weather"));
+} END_TEST
+
+/* The optional parameters: path, HTTP headers, interval and nodes */
+START_TEST(UrlWithOptions) {
+    restartServer("{tcpEnabled:false,drivers:["
+                  "{driver:'rest',name:'opts',path:'/weather',interval:500,"
+                  " endpoint:{driver:'http',url:'http://localhost:8000/api',"
+                  "           headers:{accept:'text/x'}},"
+                  " nodes:{from:'10865',scale:{temperatureMax:0.1}}}]}");
+    UA_Server_run_iterate(server, false);
+    ck_assert(equals(&lastPath, "/api/weather"));
+    ck_assert(equals(&lastAccept, "text/x"));
+    UA_Variant v;
+    ck_assert_uint_eq(UA_Server_readValue(server, UA_NODEID_STRING(1, "opts.days.1.temperatureMax"),
+                                          &v), UA_STATUSCODE_GOOD);
+    ck_assert(UA_Variant_hasScalarType(&v, &UA_TYPES[UA_TYPES_DOUBLE]));
+    ck_assert(*(UA_Double *)v.data == 6.5);
+    UA_Variant_clear(&v);
+
+    UA_String_clear(&lastPath);
+    UA_fakeSleep(600);
+    UA_Server_run_iterate(server, false);
+    ck_assert(equals(&lastPath, "/api/weather"));
+} END_TEST
+
+/* Calls without an endpoint go to the URL. Without path and poll, there is no
+ * polling and there are no nodes. */
+START_TEST(UrlWithCalls) {
+    restartServer("{tcpEnabled:false,drivers:["
+                  "{driver:'rest',name:'api',endpoint:{driver:'http',url:'http://localhost:8000/api'},"
+                  " calls:{job:{method:'GET',path:'/jobs/42',"
+                  "             headers:{authorization:'Bearer abc123'}}}}]}");
+    UA_Server_run_iterate(server, false);
+    ck_assert_uint_eq(lastPath.length, 0);
+    UA_QualifiedName name;
+    ck_assert_uint_ne(UA_Server_readBrowseName(server, UA_NODEID_STRING(1, "api"), &name),
+                      UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(UA_Server_callDriver(server, "api", "job", NULL, onResult, NULL),
+                      UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(results, 1);
+    ck_assert_uint_eq(resultHttpStatus, 200);
+    ck_assert(equals(&lastPath, "/api/jobs/42"));
+} END_TEST
+
+/* Open requests are completed at the shutdown */
+START_TEST(UrlShutdownWithOpenPoll) {
+    restartServer("{tcpEnabled:false,drivers:["
+                  "{driver:'rest',name:'short',endpoint:{driver:'http',url:'http://localhost:8000/api/weather'}}]}");
+    mockResponds = false;
+    UA_Server_run_iterate(server, false);
+    ck_assert(equals(&lastPath, "/api/weather"));
+} END_TEST
+
+/* The data of a polling REST driver is in the information model by default,
+ * also with a named endpoint. Not with nodes: false and not for a nested REST
+ * driver. */
+START_TEST(NodesByDefault) {
+    restartServer("{tcpEnabled:false,drivers:["
+                  "{driver:'rest',name:'on',path:'/weather',"
+                  " drivers:[{driver:'http',url:'http://localhost:8000/api'}]},"
+                  "{driver:'rest',name:'off',path:'/weather',nodes:false,"
+                  " drivers:[{driver:'http',url:'http://localhost:8000/api'}]},"
+                  "{driver:'device',name:'outer',"
+                  " drivers:[{driver:'rest',name:'inner',path:'/weather',"
+                  "   drivers:[{driver:'http',url:'http://localhost:8000/api'}]}]},"
+                  "{driver:'device',name:'outer2',"
+                  " drivers:[{driver:'rest',name:'shown',path:'/weather',nodes:true,"
+                  "   drivers:[{driver:'http',url:'http://localhost:8000/api'}]}]}]}");
+    UA_Server_run_iterate(server, false);
+    assertInt64Node("on.10865.days.1.temperatureMax", 65);
+    assertInt64Node("outer2/shown.10865.days.1.temperatureMax", 65);
+    const char *hidden[] = {"off", "outer/inner"};
+    for(size_t i = 0; i < 2; i++) {
+        UA_QualifiedName name;
+        UA_NodeId id = UA_NODEID_STRING(1, (char *)(uintptr_t)hidden[i]);
+        ck_assert_msg(UA_Server_readBrowseName(server, id, &name) != UA_STATUSCODE_GOOD,
+                      "%s has nodes", hidden[i]);
+    }
+} END_TEST
+
+/* An endpoint driver that is not HTTP. Its result has no body, so the result
+ * itself is the data. */
+START_TEST(EndpointOtherDriver) {
+    restartServer("{tcpEnabled:false,drivers:["
+                  "{driver:'rest',name:'dev',endpoint:{driver:'device'},method:'read',"
+                  " path:'/register/40001'}]}");
+    UA_Driver *rest = UA_Server_getDriver(server, NULL, "dev");
+    ck_assert_ptr_nonnull(rest);
+    ck_assert_int_eq(rest->state, UA_LIFECYCLESTATE_STARTED);
+    UA_Server_run_iterate(server, false);
+    UA_Variant v;
+    ck_assert_uint_eq(UA_Server_readValue(server, UA_NODEID_STRING(1, "dev.method"), &v),
+                      UA_STATUSCODE_GOOD);
+    ck_assert(UA_Variant_hasScalarType(&v, &UA_TYPES[UA_TYPES_STRING]));
+    ck_assert(equals((UA_String *)v.data, "read"));
+    UA_Variant_clear(&v);
+} END_TEST
+
+START_TEST(InvalidUrlConfig) {
+    restartServer("{tcpEnabled:false,drivers:["
+                  "{driver:'rest',name:'bad-url',endpoint:{driver:'http',url:'ftp://localhost/x'}},"
+                  "{driver:'rest',name:'no-driver',endpoint:{url:'http://localhost/x'}},"
+                  "{driver:'rest',name:'nodes-without-polling',nodes:{},"
+                  " calls:{a:{endpoint:'x',method:'GET'}}},"
+                  "{driver:'rest',name:'nodes-text',nodes:'yes',"
+                  " endpoint:{driver:'http',url:'http://localhost:8000/api/weather'}}]}");
+    const char *names[] = {"bad-url", "no-driver", "nodes-without-polling", "nodes-text"};
+    for(size_t i = 0; i < 4; i++) {
+        UA_Driver *drv = UA_Server_getDriver(server, NULL, names[i]);
+        ck_assert_ptr_nonnull(drv);
+        ck_assert_msg(drv->state == UA_LIFECYCLESTATE_STOPPED, "%s started", names[i]);
+    }
+} END_TEST
+
+#ifdef UA_ENABLE_SUBSCRIPTIONS_EVENTS
+
+static size_t events;
+static UA_UInt16 eventSeverity;
+static UA_NodeId eventSource;
+static UA_String eventMessage;
+
+static void
+onEvent(UA_Server *s, UA_UInt32 monId, void *monContext,
+        const UA_KeyValueMap fields) {
+    (void)s, (void)monId, (void)monContext;
+    events++;
+    ck_assert_uint_eq(fields.mapSize, 3);
+    ck_assert(UA_Variant_hasScalarType(&fields.map[0].value, &UA_TYPES[UA_TYPES_UINT16]));
+    eventSeverity = *(UA_UInt16 *)fields.map[0].value.data;
+    UA_NodeId_clear(&eventSource);
+    UA_NodeId_copy((const UA_NodeId *)fields.map[1].value.data, &eventSource);
+    UA_String_clear(&eventMessage);
+    UA_String_copy(&((const UA_LocalizedText *)fields.map[2].value.data)->text,
+                   &eventMessage);
+}
+
+static void
+monitorEvents(void) {
+    events = 0;
+    UA_EventFilter ef;
+    UA_EventFilter_init(&ef);
+    ef.selectClauses = (UA_SimpleAttributeOperand *)
+        UA_Array_new(3, &UA_TYPES[UA_TYPES_SIMPLEATTRIBUTEOPERAND]);
+    ef.selectClausesSize = 3;
+    UA_SimpleAttributeOperand_parse(&ef.selectClauses[0], UA_STRING("/Severity"));
+    UA_SimpleAttributeOperand_parse(&ef.selectClauses[1], UA_STRING("/SourceNode"));
+    UA_SimpleAttributeOperand_parse(&ef.selectClauses[2], UA_STRING("/Message"));
+    UA_MonitoredItemCreateResult res =
+        UA_Server_createEventMonitoredItem(server, UA_NS0ID(SERVER), ef, NULL, onEvent);
+    ck_assert_uint_eq(res.statusCode, UA_STATUSCODE_GOOD);
+    UA_EventFilter_clear(&ef);
+}
+
+/* An event when the polls start to fail and when they work again, with the
+ * object of the nodes as the source */
+START_TEST(FailureEvents) {
+    restartServer("{tcpEnabled:false,drivers:["
+                  "{driver:'rest',name:'ev',endpoint:{driver:'http',url:'http://localhost:8000/api/weather'}}]}");
+    monitorEvents();
+    weatherDown = true;
+    UA_Server_run_iterate(server, false);
+    ck_assert_uint_eq(events, 1);
+    ck_assert_uint_eq(eventSeverity, 500);
+    UA_NodeId object = UA_NODEID_STRING(1, "ev");
+    ck_assert(UA_NodeId_equal(&eventSource, &object));
+    UA_String expected = UA_STRING("REST driver \"ev\": The poll failed (status 503)");
+    ck_assert(UA_String_equal(&eventMessage, &expected));
+
+    /* No event while the failure stays the same */
+    UA_fakeSleep(1100);
+    UA_Server_run_iterate(server, false);
+    ck_assert_uint_eq(events, 1);
+
+    weatherDown = false;
+    UA_fakeSleep(1100);
+    UA_Server_run_iterate(server, false);
+    ck_assert_uint_eq(events, 2);
+    ck_assert_uint_eq(eventSeverity, 100);
+    UA_NodeId_clear(&eventSource);
+    UA_String_clear(&eventMessage);
+} END_TEST
+
+/* Without nodes, the Server object is the source */
+START_TEST(FailureEventsWithoutNodes) {
+    restartServer("{tcpEnabled:false,drivers:["
+                  "{driver:'rest',name:'plain',path:'/nothing',nodes:false,"
+                  " drivers:[{driver:'http',url:'http://localhost:8000/api'}]}]}");
+    monitorEvents();
+    UA_Server_run_iterate(server, false);
+    ck_assert_uint_eq(events, 1);
+    ck_assert_uint_eq(eventSeverity, 500);
+    UA_NodeId serverObject = UA_NS0ID(SERVER);
+    ck_assert(UA_NodeId_equal(&eventSource, &serverObject));
+    UA_NodeId_clear(&eventSource);
+    UA_String_clear(&eventMessage);
+} END_TEST
+
+#ifdef UA_GENERATED_NAMESPACE_ZERO_FULL
+/* With alarms, an OffNormalAlarm below the object instead of plain events */
+START_TEST(FailureAlarm) {
+    restartServer("{tcpEnabled:false,drivers:["
+                  "{driver:'rest',name:'al',alarms:true,"
+                  " endpoint:{driver:'http',url:'http://localhost:8000/api/weather'}}]}");
+    monitorEvents();
+    weatherDown = true;
+    UA_Server_run_iterate(server, false);
+    ck_assert_ptr_nonnull(UA_Server_getDriver(server, NULL, "alarms-conditions"));
+    ck_assert_uint_ge(events, 1);
+    ck_assert_uint_eq(eventSeverity, 500);
+    UA_NodeId object = UA_NODEID_STRING(1, "al");
+    ck_assert(UA_NodeId_equal(&eventSource, &object));
+    UA_QualifiedName alarmName = UA_QUALIFIEDNAME(1, "CommunicationError");
+    UA_BrowsePathResult bpr =
+        UA_Server_browseSimplifiedBrowsePath(server, object, 1, &alarmName);
+    ck_assert_uint_eq(bpr.statusCode, UA_STATUSCODE_GOOD);
+    UA_BrowsePathResult_clear(&bpr);
+
+    size_t before = events;
+    weatherDown = false;
+    UA_fakeSleep(1100);
+    UA_Server_run_iterate(server, false);
+    ck_assert_uint_gt(events, before);
+    ck_assert_uint_eq(eventSeverity, 100);
+    UA_NodeId_clear(&eventSource);
+    UA_String_clear(&eventMessage);
+} END_TEST
+#endif
+
+#endif /* UA_ENABLE_SUBSCRIPTIONS_EVENTS */
+
 static Suite *testSuite_Rest(void) {
     Suite *s = suite_create("HTTP and REST drivers");
     TCase *tc = tcase_create("Calls");
@@ -846,6 +1167,7 @@ static Suite *testSuite_Rest(void) {
     tcase_add_test(tc, DefaultsFromConfig);
     tcase_add_test(tc, ChainStopsAtHttpError);
     tcase_add_test(tc, WriteWithBody);
+    tcase_add_test(tc, PlaceholdersAreEscaped);
     tcase_add_test(tc, CallWithoutCallback);
     tcase_add_test(tc, OtherProtocol);
     tcase_add_test(tc, NestedEndpoint);
@@ -866,6 +1188,23 @@ static Suite *testSuite_Rest(void) {
     tcase_add_test(tcPolling, FreeNotifiesShutdown);
     tcase_add_test(tcPolling, InvalidPollingConfig);
     suite_add_tcase(s, tcPolling);
+    TCase *tcUrl = tcase_create("Endpoint URL");
+    tcase_add_checked_fixture(tcUrl, setup, teardown);
+    tcase_add_test(tcUrl, UrlOnly);
+    tcase_add_test(tcUrl, UrlWithOptions);
+    tcase_add_test(tcUrl, UrlWithCalls);
+    tcase_add_test(tcUrl, UrlShutdownWithOpenPoll);
+    tcase_add_test(tcUrl, NodesByDefault);
+    tcase_add_test(tcUrl, EndpointOtherDriver);
+    tcase_add_test(tcUrl, InvalidUrlConfig);
+#ifdef UA_ENABLE_SUBSCRIPTIONS_EVENTS
+    tcase_add_test(tcUrl, FailureEvents);
+    tcase_add_test(tcUrl, FailureEventsWithoutNodes);
+# ifdef UA_GENERATED_NAMESPACE_ZERO_FULL
+    tcase_add_test(tcUrl, FailureAlarm);
+# endif
+#endif
+    suite_add_tcase(s, tcUrl);
     return s;
 }
 

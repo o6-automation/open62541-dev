@@ -172,8 +172,10 @@ endif()
 
 if(UA_ENABLE_LWS)
     add_example(server_lws_http_client lws/server_lws_http_client.c)
-    add_example(server_lws_http_client_post lws/server_lws_http_client_post.c)
     add_example(server_websocket lws/server_websocket.c)
+    if(UA_ENABLE_DRIVER_HTTP AND UA_ENABLE_DRIVER_REST)
+        add_example(server_lws_http_client_post lws/server_lws_http_client_post.c)
+    endif()
 endif()
 
 add_subdirectory(nodeset)

@@ -26,7 +26,6 @@
 #include <open62541/client_config_default.h>
 #include <open62541/driver/http.h>
 #include <open62541/driver/rest.h>
-#include <open62541/driver/binding.h>
 
 #include "../deps/mp_printf.h"
 
@@ -385,12 +384,13 @@ setDefaultConfig(UA_ServerConfig *conf, UA_UInt16 portNumber) {
     if(conf->httpTimeout == 0)
         conf->httpTimeout = 60;
 
-#ifdef UA_ENABLE_DRIVER_REST
     /* Drivers that can be created from the configuration. BadAlreadyExists
      * is expected if the defaults are applied twice. */
+#ifdef UA_ENABLE_DRIVER_HTTP
     UA_ServerConfig_registerDriver(conf, &UA_HttpDriver_registration);
+#endif
+#ifdef UA_ENABLE_DRIVER_REST
     UA_ServerConfig_registerDriver(conf, &UA_RestDriver_registration);
-    UA_ServerConfig_registerDriver(conf, &UA_BindingDriver_registration);
 #endif
 
     /* --> Start setting the default static config <-- */

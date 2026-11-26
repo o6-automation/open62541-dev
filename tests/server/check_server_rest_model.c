@@ -15,7 +15,8 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* The binding driver on top of a fake device driver. The device answers
+/* The information model of the REST driver: methods, variables and the nodes
+ * of the polled data. The calls go to a fake device driver. It answers
  * synchronously, later (completed by the test) or with errors. */
 
 static UA_Server *server;
@@ -24,7 +25,7 @@ static UA_Server *server;
 static UA_DriverCallCallback laterCallback;
 static void *laterContext;
 
-/* The cancel callback of the application. The binding driver leaves it alone. */
+/* The cancel callback of the application. The REST driver leaves it alone. */
 static size_t cancelled;
 
 static void
@@ -132,23 +133,31 @@ static const UA_DriverRegistration deviceRegistration = {
 static const char *config =
     "{tcpEnabled:false,drivers:["
     "{driver:'device',name:'plc'},"
-    "{driver:'binding',name:'Machine',methods:{"
-    " Read:{driver:'plc',call:'read',outputs:{status:'UInt16',"
+    "{driver:'rest',name:'Machine',endpoint:'plc',calls:{"
+    " read:{method:'read'},"
+    /* A value that is only one placeholder keeps its type: value is an Int32 */
+    " echo:{method:'echo',value:'${input.value}',unit:'${input.unit}',"
+    "       name:'${input.name}'},"
+    " later:{method:'later'},"
+    " fail:{method:'fail'},"
+    " unknown:{method:'unknown'},"
+    " nobody:{endpoint:'nobody',method:'x'}},"
+    "methods:{"
+    " Read:{call:'read',outputs:{status:'UInt16',"
     "       speed:{type:'Double',from:'body.speed'},"
     "       job:{type:'String',from:'body.job.name'},"
     "       since:{type:'DateTime',from:'body.since'}}},"
-    " Echo:{driver:'plc',call:'echo',defaults:{unit:'mm',value:1},"
+    " Echo:{call:'echo',defaults:{unit:'mm',value:1},"
     "       inputs:{value:'Int32',name:'String'},"
     "       outputs:{value:'Int32',unit:'String',name:'String'}},"
-    " Later:{driver:'plc',call:'later',outputs:{status:'UInt16'}},"
-    " Fail:{driver:'plc',call:'fail',outputs:{status:'UInt16'}},"
-    " Missing:{driver:'plc',call:'read',outputs:{x:{type:'Double',from:'body.nothing'}}},"
-    " Unsupported:{driver:'plc',call:'unknown'},"
-    " Nobody:{driver:'nobody',call:'x'},"
-    " Unnested:{call:'x'}},"
+    " Later:{call:'later',outputs:{status:'UInt16'}},"
+    " Fail:{call:'fail',outputs:{status:'UInt16'}},"
+    " Missing:{call:'read',outputs:{x:{type:'Double',from:'body.nothing'}}},"
+    " Unsupported:{call:'unknown'},"
+    " Nobody:{call:'nobody'}},"
     "variables:{"
-    " Speed:{driver:'plc',call:'read',type:'Double',from:'body.speed',interval:20},"
-    " Broken:{driver:'plc',call:'fail',type:'Double',from:'body.speed',interval:20}}}]}";
+    " Speed:{call:'read',type:'Double',from:'body.speed',interval:20},"
+    " Broken:{call:'fail',type:'Double',from:'body.speed',interval:20}}}]}";
 
 static void setup(void) {
     laterCallback = NULL;
@@ -243,11 +252,9 @@ START_TEST(Errors) {
     UA_CallMethodResult_clear(&r);
     r = callMethod("Unsupported", 0, NULL);
     ck_assert_uint_eq(r.statusCode, UA_STATUSCODE_BADNOTSUPPORTED);
-    /* A wrong reference fails the call */
-    r = callMethod("Nobody", 0, NULL);
-    ck_assert_uint_eq(r.statusCode, UA_STATUSCODE_BADNOTFOUND);
     UA_CallMethodResult_clear(&r);
-    r = callMethod("Unnested", 0, NULL); /* No driver and nothing nested */
+    /* A wrong endpoint fails the call */
+    r = callMethod("Nobody", 0, NULL);
     ck_assert_uint_eq(r.statusCode, UA_STATUSCODE_BADNOTFOUND);
     UA_CallMethodResult_clear(&r);
 } END_TEST
@@ -343,11 +350,11 @@ driverByName(UA_Server *s, const char *name) {
     return NULL;
 }
 
-/* The drivers the binding uses are nested in it. Without "driver", the only
- * nested driver is called. */
+/* The endpoint is nested in the REST driver. Without an endpoint, the calls go
+ * to the only nested driver. */
 START_TEST(NestedDriver) {
     UA_Server *s = UA_Server_newFromFile(UA_STRING(
-        "{tcpEnabled:false,drivers:[{driver:'binding',name:'Press',"
+        "{tcpEnabled:false,drivers:[{driver:'rest',name:'Press',calls:{read:{method:'read'}},"
         " methods:{Read:{call:'read',outputs:{speed:{type:'Double',from:'body.speed'}}}},"
         " drivers:[{driver:'device'}]}]}"));
     ck_assert_ptr_nonnull(s);
@@ -383,11 +390,10 @@ static const char *weatherLater =
     "\"windSpeed\":12,\"humidity\":870},\"forecast2\":{\"temperature\":[75,70]},"
     "\"forecastStart\":5,\"days\":[{\"dayDate\":\"2026-11-19\",\"temperatureMin\":7.5}]}}";
 
-/* The polling REST driver is nested in the binding, the station level is skipped */
+/* The station level is skipped */
 static const char *nodesConfig =
-    "{tcpEnabled:false,drivers:[{driver:'binding',name:'Weather',nodes:{from:\"$['10865']\"},"
-    " drivers:[{driver:'rest',path:'/weather',interval:1000,"
-    "           drivers:[{driver:'device'}]}]}]}";
+    "{tcpEnabled:false,drivers:[{driver:'rest',name:'Weather',path:'/weather',interval:1000,"
+    " nodes:{from:\"$['10865']\"},drivers:[{driver:'device'}]}]}";
 
 static UA_Server *
 newPollingServer(const char *json) {
@@ -526,9 +532,9 @@ START_TEST(BadResultSetsStatus) {
 /* Factors by key name, also for the numbers in arrays */
 START_TEST(NodesScale) {
     UA_Server *s = newPollingServer(
-        "{tcpEnabled:false,drivers:[{driver:'binding',name:'Weather',"
+        "{tcpEnabled:false,drivers:[{driver:'rest',name:'Weather',path:'/weather',"
         " nodes:{from:'$.10865',scale:{temperature:0.1,temperatureMin:0.1}},"
-        " drivers:[{driver:'rest',path:'/weather',drivers:[{driver:'device'}]}]}]}");
+        " drivers:[{driver:'device'}]}]}");
     UA_Server_run_iterate(s, false);
 
     UA_DataValue dv = readNode(s, "Weather.days.0.temperatureMin");
@@ -549,13 +555,14 @@ START_TEST(NodesScale) {
 /* Variables without call take their values from the polling */
 START_TEST(PolledVariables) {
     UA_Server *s = newPollingServer(
-        "{tcpEnabled:false,drivers:[{driver:'binding',name:'Station',variables:{"
+        "{tcpEnabled:false,drivers:[{driver:'rest',name:'Station',path:'/weather',"
+        " nodes:false,variables:{"
         " Date:{type:'String',from:'$.10865.days[0].dayDate'},"
         " Min:{type:'Double',from:\"$['10865'].days[0].temperatureMin\"},"
         " Second:{type:'Int32',from:'$.10865.forecast1.temperature[1]'},"
         " Countdown:{type:'Int32',from:'$.10865.countdown'},"
         " Missing:{type:'Int32',from:'$.10865.nothing'}},"
-        " drivers:[{driver:'rest',path:'/weather',drivers:[{driver:'device'}]}]}]}");
+        " drivers:[{driver:'device'}]}]}");
     UA_DataValue dv = readNode(s, "Station.Date");
     ck_assert_uint_eq(dv.status, UA_STATUSCODE_BADWAITINGFORINITIALDATA);
     UA_DataValue_clear(&dv);
@@ -613,11 +620,12 @@ readUnit(UA_Server *s, const char *id) {
 /* Wildcards give array variables, unit gives EngineeringUnits */
 START_TEST(ArrayVariablesWithUnits) {
     UA_Server *s = newPollingServer(
-        "{tcpEnabled:false,drivers:[{driver:'binding',name:'Station',variables:{"
+        "{tcpEnabled:false,drivers:[{driver:'rest',name:'Station',path:'/weather',"
+        " nodes:false,variables:{"
         " Temps:{type:'Double',from:'$.10865.forecast1.temperature[*]',scale:0.1,"
         "        unit:'°C'},"
         " Dates:{type:'String',from:'$.10865.days[*].dayDate'}},"
-        " drivers:[{driver:'rest',path:'/weather',drivers:[{driver:'device'}]}]}]}");
+        " drivers:[{driver:'device'}]}]}");
     UA_Server_run_iterate(s, false);
 
     UA_DataValue dv = readNode(s, "Station.Temps");
@@ -650,10 +658,10 @@ START_TEST(ArrayVariablesWithUnits) {
 /* Patterns with wildcards in scale and units */
 START_TEST(NodesPatterns) {
     UA_Server *s = newPollingServer(
-        "{tcpEnabled:false,drivers:[{driver:'binding',name:'Weather',nodes:{from:'$.10865',"
-        " scale:{'$.days[*].temperatureMin':0.1},"
+        "{tcpEnabled:false,drivers:[{driver:'rest',name:'Weather',path:'/weather',"
+        " nodes:{from:'$.10865',scale:{'$.days[*].temperatureMin':0.1},"
         " units:{temperatureMin:'°C','$.forecast1.temperature':'dK'}},"
-        " drivers:[{driver:'rest',path:'/weather',drivers:[{driver:'device'}]}]}]}");
+        " drivers:[{driver:'device'}]}]}");
     UA_Server_run_iterate(s, false);
 
     UA_DataValue dv = readNode(s, "Weather.days.0.temperatureMin");
@@ -677,76 +685,103 @@ START_TEST(NodesPatterns) {
     UA_Server_delete(s);
 } END_TEST
 
-/* A polling REST driver on the top level, referenced by its name */
+/* Nodes by default, with an endpoint by its name */
+/* The object in an own namespace below another node */
+START_TEST(NamespaceAndParent) {
+    UA_Server *s = newPollingServer(
+        "{tcpEnabled:false,drivers:[{driver:'rest',name:'Placed',path:'/weather',"
+        " namespace:'urn:test:rest',parent:'i=2253',nodes:{from:'$.10865'},"
+        " drivers:[{driver:'device'}]}]}");
+    UA_Server_run_iterate(s, false);
+    size_t ns = 0;
+    ck_assert_uint_eq(UA_Server_getNamespaceByName(s, UA_STRING("urn:test:rest"), &ns),
+                      UA_STATUSCODE_GOOD);
+    ck_assert_uint_gt(ns, 1);
+    UA_QualifiedName name = {(UA_UInt16)ns, UA_STRING("Placed")};
+    UA_BrowsePathResult bpr =
+        UA_Server_browseSimplifiedBrowsePath(s, UA_NS0ID(SERVER), 1, &name);
+    ck_assert_uint_eq(bpr.statusCode, UA_STATUSCODE_GOOD);
+    UA_BrowsePathResult_clear(&bpr);
+    UA_NodeClass nc;
+    ck_assert_uint_eq(UA_Server_readNodeClass(s, UA_NODEID_STRING((UA_UInt16)ns,
+                                                                  "Placed.days.0.dayDate"),
+                                              &nc), UA_STATUSCODE_GOOD);
+    ck_assert(!nodeExists(s, "Placed", UA_NODECLASS_OBJECT)); /* Not in namespace 1 */
+    UA_Server_run_shutdown(s);
+    UA_Server_delete(s);
+} END_TEST
+
 START_TEST(NodesByName) {
     UA_Server *s = newPollingServer(
         "{tcpEnabled:false,drivers:[{driver:'device',name:'plc'},"
-        "{driver:'rest',name:'poller',endpoint:'plc',path:'/weather'},"
-        "{driver:'binding',name:'Flat',nodes:{driver:'poller'}}]}");
+        "{driver:'rest',name:'Flat',endpoint:'plc',path:'/weather'}]}");
     UA_Server_run_iterate(s, false);
     assertInt(s, "Flat.10865.days.0.temperatureMin", 73);
     UA_Server_run_shutdown(s);
     UA_Server_delete(s);
 } END_TEST
 
-/* Invalid configurations of the binding itself */
+/* Invalid configurations of the methods, variables and nodes. The endpoint
+ * is the device driver. */
+#define DEVICE "drivers:[{driver:'device'}]"
 static const char *invalidConfigs[] = {
-    /* Nodes of an unknown driver */
-    "{tcpEnabled:false,drivers:[{driver:'binding',nodes:{driver:'nobody'}}]}",
-    /* A variable without call from a driver that is not a REST driver */
-    "{tcpEnabled:false,drivers:[{driver:'binding',variables:{V:{type:'Int32',from:'a'}},"
-    " drivers:[{driver:'http',url:'http://localhost'}]}]}",
+    /* A method with an unknown call */
+    "{tcpEnabled:false,drivers:[{driver:'rest',name:'bad',calls:{a:{method:'GET'}},"
+    " methods:{M:{call:'nope'}}," DEVICE "}]}",
+    /* A variable without call, without polling */
+    "{tcpEnabled:false,drivers:[{driver:'rest',name:'bad',calls:{a:{method:'GET'}},"
+    " variables:{V:{type:'Int32',from:'a'}}," DEVICE "}]}",
     /* Wildcards in the path of the nodes */
-    "{tcpEnabled:false,drivers:[{driver:'binding',nodes:{from:'$.a[*]'},"
-    " drivers:[{driver:'rest',path:'/x',drivers:[{driver:'http',url:'http://localhost'}]}]}]}",
+    "{tcpEnabled:false,drivers:[{driver:'rest',name:'bad',path:'/x',"
+    " nodes:{from:'$.a[*]'}," DEVICE "}]}",
     /* A scale of a variable that is not Double */
-    "{tcpEnabled:false,drivers:[{driver:'binding',variables:{V:{type:'Int32',from:'a',"
-    " scale:0.1}},drivers:[{driver:'rest',path:'/x',"
-    " drivers:[{driver:'http',url:'http://localhost'}]}]}]}",
+    "{tcpEnabled:false,drivers:[{driver:'rest',name:'bad',path:'/x',"
+    " variables:{V:{type:'Int32',from:'a',scale:0.1}}," DEVICE "}]}",
     /* A unit that is not a string */
-    "{tcpEnabled:false,drivers:[{driver:'binding',nodes:{units:{a:1}},"
-    " drivers:[{driver:'rest',path:'/x',drivers:[{driver:'http',url:'http://localhost'}]}]}]}",
+    "{tcpEnabled:false,drivers:[{driver:'rest',name:'bad',path:'/x',"
+    " nodes:{units:{a:1}}," DEVICE "}]}",
     /* A scale that is not a number */
-    "{tcpEnabled:false,drivers:[{driver:'binding',nodes:{scale:{a:'x'}},"
-    " drivers:[{driver:'rest',path:'/x',drivers:[{driver:'http',url:'http://localhost'}]}]}]}",
-    /* Nodes of a driver that is not a REST driver */
-    "{tcpEnabled:false,drivers:[{driver:'binding',nodes:{},"
-    " drivers:[{driver:'http',url:'http://localhost'}]}]}",
+    "{tcpEnabled:false,drivers:[{driver:'rest',name:'bad',path:'/x',"
+    " nodes:{scale:{a:'x'}}," DEVICE "}]}",
+    /* Nodes without polling */
+    "{tcpEnabled:false,drivers:[{driver:'rest',name:'bad',nodes:true,"
+    " calls:{a:{method:'GET'}}," DEVICE "}]}",
     /* No call */
-    "{tcpEnabled:false,drivers:[{driver:'binding',methods:{M:{}},"
-    " drivers:[{driver:'http',url:'http://localhost'}]}]}",
+    "{tcpEnabled:false,drivers:[{driver:'rest',name:'bad',calls:{a:{method:'GET'}},"
+    " methods:{M:{}}," DEVICE "}]}",
     /* Unknown type */
-    "{tcpEnabled:false,drivers:[{driver:'binding',"
-    " methods:{M:{call:'x',inputs:{a:'Unknown'}}},"
-    " drivers:[{driver:'http',url:'http://localhost'}]}]}",
+    "{tcpEnabled:false,drivers:[{driver:'rest',name:'bad',calls:{a:{method:'GET'}},"
+    " methods:{M:{call:'a',inputs:{a:'Unknown'}}}," DEVICE "}]}",
     /* No path */
-    "{tcpEnabled:false,drivers:[{driver:'binding',"
-    " variables:{V:{call:'x',type:'Double'}},"
-    " drivers:[{driver:'http',url:'http://localhost'}]}]}",
+    "{tcpEnabled:false,drivers:[{driver:'rest',name:'bad',calls:{a:{method:'GET'}},"
+    " variables:{V:{call:'a',type:'Double'}}," DEVICE "}]}",
+    /* A parent that is not a NodeId */
+    "{tcpEnabled:false,drivers:[{driver:'rest',name:'bad',path:'/x',parent:'nonsense',"
+    " " DEVICE "}]}",
     /* Invalid interval */
-    "{tcpEnabled:false,drivers:[{driver:'binding',"
-    " variables:{V:{call:'x',type:'Double',from:'a',interval:0}},"
-    " drivers:[{driver:'http',url:'http://localhost'}]}]}"
+    "{tcpEnabled:false,drivers:[{driver:'rest',name:'bad',calls:{a:{method:'GET'}},"
+    " variables:{V:{call:'a',type:'Double',from:'a',interval:0}}," DEVICE "}]}"
 };
 
 /* A driver that fails to start is logged, the server starts anyway */
 START_TEST(InvalidConfiguration) {
     UA_Server *s = UA_Server_newFromFile(UA_STRING((char *)(uintptr_t)invalidConfigs[_i]));
     ck_assert_ptr_nonnull(s);
+    UA_ServerConfig_registerDriver(UA_Server_getConfig(s), &deviceRegistration);
     ck_assert_uint_eq(UA_Server_run_startup(s), UA_STATUSCODE_GOOD);
-    UA_Driver *drv = driverByName(s, "binding");
+    UA_Driver *drv = driverByName(s, "bad");
     ck_assert_ptr_nonnull(drv);
     ck_assert_int_eq(drv->state, UA_LIFECYCLESTATE_STOPPED);
     UA_NodeClass nc;
-    ck_assert_uint_ne(UA_Server_readNodeClass(s, UA_NODEID_STRING(1, "binding"), &nc),
+    ck_assert_uint_ne(UA_Server_readNodeClass(s, UA_NODEID_STRING(1, "bad"), &nc),
                       UA_STATUSCODE_GOOD);
     UA_Server_run_shutdown(s);
     ck_assert(UA_Server_getConfig(s)->asyncOperationCancelCallback == NULL);
     UA_Server_delete(s);
 } END_TEST
 
-static Suite *testSuite_Binding(void) {
-    TCase *tc = tcase_create("Binding");
+static Suite *testSuite_RestModel(void) {
+    TCase *tc = tcase_create("Model");
     tcase_add_checked_fixture(tc, setup, teardown);
     tcase_add_test(tc, NodesAreCreated);
     tcase_add_test(tc, OutputsFromTheResult);
@@ -765,11 +800,12 @@ static Suite *testSuite_Binding(void) {
     tcase_add_test(tcNodes, NodesFollowChanges);
     tcase_add_test(tcNodes, BadResultSetsStatus);
     tcase_add_test(tcNodes, NodesByName);
+    tcase_add_test(tcNodes, NamespaceAndParent);
     tcase_add_test(tcNodes, NodesScale);
     tcase_add_test(tcNodes, PolledVariables);
     tcase_add_test(tcNodes, ArrayVariablesWithUnits);
     tcase_add_test(tcNodes, NodesPatterns);
-    Suite *s = suite_create("Binding Driver");
+    Suite *s = suite_create("Information model of the REST driver");
     suite_add_tcase(s, tc);
     suite_add_tcase(s, tcConfig);
     suite_add_tcase(s, tcNodes);
@@ -777,7 +813,7 @@ static Suite *testSuite_Binding(void) {
 }
 
 int main(void) {
-    SRunner *sr = srunner_create(testSuite_Binding());
+    SRunner *sr = srunner_create(testSuite_RestModel());
     srunner_set_fork_status(sr, CK_NOFORK);
     srunner_run_all(sr, CK_NORMAL);
     int number_failed = srunner_ntests_failed(sr);

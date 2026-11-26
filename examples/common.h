@@ -82,3 +82,21 @@ writeFile(const char* const path, const UA_ByteString buffer) {
     fclose(fp);
     return UA_STATUSCODE_GOOD;
 }
+
+#ifdef UA_ENABLE_LWS
+#include <open62541/server.h>
+
+/* HTTP ConnectionManagers are registered explicitly, e.g. for the HTTP driver.
+ * Without a TLS configuration, https uses the system trust store. */
+static UA_INLINE UA_StatusCode
+addHttpConnectionManager(UA_Server *server) {
+    UA_ConnectionManager *cm = UA_ConnectionManager_new_HTTP(UA_STRING("http"), NULL);
+    if(!cm)
+        return UA_STATUSCODE_BADOUTOFMEMORY;
+    UA_EventLoop *el = UA_Server_getConfig(server)->eventLoop;
+    UA_StatusCode res = el->registerEventSource(el, &cm->eventSource);
+    if(res != UA_STATUSCODE_GOOD)
+        cm->eventSource.free(&cm->eventSource);
+    return res;
+}
+#endif
