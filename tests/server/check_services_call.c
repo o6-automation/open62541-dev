@@ -477,6 +477,167 @@ START_TEST(callObjectTypeMethod2) {
 #endif
 } END_TEST
 
+/* A storage backend composes a node with the references a caller asks for,
+ * while the ZipTree hands out the full node. Emulate such a backend: hand out
+ * copies that keep only the requested reference types. */
+#define TRIMMED_MAX 32
+static UA_Node *trimmed[TRIMMED_MAX];
+static const UA_Node *(*origGetNode)(UA_Nodestore*, const UA_NodeId*, UA_UInt32,
+                                     UA_ReferenceTypeSet, UA_BrowseDirection);
+static const UA_Node *(*origGetNodeFromPtr)(UA_Nodestore*, UA_NodePointer, UA_UInt32,
+                                            UA_ReferenceTypeSet, UA_BrowseDirection);
+static void (*origReleaseNode)(UA_Nodestore*, const UA_Node*);
+
+static const UA_Node *
+trimToSelection(UA_Nodestore *ns, const UA_Node *node,
+                UA_ReferenceTypeSet refs, UA_BrowseDirection dir) {
+    if(!node)
+        return NULL;
+    UA_Node *copy = UA_Node_copy_alloc(node);
+    origReleaseNode(ns, node);
+    ck_assert_ptr_nonnull(copy);
+    if(dir == UA_BROWSEDIRECTION_INVALID)
+        refs = UA_REFERENCETYPESET_NONE;
+    UA_Node_deleteReferencesSubset(copy, &refs);
+    for(size_t i = 0; i < TRIMMED_MAX; i++) {
+        if(!trimmed[i]) {
+            trimmed[i] = copy;
+            return copy;
+        }
+    }
+    ck_abort_msg("too many trimmed nodes in use");
+    return NULL;
+}
+
+static const UA_Node *
+trimmedGetNode(UA_Nodestore *ns, const UA_NodeId *id, UA_UInt32 mask,
+               UA_ReferenceTypeSet refs, UA_BrowseDirection dir) {
+    return trimToSelection(ns, origGetNode(ns, id, mask, refs, dir), refs, dir);
+}
+
+static const UA_Node *
+trimmedGetNodeFromPtr(UA_Nodestore *ns, UA_NodePointer ptr, UA_UInt32 mask,
+                      UA_ReferenceTypeSet refs, UA_BrowseDirection dir) {
+    return trimToSelection(ns, origGetNodeFromPtr(ns, ptr, mask, refs, dir), refs, dir);
+}
+
+static void
+trimmedReleaseNode(UA_Nodestore *ns, const UA_Node *node) {
+    for(size_t i = 0; i < TRIMMED_MAX; i++) {
+        if(trimmed[i] && trimmed[i] == node) {
+            UA_Node_clear(trimmed[i]);
+            UA_free(trimmed[i]);
+            trimmed[i] = NULL;
+            return;
+        }
+    }
+    origReleaseNode(ns, node);
+}
+
+static void
+trimReferences(UA_Boolean on) {
+    UA_Nodestore *ns = UA_Server_getConfig(server)->nodestore;
+    if(on) {
+        origGetNode = ns->getNode;
+        origGetNodeFromPtr = ns->getNodeFromPtr;
+        origReleaseNode = ns->releaseNode;
+        ns->getNode = trimmedGetNode;
+        ns->getNodeFromPtr = trimmedGetNodeFromPtr;
+        ns->releaseNode = trimmedReleaseNode;
+    } else {
+        ns->getNode = origGetNode;
+        ns->getNodeFromPtr = origGetNodeFromPtr;
+        ns->releaseNode = origReleaseNode;
+    }
+}
+
+static UA_StatusCode
+doubleCallback(UA_Server *serverArg,
+               const UA_NodeId *sessionId, void *sessionHandle,
+               const UA_NodeId *methodId, void *methodContext,
+               const UA_NodeId *objectId, void *objectContext,
+               size_t inputSize, const UA_Variant *input,
+               size_t outputSize, UA_Variant *output) {
+    if(inputSize != 1 || outputSize != 1 ||
+       !UA_Variant_hasScalarType(&input[0], &UA_TYPES[UA_TYPES_UINT32]))
+        return UA_STATUSCODE_BADINTERNALERROR;
+    UA_UInt32 doubled = *(UA_UInt32*)input[0].data * 2;
+    return UA_Variant_setScalarCopy(&output[0], &doubled, &UA_TYPES[UA_TYPES_UINT32]);
+}
+
+/* The arguments of a method are found through its HasProperty references, so
+ * the call service must request them from the nodestore */
+START_TEST(callMethodFromSelectiveNodestore) {
+    UA_Argument inArg, outArg;
+    UA_Argument_init(&inArg);
+    UA_Argument_init(&outArg);
+    inArg.name = UA_STRING("in");
+    inArg.dataType = UA_TYPES[UA_TYPES_UINT32].typeId;
+    inArg.valueRank = UA_VALUERANK_SCALAR;
+    outArg.name = UA_STRING("out");
+    outArg.dataType = UA_TYPES[UA_TYPES_UINT32].typeId;
+    outArg.valueRank = UA_VALUERANK_SCALAR;
+    UA_MethodAttributes attr = UA_MethodAttributes_default;
+    attr.executable = true;
+    attr.userExecutable = true;
+    UA_NodeId methodId = UA_NODEID_STRING(1, "double");
+    UA_StatusCode res =
+        UA_Server_addMethodNode(server, methodId,
+                                UA_NODEID_NUMERIC(0, UA_NS0ID_OBJECTSFOLDER),
+                                UA_NODEID_NUMERIC(0, UA_NS0ID_HASCOMPONENT),
+                                UA_QUALIFIEDNAME(1, "Double"), attr, doubleCallback,
+                                1, &inArg, 1, &outArg, NULL, NULL);
+    ck_assert_int_eq(res, UA_STATUSCODE_GOOD);
+
+    UA_UInt32 value = 21;
+    UA_Variant input;
+    UA_Variant_setScalar(&input, &value, &UA_TYPES[UA_TYPES_UINT32]);
+    UA_CallMethodRequest req;
+    UA_CallMethodRequest_init(&req);
+    req.objectId = UA_NODEID_NUMERIC(0, UA_NS0ID_OBJECTSFOLDER);
+    req.methodId = methodId;
+    req.inputArgumentsSize = 1;
+    req.inputArguments = &input;
+
+    trimReferences(true);
+    UA_CallMethodResult result = UA_Server_call(server, &req);
+    trimReferences(false);
+
+    ck_assert_int_eq(result.statusCode, UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(result.outputArgumentsSize, 1);
+    ck_assert(UA_Variant_hasScalarType(&result.outputArguments[0],
+                                       &UA_TYPES[UA_TYPES_UINT32]));
+    ck_assert_uint_eq(*(UA_UInt32*)result.outputArguments[0].data, 42);
+    UA_CallMethodResult_clear(&result);
+} END_TEST
+
+/* The same for a method that resolves to the one of the object instance */
+START_TEST(callObjectTypeMethodFromSelectiveNodestore) {
+#if defined(UA_GENERATED_NAMESPACE_ZERO_FULL) && defined(UA_ENABLE_SUBSCRIPTIONS)
+    UA_Server_setMethodNodeCallback(server,
+                                    UA_NODEID_NUMERIC(0, UA_NS0ID_SERVER_GETMONITOREDITEMS),
+                                    &methodCallback);
+    UA_UInt32 subscriptionId = 0;
+    UA_Variant input;
+    UA_Variant_setScalar(&input, &subscriptionId, &UA_TYPES[UA_TYPES_UINT32]);
+    UA_CallMethodRequest req;
+    UA_CallMethodRequest_init(&req);
+    req.objectId = UA_NODEID_NUMERIC(0, UA_NS0ID_SERVER);
+    req.methodId = UA_NODEID_NUMERIC(0, UA_NS0ID_SERVERTYPE_GETMONITOREDITEMS);
+    req.inputArgumentsSize = 1;
+    req.inputArguments = &input;
+
+    trimReferences(true);
+    UA_CallMethodResult result = UA_Server_call(server, &req);
+    trimReferences(false);
+
+    ck_assert_int_eq(result.statusCode, UA_STATUSCODE_GOOD);
+    UA_NodeId expected = UA_NODEID_NUMERIC(0, UA_NS0ID_SERVER_GETMONITOREDITEMS);
+    ck_assert(UA_NodeId_equal(&expected, &methodIdInCallback));
+    UA_CallMethodResult_clear(&result);
+#endif
+} END_TEST
+
 int main(void) {
     Suite *s = suite_create("services_call");
 
@@ -498,6 +659,8 @@ int main(void) {
     tcase_add_test(tc_call, callObjectTypeMethodOnInstance2);
     tcase_add_test(tc_call, callObjectTypeMethod);
     tcase_add_test(tc_call, callObjectTypeMethod2);
+    tcase_add_test(tc_call, callMethodFromSelectiveNodestore);
+    tcase_add_test(tc_call, callObjectTypeMethodFromSelectiveNodestore);
     suite_add_tcase(s, tc_call);
 
     SRunner *sr = srunner_create(s);

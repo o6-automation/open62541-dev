@@ -335,13 +335,14 @@ callWithMethodAndObject(UA_Server *server, UA_Session *session,
             goto errout;
         }
 
-        /* Get the resolved method node */
+        /* Get the resolved method node. Its forward HasProperty references
+         * lead to the InputArguments and OutputArguments. */
         resolvedMethod = (const UA_MethodNode*)
             UA_NODESTORE_GET_SELECTIVE(server, &resolvedMethodId,
                                        UA_NODEATTRIBUTESMASK_NODECLASS |
                                        UA_NODEATTRIBUTESMASK_EXECUTABLE,
-                                       UA_REFERENCETYPESET_NONE,
-                                       UA_BROWSEDIRECTION_INVALID);
+                                       UA_REFTYPESET(UA_REFERENCETYPEINDEX_HASPROPERTY),
+                                       UA_BROWSEDIRECTION_FORWARD);
         if(!resolvedMethod) {
             res = UA_STATUSCODE_BADINTERNALERROR;
             goto errout;
@@ -366,14 +367,17 @@ Operation_CallMethod(UA_Server *server, UA_Session *session,
                      UA_CallMethodResult *result) {
     UA_LOCK_ASSERT(&server->serviceMutex);
 
-    /* Get the method node. We only need the nodeClass and browseName
-     * attribute. */
+    /* Get the method node. The NodeClass and BrowseName resolve the method.
+     * If it resolves to itself, the node is also called: then Executable and
+     * the forward HasProperty references to the InputArguments and
+     * OutputArguments are used. */
     const UA_Node *method =
         UA_NODESTORE_GET_SELECTIVE(server, &request->methodId,
                                    UA_NODEATTRIBUTESMASK_NODECLASS |
-                                   UA_NODEATTRIBUTESMASK_BROWSENAME,
-                                   UA_REFERENCETYPESET_NONE,
-                                   UA_BROWSEDIRECTION_INVALID);
+                                   UA_NODEATTRIBUTESMASK_BROWSENAME |
+                                   UA_NODEATTRIBUTESMASK_EXECUTABLE,
+                                   UA_REFTYPESET(UA_REFERENCETYPEINDEX_HASPROPERTY),
+                                   UA_BROWSEDIRECTION_FORWARD);
     if(!method) {
         result->statusCode = UA_STATUSCODE_BADMETHODINVALID;
         return true;
